@@ -1,0 +1,7 @@
+# Keep repository text files in UTF-8-compatible LF form across platforms.
+* text=auto eol=lf
+
+# Do not apply text normalization to binary assets.
+*.exe binary
+*.ico binary
+*.png binary

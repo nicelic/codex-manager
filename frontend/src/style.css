@@ -1,0 +1,154 @@
+:root {
+  font-family: Inter, "Microsoft YaHei", sans-serif;
+  color: #e6edf7;
+  background: #0c1220;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+.page-shell { min-height: 100vh; display: grid; place-items: center; padding: 28px; background: radial-gradient(circle at top, #1a3150, #0c1220 58%); }
+.panel { width: min(780px, 100%); padding: 40px; border: 1px solid #29415f; border-radius: 24px; background: rgba(16, 27, 44, .94); box-shadow: 0 24px 80px rgba(0, 0, 0, .35); }
+.brand-row { display: flex; align-items: center; gap: 16px; }
+.logo { display: grid; place-items: center; width: 58px; height: 58px; border-radius: 16px; color: #07101e; background: #66d9ef; font-weight: 800; letter-spacing: .04em; }
+.eyebrow { margin: 0 0 4px; color: #7e9fca; font-size: 12px; letter-spacing: .16em; }
+h1 { margin: 0; font-size: 34px; }
+.description { margin: 28px 0; color: #b3c3d8; line-height: 1.7; }
+.status-card { display: flex; align-items: center; gap: 14px; padding: 16px; border: 1px solid #493c43; border-radius: 14px; background: #211b25; }
+.status-card.online { border-color: #275c55; background: #122923; }
+.status-card.connecting { border-color: #876c2d; background: #2a2417; }
+.status-card.unavailable { border-color: #7b3d4b; background: #281b22; }
+.status-dot { width: 11px; height: 11px; border-radius: 50%; background: #ee8d8d; box-shadow: 0 0 0 5px rgba(238, 141, 141, .12); }
+.online .status-dot { background: #5de3a2; box-shadow: 0 0 0 5px rgba(93, 227, 162, .12); }
+.status-card div { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.status-card span { overflow-wrap: anywhere; color: #9eb2cb; font-size: 13px; }
+.status-card .proxy-process { color: #7187a2; font: 12px Consolas, "Microsoft YaHei", monospace; }
+.proxy-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.proxy-controls button { min-width: 104px; }
+.proxy-button { min-width: 92px; padding-inline: 16px; background: #1e704e; }
+.proxy-button:hover:not(:disabled) { border-color: #73edb0; background: #258860; }
+.proxy-button.stop { border-color: #824e55; background: #6c303c; }
+.proxy-button.stop:hover:not(:disabled) { border-color: #ff9b9b; background: #873b49; }
+.proxy-notice { margin-top: 10px; }
+.log-notice { margin-top: 8px; }
+button { border: 1px solid #3c6791; border-radius: 8px; padding: 8px 12px; color: #dcecff; background: #17304e; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .65; }
+button.is-loading:disabled { cursor: wait; }
+.info-grid { display: grid; gap: 12px; margin-top: 24px; }
+.info-grid div { display: flex; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid #24364e; color: #8da4bf; font-size: 14px; }
+.info-grid code { overflow-wrap: anywhere; text-align: right; word-break: break-word; }
+.connection-status { align-items: flex-start; }
+.connection-status code { display: flex; flex: 1; flex-wrap: wrap; justify-content: flex-end; gap: 6px 16px; min-width: 0; }
+.connection-status code span { white-space: nowrap; }
+code { color: #c9e5ff; font-family: Consolas, monospace; }
+.service-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 24px; }
+.service-tab { display: grid; place-items: center; min-width: 0; min-height: 48px; padding: 10px 12px; border: 1px solid #2b4562; border-radius: 10px; color: #9eb2cb; background: #0f1c2e; font: 600 15px "Microsoft YaHei", sans-serif; white-space: nowrap; }
+.service-tab:hover:not(:disabled) { border-color: #4b80ad; color: #dcecff; background: #142943; }
+.service-tab.active { border-color: #66d9ef; color: #eaf4ff; background: #1e4d76; box-shadow: 0 0 0 3px rgba(102, 217, 239, .1); }
+.service-tab-placeholder { min-height: 120px; margin-top: 30px; }
+.llmtrim-section { display: grid; gap: 12px; margin-top: 30px; }
+.llmtrim-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.llmtrim-heading h2 { margin: 0; font-size: 20px; }
+.llmtrim-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.llmtrim-actions button.stop { border-color: #824e55; background: #6c303c; }
+.llmtrim-actions button.stop:hover:not(:disabled) { border-color: #ff9b9b; background: #873b49; }
+.daemon-badge { border: 1px solid #5b4d39; border-radius: 999px; padding: 5px 10px; color: #e9bf78; background: #2b241a; font-size: 12px; }
+.daemon-badge.running { border-color: #276653; color: #8de6b8; background: #122b25; }
+.daemon-badge.attention { border-color: #8a6a2f; color: #ffd98a; background: #332814; }
+.daemon-badge.conflict { border-color: #8d3f52; color: #ffb0bd; background: #351b24; }
+.modified-agents { color: #8de6b8; }
+.llmtrim-control { padding: 16px; border: 1px solid #2b4562; border-radius: 14px; background: #101e31; }
+.trust-guide { margin-top: 14px; padding-top: 14px; border-top: 1px solid #2b4562; }
+.trust-guide-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #dcecff; }
+.trust-guide-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.trust-button { border-color: #8a6a2f; color: #ffe0a0; background: #332814; }
+.trust-button:hover:not(:disabled) { border-color: #bb8d3a; background: #463515; }
+.trust-command { display: block; margin-top: 6px; padding: 9px 10px; overflow-wrap: anywhere; color: #b9dcff; background: #0b1727; border: 1px solid #27415e; border-radius: 6px; font-size: 12px; line-height: 1.45; }
+.trust-steps { margin: 10px 0 0 20px; padding: 0; color: #a9bdd5; font-size: 13px; line-height: 1.6; }
+.llmtrim-install-control { padding: 16px; border: 1px solid #2b4562; border-radius: 14px; background: #101e31; }
+.llmtrim-install-control label { display: grid; gap: 5px; margin-bottom: 12px; }
+.llmtrim-install-control label strong { color: #dcecff; font-size: 15px; }
+.llmtrim-install-control label span { color: #879db8; font-size: 13px; line-height: 1.45; }
+.llmtrim-install-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 12px; }
+select { width: 100%; min-width: 0; border: 1px solid #365775; border-radius: 8px; padding: 10px 12px; color: #eaf4ff; background: #0b1727; font: 14px "Microsoft YaHei", sans-serif; outline: none; }
+select:focus { border-color: #66d9ef; box-shadow: 0 0 0 3px rgba(102, 217, 239, .12); }
+.install-button { min-width: 74px; padding-inline: 16px; background: #1e704e; }
+.install-button:hover:not(:disabled) { border-color: #73edb0; background: #258860; }
+.delete-button { min-width: 74px; padding-inline: 16px; border-color: #824e55; background: #6c303c; }
+.delete-button:hover:not(:disabled) { border-color: #ff9b9b; background: #873b49; }
+.llmtrim-control label { display: grid; gap: 5px; margin-bottom: 12px; }
+.llmtrim-control label strong { color: #dcecff; font-size: 15px; }
+.llmtrim-control label span { color: #879db8; font-size: 13px; line-height: 1.45; }
+.daemon-button { min-width: 74px; padding-inline: 16px; background: #1e704e; }
+.daemon-button:hover:not(:disabled) { border-color: #73edb0; background: #258860; }
+.daemon-button.stop { border-color: #824e55; background: #6c303c; }
+.daemon-button.stop:hover:not(:disabled) { border-color: #ff9b9b; background: #873b49; }
+.settings-section { display: grid; gap: 12px; margin-top: 30px; }
+.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.section-heading h2 { margin: 0; font-size: 20px; }
+.loading-text { color: #7e9fca; font-size: 13px; }
+.setting-card { padding: 16px; border: 1px solid #2b4562; border-radius: 14px; background: #101e31; }
+.setting-card label { display: grid; gap: 5px; margin-bottom: 12px; }
+.setting-card label strong { color: #dcecff; font-size: 15px; }
+.setting-card label span { color: #879db8; font-size: 13px; line-height: 1.45; }
+.setting-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+.setting-card .upstream-websocket-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0; }
+.upstream-websocket-toggle > span { display: grid; gap: 5px; min-width: 0; }
+.upstream-websocket-toggle small { color: #879db8; font-size: 13px; line-height: 1.45; }
+.retry-setting-card { padding-block: 18px; }
+.retry-config-grid { display: grid; grid-template-columns: minmax(132px, .72fr) minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 14px; }
+.retry-toggle { margin: 0; padding-bottom: 2px; }
+.retry-field { display: grid; gap: 8px; min-width: 0; }
+.retry-field strong { color: #dcecff; font-size: 15px; }
+.retry-status-field { grid-column: 1 / -1; }
+input { width: 100%; min-width: 0; border: 1px solid #365775; border-radius: 8px; padding: 10px 12px; color: #eaf4ff; background: #0b1727; font: 14px Consolas, "Microsoft YaHei", monospace; outline: none; }
+input::placeholder { color: #617892; }
+input:focus { border-color: #66d9ef; box-shadow: 0 0 0 3px rgba(102, 217, 239, .12); }
+.setting-control button { min-width: 74px; padding-inline: 16px; background: #1e4d76; }
+.setting-control button:hover:not(:disabled), .status-card button:hover:not(:disabled) { border-color: #66d9ef; background: #245b8d; }
+.notice { margin: 10px 0 0; color: #89dcb2; font-size: 13px; line-height: 1.45; }
+.daemon-meta { margin: 8px 0 0; color: #7187a2; font: 12px Consolas, "Microsoft YaHei", monospace; }
+.version-meta { color: #c9e5ff; }
+.llmtrim-section .daemon-meta { overflow-wrap: anywhere; word-break: break-word; }
+.hint { margin: 26px 0 0; color: #7187a2; font-size: 13px; }
+.application-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #24364e; }
+.switch-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; color: #dcecff; font-size: 14px; cursor: pointer; }
+.switch-control.disabled { color: #60738b; cursor: not-allowed; }
+.switch-control input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
+.switch-control i { position: relative; flex: 0 0 auto; width: 42px; height: 24px; border: 1px solid #365775; border-radius: 12px; background: #0b1727; transition: background .16s ease, border-color .16s ease, opacity .16s ease; }
+.switch-control i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #91a9c4; transition: transform .16s ease, background .16s ease; }
+.switch-control input:checked + i { border-color: #45bfcf; background: #1c6378; }
+.switch-control input:checked + i::after { transform: translateX(18px); background: #eafcff; }
+.switch-control input:focus-visible + i { outline: 3px solid rgba(102, 217, 239, .28); outline-offset: 2px; }
+.switch-control input:disabled + i { opacity: .42; }
+.exit-button, .confirmation-confirm-button { min-height: 42px; border-color: #824e55; background: #6c303c; font-weight: 700; }
+.exit-button:hover:not(:disabled), .confirmation-confirm-button:hover:not(:disabled) { border-color: #ff9b9b; background: #873b49; }
+.startup-notice { margin-top: 12px; }
+.page-shell.is-interaction-locked { pointer-events: none; user-select: none; }
+.application-confirmation-overlay { position: fixed; z-index: 1100; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(4, 10, 18, .78); }
+.application-confirmation-dialog { width: min(440px, 100%); max-height: calc(100dvh - 48px); overflow: auto; padding: 28px; border: 1px solid #8d3f52; border-radius: 8px; color: #e6edf7; background: #101e31; box-shadow: 0 20px 64px rgba(0, 0, 0, .55); }
+.application-confirmation-dialog h2 { margin: 0; overflow-wrap: anywhere; font-size: 22px; }
+.application-confirmation-dialog p { margin: 12px 0 0; overflow-wrap: anywhere; word-break: break-word; color: #b3c3d8; font-size: 14px; line-height: 1.65; }
+.application-confirmation-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.application-confirmation-actions button { min-width: 84px; }
+.confirmation-cancel-button { background: #17304e; }
+.confirmation-cancel-button:hover:not(:disabled) { border-color: #66d9ef; background: #245b8d; }
+.application-exit-overlay { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(4, 10, 18, .96); }
+.application-exit-dialog { width: min(420px, 100%); max-height: calc(100dvh - 48px); overflow: auto; padding: 28px; border: 1px solid #2d7761; border-radius: 8px; color: #e6edf7; background: #101e31; box-shadow: 0 20px 64px rgba(0, 0, 0, .55); text-align: center; }
+.application-exit-mark { display: grid; place-items: center; width: 44px; height: 44px; margin: 0 auto 16px; border: 2px solid #5de3a2; border-radius: 50%; color: #5de3a2; }
+.application-exit-mark::after { content: "✓"; font: 700 24px/1 "Microsoft YaHei", sans-serif; }
+.application-exit-dialog h2 { margin: 0; font-size: 22px; }
+.application-exit-dialog p { margin: 12px 0 0; color: #b3c3d8; font-size: 14px; line-height: 1.65; }
+.application-exit-dialog.state-stopping { border-color: #8a6a2f; }
+.application-exit-dialog.state-stopping .application-exit-mark { border-color: #e9bf78; border-inline-start-color: transparent; color: transparent; animation: application-exit-spin .9s linear infinite; }
+.application-exit-dialog.state-stopping .application-exit-mark::after { content: ""; }
+.application-exit-dialog.state-warning, .application-exit-dialog.state-disconnected { border-color: #8d3f52; }
+.application-exit-dialog.state-warning .application-exit-mark, .application-exit-dialog.state-disconnected .application-exit-mark { border-color: #ffb0bd; color: #ffb0bd; }
+.application-exit-dialog.state-warning .application-exit-mark::after, .application-exit-dialog.state-disconnected .application-exit-mark::after { content: "!"; }
+.application-exit-warnings { display: grid; gap: 8px; margin: 18px 0 0; padding: 14px 16px 14px 32px; border: 1px solid #6d4650; border-radius: 6px; color: #ffd2d9; background: #291b24; text-align: left; }
+.application-exit-warnings li { overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }
+@keyframes application-exit-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .application-exit-dialog.state-stopping .application-exit-mark { animation: none; } }
+@media (max-width: 560px) { .page-shell { display: block; padding: 16px; } .panel, .panel > *, .status-card, .service-tabs, .llmtrim-section, .settings-section, .application-actions { min-width: 0; } .panel { width: 100%; padding: 26px; } .status-card { align-items: flex-start; flex-wrap: wrap; } .proxy-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .proxy-controls button { width: 100%; min-width: 0; } .proxy-controls button:last-child { grid-column: 1 / -1; } .info-grid div { display: grid; gap: 5px; } .info-grid code { text-align: left; } .service-tabs { gap: 8px; } .service-tab { min-height: 44px; min-width: 0; overflow: hidden; padding-inline: 4px; text-overflow: ellipsis; font-size: 14px; } .service-tab-placeholder { min-height: 96px; margin-top: 24px; } .setting-control, .llmtrim-install-row, .application-actions, .retry-config-grid { grid-template-columns: 1fr; } .setting-control button, .llmtrim-install-row button, .exit-button, .confirmation-confirm-button { width: 100%; } .application-confirmation-overlay, .application-exit-overlay { padding: 16px; } .application-confirmation-dialog, .application-exit-dialog { padding: 24px; } .application-confirmation-actions { display: grid; grid-template-columns: 1fr; } .application-confirmation-actions button { width: 100%; } .retry-toggle { padding-bottom: 0; } .retry-status-field { grid-column: auto; } .llmtrim-heading { align-items: flex-start; flex-direction: column; } .llmtrim-actions { width: 100%; justify-content: flex-start; } }
+@media (max-width: 560px) { .connection-status code { justify-content: flex-start; } }

@@ -1,0 +1,23 @@
+# Generated frontend and release output
+/frontend/node_modules/
+/web/dist/
+/releases/
+/assets/tray.png
+/assets/tray.ico
+
+# Local executables and runtime files
+/code-Manager.exe
+/code-Manager.exe.before-trust-wording
+/code-Manager-uninstall-check.exe
+/llmtrim-local-gateway.exe
+*.log
+
+# Local configuration may contain API keys or machine-specific paths
+/config.yaml
+/config/config.yaml
+/config/code-Manager.log
+
+# Tooling files
+npm-debug.log*
+.env
+.env.*

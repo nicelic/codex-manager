@@ -1,0 +1,46 @@
+@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+chcp 65001 >nul
+
+set "ROOT=%~dp0"
+for %%I in ("%ROOT%.") do set "ROOT=%%~fI"
+set "EXE=%ROOT%\code-Manager.exe"
+set "CODE_MANAGER_UNINSTALL_EXE=%EXE%"
+
+if /I not "%~nx0"=="uninstall.bat" goto :refuse
+if not exist "%EXE%" goto :refuse
+
+for %%F in ("go.mod" "main.go" "build.bat" "build.ps1") do if exist "%ROOT%\%%~F" goto :development
+for %%D in ("frontend" "web") do if exist "%ROOT%\%%~D\" goto :development
+
+echo Closing the matching code-Manager instance, if it is running...
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$target=[IO.Path]::GetFullPath($env:CODE_MANAGER_UNINSTALL_EXE); $requestedExit=$false; $current=Invoke-RestMethod -Uri 'http://127.0.0.1:7780/api/application/identity' -TimeoutSec 2 -ErrorAction SilentlyContinue; if($current -and $current.executable_path -and [IO.Path]::GetFullPath($current.executable_path) -ieq $target){Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:7780/api/application/exit' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null; $requestedExit=$true}; if($requestedExit){$grace=(Get-Date).AddSeconds(50); do {$left=Get-CimInstance Win32_Process -Filter \"Name='code-Manager.exe'\" -ErrorAction SilentlyContinue | Where-Object {$_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $target}; if(-not $left){break}; Start-Sleep -Milliseconds 250} while((Get-Date) -lt $grace)}; Get-CimInstance Win32_Process -Filter \"Name='code-Manager.exe'\" -ErrorAction SilentlyContinue | Where-Object {$_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $target} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop}; $limit=(Get-Date).AddSeconds(20); do {$left=Get-CimInstance Win32_Process -Filter \"Name='code-Manager.exe'\" -ErrorAction SilentlyContinue | Where-Object {$_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -ieq $target}; if(-not $left){break}; Start-Sleep -Milliseconds 250} while((Get-Date) -lt $limit); if($left){exit 1}"
+if errorlevel 1 goto :failed
+
+echo Stopping and deleting RTK, snip, llmtrim, and code-Manager settings...
+start "" /wait "%EXE%" --uninstall
+if errorlevel 1 goto :failed
+
+for %%D in ("RTK-AI" "Snip" "llmtrim" "config") do if exist "%ROOT%\%%~D\" rmdir /s /q "%ROOT%\%%~D"
+for %%D in ("RTK-AI" "Snip" "llmtrim" "config") do if exist "%ROOT%\%%~D\" goto :failed
+
+del /f /q "%EXE%" || goto :failed
+del /f /q "%~f0"
+exit /b 0
+
+:development
+echo Refusing to run: this directory contains code-Manager development files.
+echo No files were changed.
+pause
+exit /b 1
+
+:refuse
+echo Refusing to run: expected uninstall.bat and code-Manager.exe in a non-development directory.
+echo No files were changed.
+pause
+exit /b 1
+
+:failed
+echo Uninstall did not complete. The remaining package was kept for a safe retry.
+pause
+exit /b 1
