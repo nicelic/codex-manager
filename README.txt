@@ -124,12 +124,15 @@ retry_status_codes: "100-199,300-399,401-407,409-499,500-503,505-523,525-599"
   Authorization: Bearer <local_api_key>。
 - upstream_websocket_enabled：默认 true。只控制 llmtrim 未运行时的直连上游 WS 承载协商：开启时允许 H2/H3
   扩展 CONNECT 或已配置 HTTP/SOCKS5 出站代理上的 HTTP/1.1 Upgrade；关闭时不添加这些上游 WS 协商头，直接使用
-  普通上游流。它不关闭本地 HTTP/WS 监听，也不影响 llmtrim 运行时本地 WS 先交给 43117 的链路；保存后仅影响后续请求。
+  普通上游流。它不改变本地 HTTP/WS 监听能力，也不启动或停止 llmtrim daemon。页面成功保存该开关后，若代理正处于
+  “运行中”或“上游连接中”，会先停止再启动代理，关闭本程序既有的基线上游连接池并按新值重新并发预热；代理已停止或
+  上游不可用时只保存配置，等待用户下次手动启动。
 - startup_enabled：是否注册当前用户的 Windows 开机启动项。开启后，用户登录 Windows 后程序会等待
   8 秒再初始化服务；只有 llmtrim 的状态文件要求恢复运行时，才尝试恢复 llmtrim 并启动代理。
 - background_start：仅当 startup_enabled 为 true 时有效。开启后，开机启动不会自动打开浏览器管理页面；
   手动双击 EXE 仍会正常打开页面。
-- retry_enabled：自动重试总开关，默认关闭。
+- retry_enabled：自动重试总开关，默认关闭。页面成功保存该开关后，若代理正处于“运行中”或“上游连接中”，同样会先停止
+  再启动代理，使本程序的基线上游连接按新配置重建；代理已停止或上游不可用时只保存配置。
 - retry_count：同一条上游请求流中连续相同状态码的额外重试上限，范围为 0-999；`0` 或留空表示不重试。
 - retry_interval_seconds：命中状态码后的固定等待秒数，只接受非负整数；`0` 或留空时使用 500ms 最低等待。
 - retry_status_codes：可重试状态码的单值或范围列表，使用英文 `,` 分隔、英文 `-` 表示范围；保存时删除所有空白、
@@ -156,9 +159,11 @@ http://127.0.0.1:7780/v1（或 config.yaml 中的 listen_address）
 - 监听地址：保存后写入 `config\config.yaml`；点击顶部“停止代理”彻底关闭当前 HTTP 监听和全部上游连接，再点击“启动代理”即可读取新地址并重新完成握手。管理页面始终保持在 127.0.0.1:7780。
 - API Key 会在本机配置页面中明文显示，输入新的 Key 并保存即可替换。由于密钥可被本机访问
   7780 管理端口的程序读取，请勿将该页面或端口暴露到局域网/公网。
-- 自动重试开关切换后立即保存；重试次数、间隔时间和状态码在输入框失焦时自动保存，没有单独保存按钮。
-  无效次数、间隔或状态码片段会在失焦时清除并保存为空；状态码输入会自动规范化。保存请求返回期间继续编辑时，旧响应
-  不会覆盖未失焦的新输入。
+- “上游 WS 承载”和自动重试开关切换后立即保存。保存成功后，页面先读取代理状态；仅在代理运行中或连接中时，才复用
+  现有“停止代理”“启动代理”流程串行重建本程序的基线上游连接池。两个开关在该流程期间会同时禁用；停止或启动失败时，
+  已保存的新值会保留，页面显示失败状态，仍可使用顶部“启动代理”重试。代理停止或上游不可用时只保存配置，不会主动启动。
+- 重试次数、间隔时间和状态码在输入框失焦时自动保存，没有单独保存按钮，也不会触发代理重启。无效次数、间隔或状态码
+  片段会在失焦时清除并保存为空；状态码输入会自动规范化。保存请求返回期间继续编辑时，旧响应不会覆盖未失焦的新输入。
 - 页面底部的“开机启动”会创建或删除当前用户的
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\code-Manager` 启动项；“后台运行”依赖
   “开机启动”，关闭开机启动时会被自动关闭并禁用。“停止并退出”会调用与托盘退出相同的清理流程。
@@ -1694,14 +1699,18 @@ HTTP/1.1 状态轮询；当前网页会据此显示管理通道为 `ws` 或 `htt
 - 使用 json.Decoder 和 DisallowUnknownFields 拒绝未知字段。
 - 每个字段先校验，再由 updateConfigValue() 写入 config\config.yaml。
 - 使用临时文件写入后替换原文件，避免直接截断配置导致文件损坏。
+- 该接口只保存配置，不会自行停止或启动代理；管理页面在 `upstream_websocket_enabled` 或 `retry_enabled` 保存成功后，
+  会先读取 `/api/proxy` 状态，并仅在 `running` 或 `connecting` 时依次调用既有的 `/api/proxy/stop` 和
+  `/api/proxy/start`。
 - 文本值会删除 CR/LF 并去除首尾空格，避免回车或粘贴的换行进入 config.yaml。
 - listen_address 只保存配置；停止代理后再次启动时重新读取并绑定新地址。上游地址和 API Key 保存后会更新当前配置，启动代理时还会再次从文件完整重载。
 - startup_enabled 会同步更新当前用户 Windows Run 启动项；关闭时会一并关闭 background_start。
   background_start 只能在 startup_enabled 已开启时设为 true。
 - 重试字段的响应会携带规范化后的 `value`，页面据此更新失焦后的输入内容；旧版 config.yaml 缺少这四个
   字段时，读取时使用默认关闭、5 次、1 秒和默认状态码列表，不破坏旧配置。
-- upstream_websocket_enabled 是布尔即时保存项；旧版 config.yaml 缺少该字段时读取为 true。它只改变后续直连
-  上游请求是否发起 WS 承载协商，不改变本地 WS 监听、帧转发格式或 llmtrim 路由。
+- upstream_websocket_enabled 是布尔即时保存项；旧版 config.yaml 缺少该字段时读取为 true。它控制直连上游是否发起
+  WS 承载协商，不改变本地 WS 监听、帧转发格式或 llmtrim daemon 路由。页面保存成功后，若代理运行或连接中，会通过
+  既有代理控制接口停止并重新启动，以新配置重建基线上游连接池；后端设置接口本身只保存配置。
 
 5. GET /api/proxy
 
@@ -1721,7 +1730,8 @@ HTTP/1.1 状态轮询；当前网页会据此显示管理通道为 `ws` 或 `htt
 6. POST /api/proxy/start 和 POST /api/proxy/stop
 
 - 处理：gateway.proxyStart()、gateway.proxyStop()。
-- 由网页主状态卡片的“启动代理/停止代理”按钮调用。
+- 由网页主状态卡片的“启动代理/停止代理”按钮手动调用；`upstream_websocket_enabled` 或 `retry_enabled`
+  保存成功且代理为运行中或连接中时，页面也会复用这两个接口完成自动重启。
 - start 每次重新读取并校验 config\config.yaml，随后允许 /v1/* 上游转发；无论 llmtrim 状态如何，都会独立并发预热 H2/H3。
   预热完成只表示连接已建立；扩展 CONNECT 是否可用由上游 SETTINGS 与该次握手决定。如果 llmtrim 已启动，GET、HEAD、POST 和 WS Upgrade 都必须经 43117 的显式正向代理，llmtrim 或 CA
   不可用时返回错误而不回退；明确停止 llmtrim 后才恢复基线路由。stop 会彻底停止反代、关闭已有 WS/上游连接，
@@ -2119,7 +2129,8 @@ API 转发：
 
 - loadProxyStatus() / controlProxy(action)
   - GET /api/proxy，或 POST /api/proxy/start、/api/proxy/stop。
-  - 主状态卡片显示代理真实状态，并允许在不关闭管理页面的情况下启动或停止 /v1 转发。
+  - 主状态卡片显示代理真实状态，并允许在不关闭管理页面的情况下启动或停止 /v1 转发；controlProxy 返回成功或失败，
+    设置开关的自动流程只有在停止成功后才会继续启动。
 
 - loadLogStatus() / controlLogViewer(action)
   - GET /api/logs，或 POST /api/logs/show、/api/logs/hide。
@@ -2158,11 +2169,17 @@ API 转发：
 
 - updateUpstreamWebSocketEnabled(enabled)
   - PUT /api/settings/upstream_websocket_enabled。
-  - 开关即时保存；失败时恢复页面原值。它只控制后续直连上游 WS 协商，不影响本地监听和 llmtrim 路由。
+  - 开关即时保存；失败时恢复页面原值。成功保存且代理为 running 或 connecting 时，与自动重试开关共用串行停止、
+    启动流程，按新配置重建基线上游连接池；不启动或停止 llmtrim daemon。
 
 - saveRetrySetting(key, endpoint)
   - PUT /api/settings/{endpoint}。
-  - 自动保存重试开关和失焦后的重试输入，采用后端返回的规范化 value 更新对应字段。
+  - 自动保存重试开关和失焦后的重试输入，采用后端返回的规范化 value 更新对应字段；只有 retry_enabled
+    保存成功后会触发上述代理重建，retry_count、retry_interval_seconds、retry_status_codes 失焦保存不重启代理。
+
+- restartProxyForConnectionSetting(settingLabel)
+  - 保存成功后刷新代理状态；仅在 running 或 connecting 时，等待停止成功后再启动代理。
+  - 失败时保留已保存的开关值与现有代理状态，并在顶部状态提示中说明自动重启失败。
 
 - onMounted()
   - 页面加载时调用 checkHealth()、loadSettings()，随后优先建立管理页 HTTP/1.1 WebSocket 状态流。
@@ -2208,7 +2225,8 @@ config.yaml 固定在 code-Manager.exe 同级的 config 目录，由 main.go 的
 - upstream_websocket_enabled
   - 默认 true，由管理页“上游 WS 承载”开关即时保存；旧配置缺失该字段时同样按 true 读取。
   - 只影响 llmtrim 未运行时，直连上游是否添加 H2/H3 扩展 CONNECT 或出站代理 H1 Upgrade 的 WS 协商头。
-  - 关闭后本地 HTTP/WS `/v1` 监听仍支持 Upgrade，llmtrim 运行时仍先交给 43117；只有直连上游改走普通流。
+  - 关闭后本地 HTTP/WS `/v1` 监听仍支持 Upgrade，llmtrim 运行时仍先交给 43117；只有直连上游改走普通流。页面保存
+    成功后，如代理运行或连接中，会停止并重新启动代理以重建本程序基线上游连接池，不会启动或停止 llmtrim daemon。
   - 开启不表示上游一定可用：是否承载由对端 SETTINGS 和实际握手决定；仅 SETTINGS 能力缺失或 501 回落。
 
 - outbound_proxy
@@ -2230,6 +2248,7 @@ config.yaml 固定在 code-Manager.exe 同级的 config 目录，由 main.go 的
   - 共同控制上游 HTTP 状态码自动重试；任一条件使重试无效时不缓存普通 POST 请求体。
   - 计数按每条请求流和连续状态码维护，不受连接复用和其它本地客户端影响。
   - 状态码列表由 normalizeRetryStatusCodes() 统一规范化；请求体由 retryBodyCache 在内存预算内缓存，超额落盘并自动清理。
+  - 页面仅在 retry_enabled 成功保存且代理运行或连接中时重启代理；其余三个字段失焦保存只更新配置，不重启代理。
 
 
 九、构建和运行方式（Windows + VSCode）
@@ -2448,6 +2467,8 @@ build.bat 的实际步骤：
   HTTP-over-WS 与 WS-over-普通流是固定承载格式，不增加额外 Base URL、端点、JSON 包装、私有字段或新的代理协议配置。
 - 直连上游启动时会完成 H2/H3 并发预握手并读取 SETTINGS，失败后按 1 秒间隔最多重试 5 轮。每条连接最多 500 个活动流，20 秒保活，10 分钟后不再接收新流；已有 HTTP 流和 WS 不会被轮换中断。
 - upstream_websocket_enabled 默认开启且只影响直连上游 WS 协商；本地 HTTP/WS 监听始终支持，llmtrim 运行时该开关不改变先经 43117 的路由。
+  页面保存该开关或 retry_enabled 成功后，若代理正在运行或连接中，会复用停止、启动控制流程重建本程序的基线上游连接池；
+  重试次数、间隔和状态码的失焦保存不会重启代理。
   扩展 CONNECT 仅在上游 SETTINGS 宣告能力后使用；只有 SETTINGS 能力缺失或 501 才回落，429/502/503 等错误原样回传。
 - /v1/* 支持 GET、HEAD、POST 和有效的 WebSocket Upgrade；llmtrim 启动后，普通 HTTP 和 WS 都经 43117 显式正向代理、llmtrim CA 和 TLS，代理或 CA 失败时拒绝请求；明确停止 llmtrim 后才恢复基线路由。
   llmtrim 成功启动或停止会主动断开已有 `/v1` 连接，管理页面和独立 H2/H3 预热不受影响。

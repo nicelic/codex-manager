@@ -11,7 +11,7 @@ let managementSocket = null
 let managementWebSocketActive = false
 let statusPollRunning = false
 let healthRequestRunning = false
-let proxyStatusRequestRunning = false
+let proxyStatusRequest = null
 let proxyOperationToken = 0
 let proxyStartController = null
 let logStatusRequestRunning = false
@@ -121,6 +121,7 @@ const retrySaving = reactive({
 const retryEditVersion = { enabled: 0, count: 0, intervalSeconds: 0, statusCodes: 0 }
 const retrySaveVersion = { enabled: 0, count: 0, intervalSeconds: 0, statusCodes: 0 }
 const retrySaveQueue = { enabled: Promise.resolve(), count: Promise.resolve(), intervalSeconds: Promise.resolve(), statusCodes: Promise.resolve() }
+const connectionSettingRestartWorking = ref(false)
 const saving = reactive({
   listenAddress: false,
   upstreamBaseURL: false,
@@ -543,28 +544,39 @@ function stopPageActivityForExit() {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
 }
 
-async function loadProxyStatus({ silent = false } = {}) {
-  if (proxyStatusRequestRunning) return
-  proxyStatusRequestRunning = true
-  if (!silent) proxy.loading = true
-  try {
-    const response = await fetch('/api/proxy', { cache: 'no-store' })
-    const contentType = response.headers.get('content-type') || ''
-    if (!response.ok || !contentType.includes('application/json')) {
-      throw new Error('当前运行的 code-Manager 不支持代理控制，请重启新版 EXE。')
+async function loadProxyStatus({ silent = false, refresh = false } = {}) {
+  if (proxyStatusRequest) {
+    const loaded = await proxyStatusRequest.catch(() => false)
+    if (!refresh) return loaded
+  }
+  const request = (async () => {
+    if (!silent) proxy.loading = true
+    try {
+      const response = await fetch('/api/proxy', { cache: 'no-store' })
+      const contentType = response.headers.get('content-type') || ''
+      if (!response.ok || !contentType.includes('application/json')) {
+        throw new Error('当前运行的 code-Manager 不支持代理控制，请重启新版 EXE。')
+      }
+      const data = await response.json()
+      applyProxyStatus(data, { silent })
+      return true
+    } catch (error) {
+      proxyNotice.value = error.message || '读取代理状态失败'
+      return false
+    } finally {
+      if (!silent) proxy.loading = false
     }
-    const data = await response.json()
-    applyProxyStatus(data, { silent })
-  } catch (error) {
-    proxyNotice.value = error.message || '读取代理状态失败'
+  })()
+  proxyStatusRequest = request
+  try {
+    return await request
   } finally {
-    if (!silent) proxy.loading = false
-    proxyStatusRequestRunning = false
+    if (proxyStatusRequest === request) proxyStatusRequest = null
   }
 }
 
 async function controlProxy(action) {
-  if (proxy.working && action !== 'stop') return
+  if (proxy.working && action !== 'stop') return false
   const operationToken = ++proxyOperationToken
   if (action === 'stop' && proxyStartController) {
     proxyStartController.abort()
@@ -588,16 +600,24 @@ async function controlProxy(action) {
       throw new Error(responseText.trim() || '服务返回了无效响应，请重启新版 EXE。')
     }
     if (!response.ok) throw new Error(data.message || '代理操作失败')
-    if (operationToken !== proxyOperationToken) return
+    if (operationToken !== proxyOperationToken) return false
     proxy.running = Boolean(data.running)
     proxy.state = data.state || (proxy.running ? 'running' : 'stopped')
     proxy.processId = Number(data.process_id) || 0
     proxy.listenAddress = data.listen_address || ''
+    if (action === 'start' && (!proxy.running || proxy.state !== 'running')) {
+      throw new Error(data.message || '代理未能启动')
+    }
+    if (action === 'stop' && (proxy.running || proxy.state !== 'stopped')) {
+      throw new Error(data.message || '代理未能停止')
+    }
     proxyNotice.value = data.message || '代理状态已更新。'
+    return true
   } catch (error) {
-    if (operationToken !== proxyOperationToken) return
-    if (error.name === 'AbortError' && action === 'start') return
+    if (operationToken !== proxyOperationToken) return false
+    if (error.name === 'AbortError' && action === 'start') return false
     proxyNotice.value = error.message || '无法连接到 code-Manager。'
+    return false
   } finally {
     if (proxyStartController === controller) proxyStartController = null
     if (operationToken === proxyOperationToken) {
@@ -1260,10 +1280,18 @@ function normalizeRetryInputForBlur(key) {
   retryEditVersion[key]++
 }
 
-function updateRetryEnabled(enabled) {
+async function updateRetryEnabled(enabled) {
+  if (connectionSettingRestartWorking.value || retrySaving.enabled || loadingSettings.value) return
+  const previous = retry.enabled
   retry.enabled = enabled
   retryEditVersion.enabled++
-  saveRetrySetting('enabled', 'retry_enabled')
+  connectionSettingRestartWorking.value = true
+  try {
+    const saved = await saveRetrySetting('enabled', 'retry_enabled')
+    if (saved && retry.enabled !== previous) await restartProxyForConnectionSetting('自动重试')
+  } finally {
+    connectionSettingRestartWorking.value = false
+  }
 }
 
 function retrySettingValue(key) {
@@ -1276,7 +1304,7 @@ function saveRetrySetting(key, endpoint) {
   const editVersion = retryEditVersion[key]
   const value = retrySettingValue(key)
   retrySaveQueue[key] = retrySaveQueue[key]
-    .catch(() => undefined)
+    .catch(() => false)
     .then(async () => {
       retrySaving[key] = true
       try {
@@ -1293,18 +1321,21 @@ function saveRetrySetting(key, endpoint) {
           throw new Error(responseText.trim() || '保存失败')
         }
         if (!response.ok) throw new Error(data.message || '保存失败')
-        if (version !== retrySaveVersion[key] || editVersion !== retryEditVersion[key]) return
+        if (version !== retrySaveVersion[key] || editVersion !== retryEditVersion[key]) return false
         if (key === 'enabled') {
           retry.enabled = data.value === 'true'
         } else {
           retry[key] = data.value ?? ''
         }
+        return true
       } catch (error) {
         // 保留尚未失焦的新输入；下一次失焦会再次保存该字段。
+        return false
       } finally {
         if (version === retrySaveVersion[key]) retrySaving[key] = false
       }
     })
+  return retrySaveQueue[key]
 }
 
 function handleVisibilityChange() {
@@ -1353,11 +1384,12 @@ async function saveSetting(key, endpoint, value) {
 }
 
 async function updateUpstreamWebSocketEnabled(enabled) {
-  if (saving.upstreamWebSocketEnabled || loadingSettings.value) return
+  if (connectionSettingRestartWorking.value || saving.upstreamWebSocketEnabled || loadingSettings.value) return
   const previous = settings.upstreamWebSocketEnabled
   settings.upstreamWebSocketEnabled = enabled
   notices.upstreamWebSocketEnabled = ''
   saving.upstreamWebSocketEnabled = true
+  connectionSettingRestartWorking.value = true
   try {
     const response = await fetch('/api/settings/upstream_websocket_enabled', {
       method: 'PUT',
@@ -1374,12 +1406,44 @@ async function updateUpstreamWebSocketEnabled(enabled) {
     if (!response.ok) throw new Error(data.message || '保存失败')
     settings.upstreamWebSocketEnabled = data.value !== 'false'
     notices.upstreamWebSocketEnabled = data.message || '已保存。'
+    if (settings.upstreamWebSocketEnabled !== previous) await restartProxyForConnectionSetting('上游 WS 承载')
   } catch (error) {
     settings.upstreamWebSocketEnabled = previous
     notices.upstreamWebSocketEnabled = error.message || '保存失败'
   } finally {
     saving.upstreamWebSocketEnabled = false
+    connectionSettingRestartWorking.value = false
   }
+}
+
+function markConnectionSettingRestartFailure(settingLabel, fallback) {
+  const detail = String(proxyNotice.value || '').trim()
+  const reason = detail && !detail.startsWith('正在') && !detail.startsWith(`${settingLabel}配置已保存，正在`) ? detail : fallback
+  proxyNotice.value = `${settingLabel}配置已保存，但自动重启代理失败：${reason}`
+}
+
+async function restartProxyForConnectionSetting(settingLabel) {
+  const refreshed = await loadProxyStatus({ silent: true, refresh: true })
+  if (!refreshed) {
+    markConnectionSettingRestartFailure(settingLabel, '无法读取代理状态。')
+    return false
+  }
+  if (proxy.state !== 'running' && proxy.state !== 'connecting') return true
+
+  proxyNotice.value = `${settingLabel}配置已保存，正在停止代理以重建上游连接。`
+  if (!await controlProxy('stop')) {
+    markConnectionSettingRestartFailure(settingLabel, '停止代理失败。')
+    return false
+  }
+
+  proxyNotice.value = `${settingLabel}配置已保存，正在按新配置建立上游连接。`
+  if (!await controlProxy('start')) {
+    markConnectionSettingRestartFailure(settingLabel, '启动代理失败。')
+    return false
+  }
+
+  proxyNotice.value = `${settingLabel}配置已保存，代理已按新配置重新启动。`
+  return true
 }
 
 onMounted(() => {
@@ -1655,7 +1719,7 @@ onBeforeUnmount(() => {
         <div class="setting-card">
           <label class="switch-control upstream-websocket-toggle">
             <span><strong>上游 WS 承载</strong><small>只控制直连上游是否发起 WS 协商；本地 HTTP/WS 监听与 llmtrim 链路始终保持支持。</small></span>
-            <input type="checkbox" :checked="settings.upstreamWebSocketEnabled" :disabled="saving.upstreamWebSocketEnabled || loadingSettings" @change="updateUpstreamWebSocketEnabled($event.target.checked)" />
+            <input type="checkbox" :checked="settings.upstreamWebSocketEnabled" :disabled="connectionSettingRestartWorking || saving.upstreamWebSocketEnabled || loadingSettings" @change="updateUpstreamWebSocketEnabled($event.target.checked)" />
             <i aria-hidden="true"></i>
           </label>
           <p v-if="notices.upstreamWebSocketEnabled" class="notice">{{ notices.upstreamWebSocketEnabled }}</p>
@@ -1665,7 +1729,7 @@ onBeforeUnmount(() => {
           <div class="retry-config-grid">
             <label class="retry-toggle switch-control">
               <span>自动重试</span>
-              <input type="checkbox" :checked="retry.enabled" :disabled="retrySaving.enabled || loadingSettings" @change="updateRetryEnabled($event.target.checked)" />
+              <input type="checkbox" :checked="retry.enabled" :disabled="connectionSettingRestartWorking || retrySaving.enabled || loadingSettings" @change="updateRetryEnabled($event.target.checked)" />
               <i aria-hidden="true"></i>
             </label>
             <label class="retry-field" for="retry-count">
