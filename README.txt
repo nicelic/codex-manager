@@ -2252,7 +2252,7 @@ config.yaml 固定在 code-Manager.exe 同级的 config 目录，由 main.go 的
 Windows 下统一使用 npm.cmd，不要依赖 PowerShell 对 npm 的别名解析：
 
   cd C:\EXEXX\edit\frontend
-  npm.cmd install
+  npm.cmd install --no-audit
   npm.cmd run build
 
 npm.cmd run build 会把产物写入：
@@ -2260,6 +2260,8 @@ npm.cmd run build 会把产物写入：
   C:\EXEXX\edit\web\dist
 
 frontend/vite.config.js 中的 outDir 固定为 ../web/dist。
+`--no-audit` 会关闭 `npm.cmd install` 默认发起的在线漏洞审计；需要检查依赖漏洞时，
+请在 frontend 目录单独执行 `npm.cmd audit`。
 
 3. 完整构建（发布 EXE）
 
@@ -2278,7 +2280,7 @@ build.bat 的实际步骤：
 - 检查 SVG 和 Edge 是否存在。
 - 使用 Edge headless 将 297763_sort-by-icon.svg 截图为 assets/tray.png。
 - 使用 go run tools/icon-to-ico.go 生成 assets/tray.ico。
-- 进入 frontend 目录执行 npm.cmd install。
+- 进入 frontend 目录执行 npm.cmd install --no-audit，避免发布构建等待在线漏洞审计。
 - 执行 npm.cmd run build 生成 web/dist。
 - 回到根目录执行 `go build -ldflags "-H=windowsgui" -o releases\code-Manager\code-Manager.exe .`，
   生成不自动弹出控制台的正式 EXE。

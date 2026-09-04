@@ -82,7 +82,7 @@ if errorlevel 1 (
 
 echo [3/5] Installing frontend dependencies with npm.cmd...
 pushd "%ROOT%\frontend"
-call npm.cmd install
+call npm.cmd install --no-audit
 if errorlevel 1 (
     popd
     echo Build failed: npm.cmd install failed.
