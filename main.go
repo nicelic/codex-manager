@@ -131,6 +131,7 @@ type gateway struct {
 	proxyConnectionMu           sync.Mutex
 	proxyConnections            map[net.Conn]struct{}
 	llmtrimMu                   sync.Mutex
+	gortexMu                    sync.Mutex
 	retryBodyCache              *retryBodyCache
 	rtkMu                       sync.Mutex
 	application                 *application
@@ -443,6 +444,7 @@ func main() {
 	if err := initializeLLMTrimPath(configPath, &config); err != nil {
 		log.Fatal(err)
 	}
+	repairInstalledGortexPath()
 	if err := syncCodeManagerStartup(config.StartupEnabled); err != nil {
 		log.Printf("同步 code-Manager 开机启动失败: %v", err)
 	}
@@ -460,6 +462,7 @@ func main() {
 	retryCache := newRetryBodyCache(filepath.Dir(configPath))
 	retryCache.cleanupStaleFiles()
 	g := &gateway{config: config, configPath: configPath, client: client, managementAddress: managementAddress, logPath: logPath, proxyState: proxyStateStopped, retryBodyCache: retryCache}
+	startGortexWatchEnforcer()
 	mux := http.NewServeMux()
 	mux.Handle("/", frontendHandler())
 	mux.HandleFunc("/healthz", g.health)
@@ -494,6 +497,18 @@ func main() {
 	mux.HandleFunc("/api/snip/stop", g.snipStop)
 	mux.HandleFunc("/api/snip/trust", g.snipTrust)
 	mux.HandleFunc("/api/snip/uninstall", g.snipUninstall)
+	mux.HandleFunc("/api/gortex", g.gortexStatus)
+	mux.HandleFunc("/api/gortex/releases", g.gortexReleases)
+	mux.HandleFunc("/api/gortex/install", g.gortexInstall)
+	mux.HandleFunc("/api/gortex/start", g.gortexStart)
+	mux.HandleFunc("/api/gortex/stop", g.gortexStop)
+	mux.HandleFunc("/api/gortex/register", g.gortexRegister)
+	mux.HandleFunc("/api/gortex/remove", g.gortexRemove)
+	mux.HandleFunc("/api/gortex/trust", g.gortexTrust)
+	mux.HandleFunc("/api/gortex/diagnostics", g.gortexDiagnostics)
+	mux.HandleFunc("/api/gortex/track", g.gortexTrack)
+	mux.HandleFunc("/api/gortex/untrack", g.gortexUntrack)
+	mux.HandleFunc("/api/gortex/uninstall", g.gortexUninstall)
 	mux.HandleFunc("/api/application/identity", g.applicationIdentity)
 	mux.HandleFunc("/api/application/exit", g.applicationExit)
 	mux.HandleFunc("/v1/", g.managementForward)
@@ -527,6 +542,10 @@ func (app *application) onTrayReady() {
 	systray.SetOnIconDoubleClick(func() {
 		openBrowser(app.localURL)
 	})
+	systray.SetOnTaskbarActivate(func() {
+		openBrowser(app.localURL)
+	})
+	systray.ShowTaskbarIcon()
 	openPage := systray.AddMenuItem("打开网页", "在默认浏览器中打开 code-Manager")
 	systray.AddSeparator()
 	exitApp := systray.AddMenuItem("退出 code-Manager", "停止本地网关并退出")
@@ -657,6 +676,7 @@ func (app *application) shutdownManagedResources() applicationShutdownResult {
 			appendShutdownWarning(&result, "停止 llmtrim", app.gateway.stopLLMTrim(cleanupContext))
 			appendShutdownWarning(&result, "停止 RTK", app.gateway.stopRTK(cleanupContext))
 			appendShutdownWarning(&result, "停止 snip", app.gateway.stopSnip(cleanupContext))
+			appendShutdownWarning(&result, "停止 Gortex", app.gateway.stopGortex(cleanupContext))
 			app.gateway.closeHTTPClient()
 			appendShutdownWarning(&result, "关闭 code-Manager 日志窗口", app.gateway.logViewer.stop())
 		}
@@ -2124,6 +2144,7 @@ func (g *gateway) updateSetting(w http.ResponseWriter, r *http.Request) {
 // config lock. This keeps a concurrent uninstall from deleting the managed
 // config directory and then having an in-flight URL save recreate it.
 func (g *gateway) updateUpstreamBaseURL(w http.ResponseWriter, value string) {
+	value = normalizeUpstreamBaseURL(value)
 	if err := validateUpstreamBaseURL(value); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -2150,6 +2171,24 @@ func (g *gateway) currentConfig() Config {
 	g.configMu.RLock()
 	defer g.configMu.RUnlock()
 	return g.config
+}
+
+func normalizeUpstreamBaseURL(rawURL string) string {
+	value := normalizeSettingValue(rawURL)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return value
+	}
+	trimmedPath := strings.TrimRight(parsed.Path, "/")
+	if trimmedPath == parsed.Path {
+		return value
+	}
+	parsed.Path = trimmedPath
+	parsed.RawPath = ""
+	return parsed.String()
 }
 
 func normalizeSettingValue(value string) string {

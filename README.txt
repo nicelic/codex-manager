@@ -6,7 +6,7 @@ code-Manager.exe 后，它会启动本地 HTTP 服务，并自动使用 Windows 
 
 http://127.0.0.1:7780
 
-Vue 页面用于查看本地服务、修改网关配置以及控制 llmtrim daemon；它已嵌入 EXE，不需要
+Vue 页面用于查看本地服务、修改网关配置以及控制 llmtrim daemon、Gortex；它已嵌入 EXE，不需要
 WebView2，也不需要单独启动前端开发服务器。
 
 程序使用 Windows 单实例互斥锁：若 7780 尚未监听，程序启动网关、显示托盘图标并打开浏览器；
@@ -105,7 +105,7 @@ retry_status_codes: "100-199,300-399,401-407,409-499,500-503,505-523,525-599"
   包围的 IPv6 根地址，例如 `https://example.com:32400`、`https://203.0.113.9`、
   `https://[2001:db8::9]:32400/v1`。省略端口时使用 443。字面 IPv4/IPv6 直接连接且不做 DNS；域名才
   DNS 解析。IP 连接不发送 SNI，证书必须含匹配的 IP SAN；域名使用标准 SNI 与 DNS 名称校验。网关不会
-  强制补充或删除 `/v1`，会保留用户填写的路径格式并在其后追加接口路径。每次保存该字段时，code-Manager
+  强制补充或删除 `/v1`，会保留用户填写的路径格式并在其后追加接口路径；保存时只会去除路径末尾的 `/`。每次保存该字段时，code-Manager
   会从 URL 只提取 `Hostname()`（不含 scheme、路径、端口或 IPv6 方括号），完全覆盖
   `%USERPROFILE%\\.config\\llmtrim\\config.toml` 为受管的 `extra_hosts = ["<主机>"]`；不会写入 API Key。
   保存不会自动重启 daemon，必须在页面先点击“停止”、再点击“启动”，llmtrim 才会读取新主机并重建该主机的 CA。
@@ -151,10 +151,10 @@ http://127.0.0.1:7780/v1（或 config.yaml 中的 listen_address）
 --------
 
 首页的“网关配置”提供监听地址、上游 Base URL、上游 API Key 和自动重试设置。
-每次保存都会先删除换行和首尾空格，再校验并立即写入 `config\config.yaml`；按 Enter 不会提交，也不会把
+每次保存都会先删除换行和首尾空格，再校验并立即写入 `config\config.yaml`；上游 Base URL 还会去除有效路径末尾的 `/`；按 Enter 不会提交，也不会把
 回车保存到界面状态或配置。
 
-- 上游 Base URL 和 API Key：保存后，后续转发请求立即使用新值；保存 Base URL 还会同步受管的
+- 上游 Base URL 和 API Key：保存时自动去除首尾空格；Base URL 另外去除有效路径末尾的 `/`，保存后后续转发请求立即使用规范化后的新值；保存 Base URL 还会同步受管的
   `extra_hosts`，llmtrim 需先停止再启动才读取新主机。
 - 监听地址：保存后写入 `config\config.yaml`；点击顶部“停止代理”彻底关闭当前 HTTP 监听和全部上游连接，再点击“启动代理”即可读取新地址并重新完成握手。管理页面始终保持在 127.0.0.1:7780。
 - API Key 会在本机配置页面中明文显示，输入新的 Key 并保存即可替换。由于密钥可被本机访问
@@ -172,7 +172,7 @@ http://127.0.0.1:7780/v1（或 config.yaml 中的 listen_address）
 RTK、snip 与 llmtrim 管理
 -------------------------
 
-页面页签顺序为 `RTK | snip | llmtrim`。llmtrim 独立运行；RTK 和 snip 为互斥的命令输出处理方式，
+页面页签顺序为 `RTK | snip | llmtrim | Gortex`。llmtrim 与 Gortex 独立运行；RTK 和 snip 为互斥的命令输出处理方式，
 RTK 处于“已激活”或 snip 处于“运行中”时，另一方的版本加载、安装、启动和删除控件都会禁用，后端接口也会返回
 HTTP 409，不能绕过网页同时激活两者。
 
@@ -1327,8 +1327,10 @@ Test-NetConnection 127.0.0.1 -Port 43117
 启动与停止
 ----------
 
-直接双击 code-Manager.exe 即可启动，程序会自动打开浏览器页面，并在 Windows 通知区域
-显示由 297763_sort-by-icon.svg 生成的 code-Manager 图标。
+直接双击 code-Manager.exe 即可启动，程序会自动打开浏览器页面，并在 Windows 底部任务栏和通知区域
+显示由 297763_sort-by-icon.svg 生成的 code-Manager 图标。任务栏图标只在程序运行期间显示，点击它会再次打开管理页面；
+退出 code-Manager 后任务栏和托盘图标都会消失。右键 EXE 发送到桌面创建快捷方式时，快捷方式直接读取 EXE 内嵌的正式图标资源，
+不需要旁边存在 `.ico` 文件。
 
 右键单击托盘图标可以：
 
@@ -1357,7 +1359,7 @@ llmtrim 页签的状态徽章前提供独立的“显示日志/关闭日志”�
 关闭浏览器页面不会停止程序。
 
 开启“开机启动”后，Windows 在用户登录后调用 `code-Manager.exe --startup`。程序等待 8 秒，
-后台运行关闭时先打开网页面板；只有 llmtrim 状态文件要求恢复且当前配置路径的 llmtrim.exe 已存在、
+后台运行关闭时先打开网页面板；任务栏和通知区域图标仍会显示；只有 llmtrim 状态文件要求恢复且当前配置路径的 llmtrim.exe 已存在、
 43117 端口已监听时，才认定 llmtrim 恢复成功并启动代理。恢复失败时不会启动代理，程序仍保留托盘和
 管理页面供手动处理。
 
@@ -1376,12 +1378,13 @@ http://127.0.0.1:7780/healthz
   C:\EXEXX\edit\build.bat
 
 `build.bat` 全程在 CMD 中执行：使用 npm.cmd 安装前端依赖并构建 Vue 页面，再使用 Windows Edge
-的无界面渲染将 297763_sort-by-icon.svg 转为嵌入 EXE 的 Windows 托盘图标。最终只生成：
+的无界面渲染将 297763_sort-by-icon.svg 转为多分辨率 ICO，再生成 Windows PE 图标资源并嵌入 EXE。最终只生成：
 
   C:\EXEXX\edit\releases\code-Manager\code-Manager.exe
 
 发布目录不复制 Go/Vue 源码、web/dist、图标源文件、assets 或前端 node_modules；运行所需的前端页面、
-托盘 ICO、完整 RTK 命令参考、Codex 常驻规则和 `uninstall.bat` 模板都会编入这一个 EXE。首次正常运行时，EXE 会在
+托盘 ICO、EXE 图标资源、完整 RTK 命令参考、Codex 常驻规则和 `uninstall.bat` 模板都会编入这一个 EXE。运行时托盘图标从内存
+创建，不会释放 `.ico`、`.png` 或 `systray_temp_icon_*` 文件。首次正常运行时，EXE 会在
 同级目录释放 `uninstall.bat`；该脚本用于停止并卸载本程序及其自身创建的运行目录，完成后会删除自己。它会
 检查同级 `code-Manager.exe` 和开发目录特征，拒绝在包含源码的开发目录中执行，不需要 `.release` 标记文件。
 
@@ -1459,12 +1462,18 @@ WS 二进制帧，后者以普通双向流承载原始 WS 帧。它们不引入 
   code-Manager.exe
 
   297763_sort-by-icon.svg
-    --Edge headless 截图-->
-  assets/tray.png
+    --Edge headless 生成 16/32/48/64/128/256 PNG-->
+  assets/tray-*.png
     --go run tools/icon-to-ico.go-->
   assets/tray.ico
-    --go:embed trayIcon-->
-  code-Manager.exe
+    --go run tools/icon-to-syso.go-->
+  code-Manager-icon.syso
+    --Go linker 生成 PE RT_GROUP_ICON/RT_ICON-->
+  code-Manager.exe（桌面/快捷方式图标）
+
+  assets/tray.ico
+    --go:embed trayIcon + Windows 内存图标 API-->
+  code-Manager.exe（托盘图标和任务栏图标）
 
   assets/RTK-Codex-commands.md
     --go:embed rtkCodexCommands-->
@@ -1485,6 +1494,7 @@ C:\EXEXX\edit\
 |-- RTK-部署总结.md                    RTK 通用开发说明：四平台接入、PATH、状态账本与验收边界
 |-- SNIP-部署总结.md                   snip 原生 Hook、Codex 信任、状态账本、验收与目录差异
 |-- main.go                            Go 主程序、HTTP 服务、配置和请求转发
+|-- icon_resource_test.go              嵌入 ICO 目录和图像数据边界聚焦测试
 |-- application_exit_test.go           退出期间的管理接口闸门聚焦测试
 |-- websocket.go                       WS Upgrade、H2/H3 扩展 CONNECT、固定双向承载、协商/压缩校验和连接清理
 |-- websocket_test.go                  WS Upgrade、帧直通、真实 H2/H3 SETTINGS、501 回退、错误透传、协商/压缩、开关和连接清理聚焦测试
@@ -1533,9 +1543,10 @@ C:\EXEXX\edit\
 |-- go.sum                             Go 依赖校验和
 |-- third_party\systray\              固定版本的 systray Windows 实现；支持托盘双击回调
 |   |-- systray.go                     托盘菜单基础 API 和图标双击回调
-|   |-- systray_windows.go             Windows 托盘消息处理（右键菜单、左键双击）
+|   |-- systray_windows.go             Windows 托盘消息、内存图标加载和任务栏按钮
 |-- build.bat                          双击执行的 CMD 构建入口，含 http2legacy H2 WS 支持并生成 releases\code-Manager\code-Manager.exe
 |-- build.ps1                          旧版 PowerShell 构建编排脚本；发布时不使用
+|-- tools\icon-to-syso.go              将 ICO 转为 Go linker 使用的 Windows PE 图标资源
 |-- uninstall.bat.template             内嵌到 EXE 的卸载脚本模板，首次运行后释放到 EXE 同级
 |-- uninstall_windows.go               EXE 运行期卸载脚本释放、--uninstall 清理和开发目录保护
 |-- uninstall_windows_test.go          发布目录保护与运行期卸载脚本聚焦测试
@@ -1570,12 +1581,14 @@ C:\EXEXX\edit\
 |   |-- RTK-Codex-commands.md          RTK 完整命令参考；保留逐条语法、rewrite、fallback 和平台陷阱
 |   |-- RTK-Codex-agent-instructions.md 不超过 32 KiB 的 Codex 高密度命令决策表；完整参考仅供审计和罕见参数复核
 |   |-- RTK-Claude-agent-instructions.md Claude Code 的 RTK 提示词；与 Claude Hook 共同构成完整接入
-|   |-- tray.png                        Edge headless 生成的 PNG
-|   |-- tray.ico                        icon-to-ico.go 生成的 ICO
+|   |-- tray.png                        256 像素兼容 PNG
+|   |-- tray-*.png                      Edge headless 生成的多分辨率 PNG
+|   |-- tray.ico                        icon-to-ico.go 生成的多分辨率 ICO
 |
 |-- tools/
-|   |-- render-tray-icon.html           供 Edge 截图的 256x256 页面
-|   |-- icon-to-ico.go                  PNG 到 ICO 的最小转换工具
+|   |-- render-tray-icon.html           供 Edge 截图的可变尺寸图标页面
+|   |-- icon-to-ico.go                  多 PNG 到多分辨率 ICO 的转换工具
+|   |-- icon-to-syso.go                 ICO 到 Windows PE 图标资源的转换工具
 |
 |-- code-Manager.exe                    根目录历史/本地构建产物，非发布目录内容
 |-- code-Manager-test.exe               临时/测试构建产物，不是源码
@@ -1584,8 +1597,9 @@ C:\EXEXX\edit\
 源码和产物的边界：
 
 - 修改页面时只改 frontend/src，不直接改 web/dist。
-- 修改托盘图标时优先改 297763_sort-by-icon.svg，不直接改 tray.png/tray.ico。
-- web/dist、assets/tray.png、assets/tray.ico 会在构建时覆盖生成。
+- 修改托盘图标时优先改 297763_sort-by-icon.svg，不直接改 tray.png、tray-*.png 或 tray.ico。
+- web/dist、assets/tray.png、assets/tray-*.png、assets/tray.ico 和根目录 `code-Manager-icon.syso` 会在构建时覆盖生成；
+  `.syso` 只用于链接，发布目录不会携带这些文件。
 - assets 中的两份 RTK Markdown 是源码和嵌入资源，不是构建产物；完整参考不得删减或替换为专属常驻规则。
 - code-Manager.exe 是构建输出，不在 EXE 内直接修改代码。
 
@@ -2115,7 +2129,7 @@ API 转发：
   “已停止并退出”。若连接在结果返回前断开，则进入同样不可操作的 `disconnected` 状态，避免把已送达的退出请求误恢复为可编辑页面。
 - 启动或停止期间，轮询一旦确认目标状态，会立即结束“处理中”显示，不等待控制命令响应。
 - 控制流程使用独立操作状态机：按钮状态以 `/api/llmtrim` 返回的真实监听状态为准，命令响应延迟、超时或乱序返回不会覆盖已确认状态。
-- settings.listenAddress / upstreamBaseURL / upstreamWebSocketEnabled：网关配置输入值和直连 WS 承载开关。
+- settings.listenAddress / upstreamBaseURL / upstreamWebSocketEnabled：网关配置输入值和直连 WS 承载开关；保存监听地址、Base URL 时去除首尾空格，Base URL 还会去除有效路径末尾的 `/`，成功响应的规范化值会回填输入框。
 - saving.*：配置保存按钮和上游 WS 承载开关各自的忙碌状态。
 - notices.*：配置保存区域与上游 WS 承载开关的提示信息。
 - retry.enabled / count / intervalSeconds / statusCodes：自动重试配置；开关立即保存，其余字段失焦保存。
@@ -2165,7 +2179,7 @@ API 转发：
 
 - saveSetting(key, endpoint, value)
   - PUT /api/settings/{endpoint}。
-  - 保存 listen_address、upstream_base_url 或 upstream_api_key。
+  - 保存 listen_address、upstream_base_url 或 upstream_api_key；点击保存时去除首尾空格，Base URL 额外去除有效路径末尾的 `/`，并用服务端返回的规范化值回填页面。
 
 - updateUpstreamWebSocketEnabled(enabled)
   - PUT /api/settings/upstream_websocket_enabled。
@@ -2297,8 +2311,9 @@ frontend/vite.config.js 中的 outDir 固定为 ../web/dist。
 build.bat 的实际步骤：
 
 - 检查 SVG 和 Edge 是否存在。
-- 使用 Edge headless 将 297763_sort-by-icon.svg 截图为 assets/tray.png。
-- 使用 go run tools/icon-to-ico.go 生成 assets/tray.ico。
+- 使用 Edge headless 将 297763_sort-by-icon.svg 截图为 assets/tray-16.png、tray-32.png、tray-48.png、tray-64.png、tray-128.png 和 tray-256.png，
+  并同步生成兼容路径 assets/tray.png。
+- 使用 go run tools/icon-to-ico.go 生成多分辨率 assets/tray.ico，再使用 go run tools/icon-to-syso.go 生成根目录临时资源对象。
 - 进入 frontend 目录执行 npm.cmd install --no-audit，避免发布构建等待在线漏洞审计。
 - 执行 npm.cmd run build 生成 web/dist。
 - 回到根目录执行 `go build -ldflags "-H=windowsgui" -o releases\code-Manager\code-Manager.exe .`，
@@ -2317,7 +2332,8 @@ build.bat 的实际步骤：
 
 - `frontend/src` 是 Vue + Vite 前端源码。
 - `web/dist` 是 Vite 编译产物，由构建命令生成，不手工修改。
-- `main.go` 使用 `//go:embed web/dist` 将页面嵌入 EXE，同时嵌入 `assets/tray.ico`；
+- `main.go` 使用 `//go:embed web/dist` 将页面嵌入 EXE，同时嵌入 `assets/tray.ico`；Windows systray 从 ICO 字节直接创建图标句柄，
+  不再写入 `%TEMP%\systray_temp_icon_*`。根目录 `.syso` 由 Go linker 合并为 EXE 的 `RT_GROUP_ICON`/`RT_ICON` 资源，供 Explorer、桌面快捷方式和任务栏使用；
   `rtk_codex_commands.go` 使用 `//go:embed assets/RTK-Codex-commands.md` 和
   `//go:embed assets/RTK-Codex-agent-instructions.md` 将完整参考与专属常驻规则嵌入 EXE；
   `uninstall.bat.template` 也会嵌入 EXE，首次正常运行时才释放到同级目录。
@@ -2474,9 +2490,22 @@ build.bat 的实际步骤：
   llmtrim 成功启动或停止会主动断开已有 `/v1` 连接，管理页面和独立 H2/H3 预热不受影响。
 - /healthz 只表示本地 HTTP 服务正常，不代表上游 API 或 llmtrim 一定正常。
 - 前端页面是单页控制台，不负责托盘生命周期；关闭页面不会停止后台进程。
-- web/dist、assets/tray.png、assets/tray.ico 都是构建产物，源文件分别是 frontend/src、
-  297763_sort-by-icon.svg 和 tools/icon-to-ico.go。
+- web/dist、assets/tray.png、assets/tray-*.png、assets/tray.ico 和根目录 `code-Manager-icon.syso` 都是构建产物，源文件分别是 frontend/src、
+  297763_sort-by-icon.svg、tools/icon-to-ico.go 和 tools/icon-to-syso.go。
 - 项目测试文件位于根目录并按功能聚焦；`websocket_test.go` 覆盖 Upgrade、帧直通、真实 H2/H3 SETTINGS 下的扩展 CONNECT 能力判定、501 精准回落、429/502/503 透传、压缩/协商校验、HTTP-over-WS、HTTP/SOCKS5 链路、开关和 llmtrim CONNECT/TLS/拒绝透传。验证以聚焦 Go 测试、`go build` 和 `go test` 的 `-tags http2legacy`、npm.cmd run build 和本机运行链路为主，不要随意执行耗时很长的全量测试。
+
+Gortex 管理补充
+----------------
+
+- Gortex 的启动、停止、MCP 注册、track 和 untrack 只允许使用 code-Manager.exe 同级 `Gortex\\bin\\gortex.exe`；PATH 中已有的外部版本仅用于状态检测，普通管理操作不会控制它们。卸载是例外：为确保删除完整，会按精确进程名清理所有 `gortex.exe`。
+- Gortex 状态页会定期通过 `gortex.exe version` 查询版本，并通过受管 `Gortex\\run\\daemon.sock` 与 `daemon.pid` 确认真实 daemon；同路径的 `gortex.exe mcp` MCP stdio 客户端不计入 daemon 运行状态。Windows 下这些查询和 daemon 操作均使用隐藏子进程，不应周期性弹出控制台窗口；若仍看到闪窗，应确认运行的是重新构建后的 EXE，而不是旧发布目录中的版本。
+- Gortex 的配置、数据、索引、缓存、daemon 运行文件和日志均通过受管环境变量归档到同级 `Gortex\\` 目录；卸载只删除该受管目录及本程序拥有的 MCP/项目记录，不删除其他 MCP 或项目文件。
+- “启动 daemon”“停止 daemon”只负责受管 Gortex daemon 的真实进程生命周期，不会隐式注册或移除 MCP。Codex 等宿主启动的 `gortex.exe mcp` 不属于 daemon 状态；daemon 被 MCP 调用按需重新启动后，管理页的 1 秒级 WebSocket 状态快照会自动显示运行中。
+- “注册 MCP”与“移除 MCP”分别扫描 Codex、Claude Code、Cursor、GitHub Copilot CLI 的用户级配置。注册会修复仍明显指向 `gortex mcp` 但缺少受管环境变量的残缺条目；移除只删除本程序账本拥有或仍明显属于 Gortex 的条目，用户改写成其它命令的配置会保留并在页面提示。
+- Gortex MCP 客户端可以连接或按自身配置启动 daemon，但 `track` 建图需要 daemon 控制接口。页面 track 会在 daemon 已停止时按需启动受管 daemon，然后调用 `gortex track <path> --wait --wait-timeout 30m` 等待索引稳定；因此大型项目可能需要较长时间，失败时输入框内容保留，成功后输入框清空且已完成目录显示在下方。
+- track 项目录入只写入同级 `Gortex\\config\\projects.json`；取消 track 不删除项目文件。track/untrack 的命令超时独立于版本查询，分别允许较长索引/清理操作，避免统一的 30 秒超时导致 `context deadline exceeded`。
+- Windows 安装不再执行远端 `install.ps1`，而是直接读取 GitHub Release API，下载 `gortex_windows_amd64.zip` 和 `checksums.txt`，校验 SHA-256 后安全解压到受管 `Gortex\\bin`；安装只写入 Gortex 文件，不启动 daemon，也不修改 MCP，因此不会再把安装后的 `daemon status` 非零误报为网络或下载失败。
+- 安装进行中会锁定 Gortex 的版本、安装、daemon、MCP、track 和卸载操作；状态未确认或 daemon 运行中时，卸载按钮保持禁用。daemon 停止确认后，即使 Codex 的 `gortex.exe mcp` 仍在运行，卸载按钮也会启用；卸载确认后先移除受管 MCP 配置、停止受管 daemon，再按精确进程名检查并结束所有路径下的 `gortex.exe`（包括外部启动的 MCP/daemon），最后删除 Gortex 目录。该操作可能影响用户手工安装的其他 Gortex 实例，因此只在用户明确确认卸载时执行。
 
 
 十四、变更后的交付检查清单
@@ -2505,17 +2534,34 @@ GitHub 仓库：`nicelic/codex-manager`。
   `releases\code-Manager\code-Manager.exe`。
 - 先提交并推送当前源码、文档和忽略规则；不要提交本机配置、日志、`node_modules`、`web/dist`、
   `releases` 目录或其他生成的 EXE。
-- GitHub Release 使用对应的语义化版本标签，例如 `v0.0.1`。发布说明可以保持简短，只说明该版本
+- GitHub Release 使用对应的语义化版本标签，例如 `v0.1.0`。发布说明可以保持简短，只说明该版本
   已发布并提供 Windows 可执行文件，无需根据历史提交自动生成变更日志。
 
-首次发布 v0.0.1：
+首次发布 v0.1.0：
 
 1. 确认工作区是准备发布的当前代码。
 2. 在项目根目录运行 `build.bat`，等待它生成最新的
    `releases\code-Manager\code-Manager.exe`。
 3. 检查构建成功且 EXE 存在后，提交并推送当前源码到 GitHub。
-4. 创建标签和 Release：`v0.0.1`。
+4. 创建标签和 Release：`v0.1.0`。
 5. 将 `releases\code-Manager\code-Manager.exe` 上传为该 Release 的附件。
 
 后续发布版本时重复相同流程：先运行 `build.bat` 生成最新 EXE，再创建该版本的 GitHub Release 并上传
 新生成的 EXE；不需要先获取历史版本代码变化。
+
+
+十六、Gortex 四平台接入补充
+---------------------------
+
+- Gortex 安装使用 GitHub Release 的 Windows x64 ZIP 和 `checksums.txt`，解压后只保留受管目录中的
+  `gortex.exe`，并自动配置用户 PATH 与系统 PATH。安装不会自动启动 daemon，也不会自动注册 MCP。
+- 点击“注册 MCP”时，程序按实际检测到的 Codex、Claude Code、Cursor、GitHub Copilot CLI 配置写入
+  `gortex` MCP，同时将内嵌 `assets\gortex提示词.md` 的 UTF-8 正文由代码自动包裹受管标记后写入各平台工作流提示词，并配置生命周期 Hook；提示词源文件不含受管标记和版本号，可以只维护正文；归属账本记录本程序写入的文件，
+  “移除 MCP”只清理这些归属内容，不删除其他 MCP。Cursor 没有官方 Gortex 生命周期 Hook，因此采用
+  每个 track 项目下的 `.cursor\rules\gortex-workflow.mdc` 项目规则。
+- Codex Hook 需要在 Codex 的 `/hooks` 页面人工审核信任。Gortex 页面提供独立的“打开信任审核”入口；
+  该信任流程与 Snip 的 Hook 记录分开处理。
+- “验证 doctor/status”会执行受管 `gortex.exe doctor --json` 和 `gortex.exe status`，页面分别展示
+  MCP、Hook、索引、daemon 以及全部 tracked repositories 的诊断输出。
+- 页面点击 track 前会去除项目绝对路径首尾空格，再提交给后端；track 成功后会确保项目 `.gortex.yaml` 中 `watch.enabled: true`，缺失时写入 `debounce_ms: 5000`；
+  后台每 5 秒检查本地账本和同一 daemon 可见的外部 tracked 项目，发现 watcher 被关闭会自动恢复。

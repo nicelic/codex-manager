@@ -116,6 +116,9 @@ func cleanupManagedToolsAfterExit(ctx context.Context) error {
 	if err := cleaner.stopSnip(ctx); err != nil {
 		failures = append(failures, "snip: "+err.Error())
 	}
+	if err := cleaner.stopGortex(ctx); err != nil {
+		failures = append(failures, "Gortex: "+err.Error())
+	}
 	if len(failures) > 0 {
 		return errors.New(strings.Join(failures, "；"))
 	}

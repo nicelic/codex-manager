@@ -1,5 +1,5 @@
+//go:build !windows
 // +build !windows
-// go:build !windows
 
 package systray
 
@@ -28,6 +28,9 @@ func quit() {
 func SetIcon(iconBytes []byte) {
 	cstr := (*C.char)(unsafe.Pointer(&iconBytes[0]))
 	C.setIcon(cstr, (C.int)(len(iconBytes)), false)
+}
+
+func showTaskbarIcon() {
 }
 
 // SetTitle sets the systray title, only available on Mac and Linux.

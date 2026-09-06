@@ -5,10 +5,9 @@ package systray
 
 import (
 	"crypto/md5"
+	"encoding/binary"
 	"encoding/hex"
-	"io/ioutil"
-	"os"
-	"path/filepath"
+	"fmt"
 	"sort"
 	"sync"
 	"syscall"
@@ -32,36 +31,36 @@ var (
 	s32              = windows.NewLazySystemDLL("Shell32.dll")
 	pShellNotifyIcon = s32.NewProc("Shell_NotifyIconW")
 
-	u32                    = windows.NewLazySystemDLL("User32.dll")
-	pCreateMenu            = u32.NewProc("CreateMenu")
-	pCreatePopupMenu       = u32.NewProc("CreatePopupMenu")
-	pCreateWindowEx        = u32.NewProc("CreateWindowExW")
-	pDefWindowProc         = u32.NewProc("DefWindowProcW")
-	pRemoveMenu            = u32.NewProc("RemoveMenu")
-	pDestroyWindow         = u32.NewProc("DestroyWindow")
-	pDispatchMessage       = u32.NewProc("DispatchMessageW")
-	pDrawIconEx            = u32.NewProc("DrawIconEx")
-	pGetCursorPos          = u32.NewProc("GetCursorPos")
-	pGetDC                 = u32.NewProc("GetDC")
-	pGetMessage            = u32.NewProc("GetMessageW")
-	pGetSystemMetrics      = u32.NewProc("GetSystemMetrics")
-	pInsertMenuItem        = u32.NewProc("InsertMenuItemW")
-	pLoadCursor            = u32.NewProc("LoadCursorW")
-	pLoadIcon              = u32.NewProc("LoadIconW")
-	pLoadImage             = u32.NewProc("LoadImageW")
-	pPostMessage           = u32.NewProc("PostMessageW")
-	pPostQuitMessage       = u32.NewProc("PostQuitMessage")
-	pRegisterClass         = u32.NewProc("RegisterClassExW")
-	pRegisterWindowMessage = u32.NewProc("RegisterWindowMessageW")
-	pReleaseDC             = u32.NewProc("ReleaseDC")
-	pSetForegroundWindow   = u32.NewProc("SetForegroundWindow")
-	pSetMenuInfo           = u32.NewProc("SetMenuInfo")
-	pSetMenuItemInfo       = u32.NewProc("SetMenuItemInfoW")
-	pShowWindow            = u32.NewProc("ShowWindow")
-	pTrackPopupMenu        = u32.NewProc("TrackPopupMenu")
-	pTranslateMessage      = u32.NewProc("TranslateMessage")
-	pUnregisterClass       = u32.NewProc("UnregisterClassW")
-	pUpdateWindow          = u32.NewProc("UpdateWindow")
+	u32                       = windows.NewLazySystemDLL("User32.dll")
+	pCreateMenu               = u32.NewProc("CreateMenu")
+	pCreatePopupMenu          = u32.NewProc("CreatePopupMenu")
+	pCreateWindowEx           = u32.NewProc("CreateWindowExW")
+	pCreateIconFromResourceEx = u32.NewProc("CreateIconFromResourceEx")
+	pDefWindowProc            = u32.NewProc("DefWindowProcW")
+	pRemoveMenu               = u32.NewProc("RemoveMenu")
+	pDestroyWindow            = u32.NewProc("DestroyWindow")
+	pDispatchMessage          = u32.NewProc("DispatchMessageW")
+	pDrawIconEx               = u32.NewProc("DrawIconEx")
+	pGetCursorPos             = u32.NewProc("GetCursorPos")
+	pGetDC                    = u32.NewProc("GetDC")
+	pGetMessage               = u32.NewProc("GetMessageW")
+	pGetSystemMetrics         = u32.NewProc("GetSystemMetrics")
+	pInsertMenuItem           = u32.NewProc("InsertMenuItemW")
+	pLoadCursor               = u32.NewProc("LoadCursorW")
+	pLoadIcon                 = u32.NewProc("LoadIconW")
+	pPostMessage              = u32.NewProc("PostMessageW")
+	pPostQuitMessage          = u32.NewProc("PostQuitMessage")
+	pRegisterClass            = u32.NewProc("RegisterClassExW")
+	pRegisterWindowMessage    = u32.NewProc("RegisterWindowMessageW")
+	pReleaseDC                = u32.NewProc("ReleaseDC")
+	pSetForegroundWindow      = u32.NewProc("SetForegroundWindow")
+	pSetMenuInfo              = u32.NewProc("SetMenuInfo")
+	pSetMenuItemInfo          = u32.NewProc("SetMenuItemInfoW")
+	pShowWindow               = u32.NewProc("ShowWindow")
+	pTrackPopupMenu           = u32.NewProc("TrackPopupMenu")
+	pTranslateMessage         = u32.NewProc("TranslateMessage")
+	pUnregisterClass          = u32.NewProc("UnregisterClassW")
+	pUpdateWindow             = u32.NewProc("UpdateWindow")
 )
 
 // Contains window class information.
@@ -178,7 +177,8 @@ type winTray struct {
 	instance,
 	icon,
 	cursor,
-	window windows.Handle
+	window,
+	taskbarWindow windows.Handle
 
 	loadedImages   map[string]windows.Handle
 	muLoadedImages sync.RWMutex
@@ -202,17 +202,24 @@ type winTray struct {
 	wcex  *wndClassEx
 
 	wmSystrayMessage,
-	wmTaskbarCreated uint32
+	wmTaskbarCreated,
+	wmShowTaskbar uint32
 }
 
-// Loads an image from file and shows it in tray.
+// Loads an image from memory and shows it in tray.
 // Shell_NotifyIcon: https://msdn.microsoft.com/en-us/library/windows/desktop/bb762159(v=vs.85).aspx
-func (t *winTray) setIcon(src string) error {
+func (t *winTray) setIcon(iconBytes []byte) error {
 	const NIF_ICON = 0x00000002
 
-	h, err := t.loadIconFrom(src)
+	h, err := t.loadIconFromBytes(iconBytes)
 	if err != nil {
-		return err
+		// The executable resource is the canonical fallback for the main tray icon.
+		// This keeps the tray functional even on Windows versions that reject a
+		// compressed PNG payload passed to CreateIconFromResourceEx.
+		h = t.icon
+		if h == 0 {
+			return err
+		}
 	}
 
 	t.muNID.Lock()
@@ -252,11 +259,28 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 		WM_LBUTTONUP     = 0x0202
 		WM_LBUTTONDBLCLK = 0x0203
 		WM_COMMAND       = 0x0111
+		WM_ACTIVATE      = 0x0006
 		WM_ENDSESSION    = 0x0016
 		WM_CLOSE         = 0x0010
 		WM_DESTROY       = 0x0002
+		WA_INACTIVE      = 0
+		SW_MINIMIZE      = 6
+		SC_RESTORE       = 0xF120
 	)
 	switch message {
+	case t.wmShowTaskbar:
+		t.showTaskbarWindow()
+	case WM_ACTIVATE:
+		if hWnd == t.taskbarWindow && uint16(wParam) != WA_INACTIVE {
+			taskbarIconActivated()
+			pShowWindow.Call(uintptr(t.taskbarWindow), SW_MINIMIZE)
+		}
+	case 0x0112: // WM_SYSCOMMAND
+		if hWnd == t.taskbarWindow && (wParam&0xFFF0) == SC_RESTORE {
+			taskbarIconActivated()
+			pShowWindow.Call(uintptr(t.taskbarWindow), SW_MINIMIZE)
+			return 0
+		}
 	case WM_COMMAND:
 		menuItemId := int32(wParam)
 		// https://docs.microsoft.com/en-us/windows/win32/menurc/wm-command#menus
@@ -264,13 +288,27 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 			systrayMenuItemSelected(uint32(wParam))
 		}
 	case WM_CLOSE:
+		if hWnd == t.taskbarWindow {
+			pDestroyWindow.Call(uintptr(t.taskbarWindow))
+			return 0
+		}
+		if t.taskbarWindow != 0 {
+			pDestroyWindow.Call(uintptr(t.taskbarWindow))
+		}
 		pDestroyWindow.Call(uintptr(t.window))
 		t.wcex.unregister()
 	case WM_DESTROY:
+		if hWnd == t.taskbarWindow {
+			t.taskbarWindow = 0
+			return 0
+		}
 		// same as WM_ENDSESSION, but throws 0 exit code after all
 		defer pPostQuitMessage.Call(uintptr(int32(0)))
 		fallthrough
 	case WM_ENDSESSION:
+		if hWnd == t.taskbarWindow {
+			return 0
+		}
 		t.muNID.Lock()
 		if t.nid != nil {
 			t.nid.delete()
@@ -305,6 +343,7 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 
 func (t *winTray) initInstance() error {
 	const IDI_APPLICATION = 32512
+	const applicationIconResourceID = 1
 	const IDC_ARROW = 32512 // Standard arrow
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/ms633548(v=vs.85).aspx
 	const SW_HIDE = 0
@@ -337,6 +376,7 @@ func (t *winTray) initInstance() error {
 	)
 
 	t.wmSystrayMessage = WM_USER + 1
+	t.wmShowTaskbar = WM_USER + 2
 	t.visibleItems = make(map[uint32][]uint32)
 	t.menus = make(map[uint32]windows.Handle)
 	t.menuOf = make(map[uint32]windows.Handle)
@@ -358,7 +398,10 @@ func (t *winTray) initInstance() error {
 	t.instance = windows.Handle(instanceHandle)
 
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/ms648072(v=vs.85).aspx
-	iconHandle, _, err := pLoadIcon.Call(0, uintptr(IDI_APPLICATION))
+	iconHandle, _, err := pLoadIcon.Call(uintptr(t.instance), applicationIconResourceID)
+	if iconHandle == 0 {
+		iconHandle, _, err = pLoadIcon.Call(0, uintptr(IDI_APPLICATION))
+	}
 	if iconHandle == 0 {
 		return err
 	}
@@ -434,6 +477,48 @@ func (t *winTray) initInstance() error {
 	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
 
 	return t.nid.add()
+}
+
+func (t *winTray) showTaskbarWindow() {
+	if t.taskbarWindow != 0 {
+		return
+	}
+	const (
+		WS_EX_APPWINDOW    = 0x00040000
+		WS_POPUP           = 0x80000000
+		SW_SHOWMINNOACTIVE = 7
+		CW_USEDEFAULT      = 0x80000000
+	)
+	classNamePtr, err := windows.UTF16PtrFromString("SystrayClass")
+	if err != nil {
+		log.Errorf("Unable to prepare taskbar class name: %v", err)
+		return
+	}
+	windowNamePtr, err := windows.UTF16PtrFromString("code-Manager")
+	if err != nil {
+		log.Errorf("Unable to prepare taskbar window name: %v", err)
+		return
+	}
+	windowHandle, _, callErr := pCreateWindowEx.Call(
+		WS_EX_APPWINDOW,
+		uintptr(unsafe.Pointer(classNamePtr)),
+		uintptr(unsafe.Pointer(windowNamePtr)),
+		WS_POPUP,
+		uintptr(CW_USEDEFAULT),
+		uintptr(CW_USEDEFAULT),
+		1,
+		1,
+		0,
+		0,
+		uintptr(t.instance),
+		0,
+	)
+	if windowHandle == 0 {
+		log.Errorf("Unable to create taskbar window: %v", callErr)
+		return
+	}
+	t.taskbarWindow = windows.Handle(windowHandle)
+	pShowWindow.Call(uintptr(t.taskbarWindow), SW_SHOWMINNOACTIVE)
 }
 
 func (t *winTray) createMenu() error {
@@ -707,38 +792,73 @@ func (t *winTray) getVisibleItemIndex(parent, val uint32) int {
 	return -1
 }
 
-// Loads an image from file to be shown in tray or menu item.
-// LoadImage: https://msdn.microsoft.com/en-us/library/windows/desktop/ms648045(v=vs.85).aspx
-func (t *winTray) loadIconFrom(src string) (windows.Handle, error) {
-	const IMAGE_ICON = 1               // Loads an icon
-	const LR_LOADFROMFILE = 0x00000010 // Loads the stand-alone image from the file
-	const LR_DEFAULTSIZE = 0x00000040  // Loads default-size icon for windows(SM_CXICON x SM_CYICON) if cx, cy are set to zero
-
-	// Save and reuse handles of loaded images
-	t.muLoadedImages.RLock()
-	h, ok := t.loadedImages[src]
-	t.muLoadedImages.RUnlock()
-	if !ok {
-		srcPtr, err := windows.UTF16PtrFromString(src)
-		if err != nil {
-			return 0, err
-		}
-		res, _, err := pLoadImage.Call(
-			0,
-			uintptr(unsafe.Pointer(srcPtr)),
-			IMAGE_ICON,
-			0,
-			0,
-			LR_LOADFROMFILE|LR_DEFAULTSIZE,
-		)
-		if res == 0 {
-			return 0, err
-		}
-		h = windows.Handle(res)
-		t.muLoadedImages.Lock()
-		t.loadedImages[src] = h
-		t.muLoadedImages.Unlock()
+// Loads an image from an ICO byte slice to be shown in tray or menu item.
+// CreateIconFromResourceEx accepts the raw RT_ICON payload, so the ICO directory
+// is parsed without writing the embedded icon to disk.
+func (t *winTray) loadIconFromBytes(iconBytes []byte) (windows.Handle, error) {
+	if len(iconBytes) < 6 || binary.LittleEndian.Uint16(iconBytes[0:2]) != 0 || binary.LittleEndian.Uint16(iconBytes[2:4]) != 1 {
+		return 0, fmt.Errorf("invalid ICO header")
 	}
+	count := int(binary.LittleEndian.Uint16(iconBytes[4:6]))
+	if count == 0 || len(iconBytes) < 6+16*count {
+		return 0, fmt.Errorf("ICO has no complete directory")
+	}
+	sum := md5.Sum(iconBytes)
+	key := hex.EncodeToString(sum[:])
+	t.muLoadedImages.RLock()
+	h, ok := t.loadedImages[key]
+	t.muLoadedImages.RUnlock()
+	if ok {
+		return h, nil
+	}
+
+	bestIndex := 0
+	bestScore := int(^uint(0) >> 1)
+	for i := 0; i < count; i++ {
+		entry := 6 + 16*i
+		width := int(iconBytes[entry])
+		if width == 0 {
+			width = 256
+		}
+		score := width
+		if width < 16 {
+			score += 1000
+		} else if width > 32 {
+			score += (width - 32) * 4
+		} else {
+			score = 32 - width
+		}
+		if score < bestScore {
+			bestIndex, bestScore = i, score
+		}
+	}
+	entry := 6 + 16*bestIndex
+	bytesInRes := int(binary.LittleEndian.Uint32(iconBytes[entry+8 : entry+12]))
+	offset := int(binary.LittleEndian.Uint32(iconBytes[entry+12 : entry+16]))
+	if bytesInRes <= 0 || offset < 0 || offset > len(iconBytes) || bytesInRes > len(iconBytes)-offset {
+		return 0, fmt.Errorf("ICO image entry is out of bounds")
+	}
+	imageData := iconBytes[offset : offset+bytesInRes]
+	const (
+		iconVersion    = 0x00030000
+		lrDefaultColor = 0x00000000
+	)
+	res, _, err := pCreateIconFromResourceEx.Call(
+		uintptr(unsafe.Pointer(&imageData[0])),
+		uintptr(len(imageData)),
+		1,
+		iconVersion,
+		0,
+		0,
+		lrDefaultColor,
+	)
+	if res == 0 {
+		return 0, err
+	}
+	h = windows.Handle(res)
+	t.muLoadedImages.Lock()
+	t.loadedImages[key] = h
+	t.muLoadedImages.Unlock()
 	return h, nil
 }
 
@@ -826,29 +946,16 @@ func quit() {
 	)
 }
 
-func iconBytesToFilePath(iconBytes []byte) (string, error) {
-	bh := md5.Sum(iconBytes)
-	dataHash := hex.EncodeToString(bh[:])
-	iconFilePath := filepath.Join(os.TempDir(), "systray_temp_icon_"+dataHash)
-
-	if _, err := os.Stat(iconFilePath); os.IsNotExist(err) {
-		if err := ioutil.WriteFile(iconFilePath, iconBytes, 0644); err != nil {
-			return "", err
-		}
-	}
-	return iconFilePath, nil
-}
-
-// SetIcon sets the systray icon.
-// iconBytes should be the content of .ico for windows and .ico/.jpg/.png
-// for other platforms.
-func SetIcon(iconBytes []byte) {
-	iconFilePath, err := iconBytesToFilePath(iconBytes)
-	if err != nil {
-		log.Errorf("Unable to write icon data to temp file: %v", err)
+func showTaskbarIcon() {
+	if wt.window == 0 || wt.wmShowTaskbar == 0 {
 		return
 	}
-	if err := wt.setIcon(iconFilePath); err != nil {
+	pPostMessage.Call(uintptr(wt.window), uintptr(wt.wmShowTaskbar), 0, 0)
+}
+
+// SetIcon sets the systray icon from an ICO byte slice without creating a file.
+func SetIcon(iconBytes []byte) {
+	if err := wt.setIcon(iconBytes); err != nil {
 		log.Errorf("Unable to set icon: %v", err)
 		return
 	}
@@ -877,15 +984,9 @@ func (item *MenuItem) parentId() uint32 {
 // SetIcon sets the icon of a menu item. Only works on macOS and Windows.
 // iconBytes should be the content of .ico/.jpg/.png
 func (item *MenuItem) SetIcon(iconBytes []byte) {
-	iconFilePath, err := iconBytesToFilePath(iconBytes)
+	h, err := wt.loadIconFromBytes(iconBytes)
 	if err != nil {
-		log.Errorf("Unable to write icon data to temp file: %v", err)
-		return
-	}
-
-	h, err := wt.loadIconFrom(iconFilePath)
-	if err != nil {
-		log.Errorf("Unable to load icon from temp file: %v", err)
+		log.Errorf("Unable to load icon from memory: %v", err)
 		return
 	}
 

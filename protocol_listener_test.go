@@ -5,6 +5,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +59,57 @@ func TestValidateUpstreamBaseURLRejectsUnbracketedIPv6(t *testing.T) {
 		if err := validateUpstreamBaseURL(rawURL); err == nil {
 			t.Fatalf("invalid upstream URL was accepted: %q", rawURL)
 		}
+	}
+}
+
+func TestNormalizeUpstreamBaseURL(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"  https://api.example.test/v1/  ", "https://api.example.test/v1"},
+		{"https://api.example.test///", "https://api.example.test"},
+		{"https://api.example.test/v1/?query=/", "https://api.example.test/v1?query=/"},
+		{"https://api.example.test", "https://api.example.test"},
+		{"https://", "https://"},
+	}
+	for _, testCase := range cases {
+		if got := normalizeUpstreamBaseURL(testCase.input); got != testCase.want {
+			t.Errorf("normalizeUpstreamBaseURL(%q) = %q, want %q", testCase.input, got, testCase.want)
+		}
+	}
+}
+
+func TestUpdateSettingTrimsListenAddressAndAPIKey(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configData := []byte("listen_address: \"127.0.0.1:7780\"\nupstream_base_url: \"https://upstream.example/v1\"\nupstream_api_key: \"initial-key\"\n")
+	if err := os.WriteFile(configPath, configData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := &gateway{config: config, configPath: configPath}
+
+	listenRequest := httptest.NewRequest(http.MethodPut, "/api/settings/listen_address", strings.NewReader(`{"value":" 127.0.0.1:7781 "}`))
+	listenRecorder := httptest.NewRecorder()
+	gateway.updateSetting(listenRecorder, listenRequest)
+	if listenRecorder.Code != http.StatusOK {
+		t.Fatalf("listen status=%d body=%s", listenRecorder.Code, listenRecorder.Body.String())
+	}
+	if got := gateway.currentConfig().ListenAddress; got != "127.0.0.1:7781" {
+		t.Fatalf("listen address = %q", got)
+	}
+
+	keyRequest := httptest.NewRequest(http.MethodPut, "/api/settings/upstream_api_key", strings.NewReader(`{"value":"  trimmed-key  "}`))
+	keyRecorder := httptest.NewRecorder()
+	gateway.updateSetting(keyRecorder, keyRequest)
+	if keyRecorder.Code != http.StatusOK {
+		t.Fatalf("API key status=%d body=%s", keyRecorder.Code, keyRecorder.Body.String())
+	}
+	if got := gateway.currentConfig().UpstreamAPIKey; got != "trimmed-key" {
+		t.Fatalf("upstream API key = %q", got)
 	}
 }
 

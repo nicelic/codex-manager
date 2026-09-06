@@ -16,8 +16,10 @@ set "OUTPUT_EXE=%RELEASE_DIR%\code-Manager.exe"
 set "UNINSTALL_TEMPLATE=%ROOT%\uninstall.bat.template"
 set "ICON_SOURCE=%ROOT%\297763_sort-by-icon.svg"
 set "ICON_RENDERER=%ROOT%\tools\render-tray-icon.html"
+set "ICON_DIR=%ROOT%\assets"
 set "ICON_PNG=%ROOT%\assets\tray.png"
 set "ICON_ICO=%ROOT%\assets\tray.ico"
+set "ICON_SYSO=%ROOT%\code-Manager-icon.syso"
 set "EDGE="
 
 if exist "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" set "EDGE=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
@@ -28,7 +30,7 @@ echo code-Manager full build started
 echo ========================================
 echo.
 echo This script will:
-echo   1. Generate the tray icon
+echo   1. Generate the multi-resolution icon and EXE resource
 echo   2. Build the Vue frontend with npm.cmd
 echo   3. Embed the frontend into code-Manager.exe with Go
 echo   4. Create releases\code-Manager\code-Manager.exe
@@ -67,16 +69,24 @@ if errorlevel 1 (
     goto :fail
 )
 
-echo [2/5] Generating the embedded tray icon...
+echo [2/5] Generating the embedded tray and EXE icon...
 set "ICON_RENDER_URI=file:///%ICON_RENDERER:\=/%"
-"%EDGE%" --headless --disable-gpu --hide-scrollbars --force-device-scale-factor=1 --default-background-color=00000000 "--screenshot=%ICON_PNG%" --window-size=256,256 "%ICON_RENDER_URI%"
-if errorlevel 1 (
-    echo Build failed: tray icon PNG generation failed.
-    goto :fail
+for %%S in (16 32 48 64 128 256) do (
+    "%EDGE%" --headless --disable-gpu --hide-scrollbars --force-device-scale-factor=1 --default-background-color=00000000 "--screenshot=%ICON_DIR%\tray-%%S.png" --window-size=%%S,%%S "%ICON_RENDER_URI%"
+    if errorlevel 1 (
+        echo Build failed: icon PNG generation failed for %%S x %%S.
+        goto :fail
+    )
 )
-go run .\tools\icon-to-ico.go "%ICON_PNG%" "%ICON_ICO%"
+copy /y "%ICON_DIR%\tray-256.png" "%ICON_PNG%" >nul
+go run .\tools\icon-to-ico.go "%ICON_DIR%\tray-256.png" "%ICON_ICO%" "%ICON_DIR%\tray-16.png" "%ICON_DIR%\tray-32.png" "%ICON_DIR%\tray-48.png" "%ICON_DIR%\tray-64.png" "%ICON_DIR%\tray-128.png"
 if errorlevel 1 (
     echo Build failed: tray icon ICO generation failed.
+    goto :fail
+)
+go run .\tools\icon-to-syso.go "%ICON_ICO%" "%ICON_SYSO%"
+if errorlevel 1 (
+    echo Build failed: EXE icon resource generation failed.
     goto :fail
 )
 
@@ -111,6 +121,8 @@ if not exist "%OUTPUT_EXE%" (
     echo Build failed: output executable was not created.
     goto :fail
 )
+
+if exist "%ICON_SYSO%" del /q "%ICON_SYSO%"
 
 echo.
 echo ========================================

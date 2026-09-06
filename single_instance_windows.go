@@ -82,7 +82,7 @@ func terminateProcessesByPath(target string) error {
 	return nil
 }
 
-// terminateProcessesByNames 仅结束名称精确匹配的进程，用于成对管理 llmtrim CLI 和托盘助手。
+// terminateProcessesByNames 仅结束名称精确匹配的进程；调用方负责决定是否还需校验完整路径。
 func terminateProcessesByNames(names ...string) error {
 	targets := make(map[string]struct{}, len(names))
 	for _, name := range names {

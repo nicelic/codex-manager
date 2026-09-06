@@ -1,0 +1,690 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
+)
+
+func TestGortexCopilotHooksMigrateNestedAndStaleEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks", "gortex.json")
+	oldCommand := `C:\old\Gortex\bin\gortex.exe hook --agent=copilot-cli`
+	userCommand := "company-hook.exe"
+	fullMatcher := "^(?:bash|create|edit|glob|grep|powershell|rg|view)$"
+	root := map[string]any{
+		"version":         1,
+		"disableAllHooks": false,
+		"hooks": map[string]any{
+			"sessionStart": []any{
+				map[string]any{"matcher": "", "hooks": []any{map[string]any{"type": "command", "command": oldCommand}}},
+				map[string]any{"type": "command", "bash": userCommand},
+			},
+			"userPromptSubmitted": []any{
+				map[string]any{"type": "command", "bash": oldCommand, "powershell": oldCommand},
+			},
+			"preToolUse": []any{
+				map[string]any{"type": "command", "bash": oldCommand, "powershell": oldCommand, "matcher": fullMatcher},
+				map[string]any{"type": "command", "bash": "user-pre-hook"},
+			},
+			"postToolUse": []any{
+				map[string]any{"type": "command", "bash": "user-post-hook"},
+			},
+		},
+	}
+	data, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	current := `D:\new\Gortex\bin\gortex.exe`
+	changed, _, err := upsertCopilotHooks(path, current)
+	if err != nil {
+		t.Fatalf("upsertCopilotHooks() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("stale/nested Copilot hooks were not migrated")
+	}
+	parsed, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := parsed["hooks"].(map[string]any)
+	for _, event := range []string{"sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse"} {
+		entries, ok := gortexCopilotHookList(hooks[event])
+		if !ok {
+			t.Fatalf("hooks.%s is not a list", event)
+		}
+		ours := 0
+		for _, raw := range entries {
+			if !gortexCopilotHookEntryIsOurs(raw, current) {
+				continue
+			}
+			ours++
+			entry := raw.(map[string]any)
+			if _, nested := entry["hooks"]; nested {
+				t.Fatalf("hooks.%s retained the legacy nested schema: %#v", event, entry)
+			}
+			if entry["type"] != "command" {
+				t.Fatalf("hooks.%s type = %v, want command", event, entry["type"])
+			}
+			if !strings.Contains(strings.ToLower(entry["bash"].(string)), "d:/new/gortex/bin/gortex.exe") {
+				t.Fatalf("hooks.%s did not migrate the stale executable path: %#v", event, entry)
+			}
+		}
+		if ours != 1 {
+			t.Fatalf("hooks.%s Gortex entry count = %d, want 1", event, ours)
+		}
+	}
+	if !strings.Contains(string(data), userCommand) {
+		t.Fatal("seed sanity check failed")
+	}
+	encoded, _ := os.ReadFile(path)
+	if !strings.Contains(string(encoded), "user-pre-hook") || !strings.Contains(string(encoded), "user-post-hook") || !strings.Contains(string(encoded), userCommand) {
+		t.Fatalf("user Copilot hooks were not preserved: %s", encoded)
+	}
+	changed, _, err = upsertCopilotHooks(path, current)
+	if err != nil {
+		t.Fatalf("second upsertCopilotHooks() error = %v", err)
+	}
+	if changed {
+		t.Fatal("native Copilot hooks are not idempotent")
+	}
+}
+
+func TestGortexCopilotHookIdentityIgnoresExecutablePath(t *testing.T) {
+	current := `D:\new\Gortex\bin\gortex.exe`
+	direct := map[string]any{
+		"type":       "command",
+		"bash":       `C:\old\Gortex\bin\gortex.exe hook --agent=copilot-cli`,
+		"powershell": `& 'C:\old\Gortex\bin\gortex.exe' hook --agent=copilot-cli`,
+	}
+	nested := map[string]any{
+		"hooks": []any{map[string]any{"type": "command", "command": `C:\old\Gortex\bin\gortex.exe hook --agent=copilot-cli`}},
+	}
+	if !gortexCopilotHookEntryIsOurs(direct, current) || !gortexCopilotHookEntryIsOurs(nested, current) {
+		t.Fatal("stale Copilot hooks were not recognized by agent identity")
+	}
+	if gortexCopilotHookEntryIsOurs(map[string]any{"type": "command", "bash": "company-hook --agent=copilot-cli"}, current) {
+		t.Fatal("an unrelated Copilot command was misidentified as Gortex")
+	}
+}
+
+func TestEmbeddedGortexPromptDocumentLeavesMarkersToIntegration(t *testing.T) {
+	text := string(gortexPromptDocument)
+	if text == "" {
+		t.Fatal("embedded Gortex prompt is empty")
+	}
+	if strings.Contains(text, gortexRulesStartMarker) || strings.Contains(text, gortexRulesEndMarker) {
+		t.Fatal("embedded Gortex prompt source must not contain integration markers")
+	}
+	if gortexInstructionBody == "" {
+		t.Fatal("embedded Gortex prompt body is empty")
+	}
+	block := gortexPromptBlock(gortexInstructionBody)
+	if strings.Count(block, gortexRulesStartMarker) != 1 {
+		t.Fatalf("generated start marker count = %d, want 1", strings.Count(block, gortexRulesStartMarker))
+	}
+	if strings.Count(block, gortexRulesEndMarker) != 1 {
+		t.Fatalf("generated end marker count = %d, want 1", strings.Count(block, gortexRulesEndMarker))
+	}
+	if !strings.Contains(gortexInstructionBody, "capabilities") || !strings.Contains(gortexInstructionBody, "workspace_admin") {
+		t.Fatal("embedded Gortex prompt does not contain the complete compact MCP guidance")
+	}
+}
+
+func TestEmbeddedGortexInstructionBodyPreservesSourceContent(t *testing.T) {
+	source := "\r\n第一行\r\n" + gortexRulesStartMarker + "\r\n最后一行\r\n"
+	want := "\n第一行\n" + gortexRulesStartMarker + "\n最后一行\n"
+	if actual := embeddedGortexInstructionBody([]byte(source)); actual != want {
+		t.Fatalf("embeddedGortexInstructionBody() = %q, want %q", actual, want)
+	}
+}
+
+func TestGortexPromptIntegrationKeepsMarkerTextInUserContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	body := "用户正文\n" + gortexRulesStartMarker + "\n继续正文\n" + gortexRulesEndMarker
+	changed, fingerprint, err := upsertGortexPrompt(path, body)
+	if err != nil || !changed {
+		t.Fatalf("upsertGortexPrompt() changed = %v, err = %v", changed, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, ok := gortexMarkedBlock(data)
+	if !ok || block != strings.TrimSuffix(gortexPromptBlock(body), "\n") {
+		t.Fatalf("managed block did not retain complete user content:\n%s", block)
+	}
+	removed, err := removeGortexPrompt(path, fingerprint)
+	if err != nil || !removed {
+		t.Fatalf("removeGortexPrompt() removed = %v, err = %v", removed, err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "" {
+		t.Fatalf("removed prompt file = %q, want empty", string(data))
+	}
+}
+
+func TestWriteGortexPromptDocumentWritesEmbeddedDocument(t *testing.T) {
+	directory := t.TempDir()
+	if err := writeGortexPromptDocument(directory); err != nil {
+		t.Fatalf("writeGortexPromptDocument() error = %v", err)
+	}
+	actual, err := os.ReadFile(filepath.Join(directory, gortexPromptFileName))
+	if err != nil {
+		t.Fatalf("read embedded Gortex prompt: %v", err)
+	}
+	if string(actual) != string(gortexPromptDocument) {
+		t.Fatalf("written Gortex prompt differs from embedded document")
+	}
+}
+
+func TestGortexCopilotHooksRemovePreservesUserEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gortex.json")
+	root := map[string]any{
+		"version":         1,
+		"disableAllHooks": false,
+		"hooks": map[string]any{
+			"sessionStart": []any{
+				map[string]any{"type": "command", "bash": `C:\old\gortex.exe hook --agent=copilot-cli`},
+				map[string]any{"type": "command", "bash": "user-session"},
+			},
+			"preToolUse": []any{
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": `C:\old\gortex.exe hook --agent=copilot-cli`}}},
+				map[string]any{"type": "command", "bash": "user-pre"},
+			},
+		},
+	}
+	data, _ := json.Marshal(root)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := removeCopilotHooks(path, `D:\new\gortex.exe`)
+	if err != nil {
+		t.Fatalf("removeCopilotHooks() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("removeCopilotHooks() reported no change")
+	}
+	cleaned, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(cleaned)
+	if strings.Contains(strings.ToLower(string(encoded)), "gortex") {
+		t.Fatalf("Gortex Copilot hook survived removal: %s", encoded)
+	}
+	for _, user := range []string{"user-session", "user-pre"} {
+		if !strings.Contains(string(encoded), user) {
+			t.Fatalf("user Copilot hook %q was removed: %s", user, encoded)
+		}
+	}
+}
+
+func gortexTestHookArtifact(t *testing.T, artifacts []gortexOwnedArtifact, event string) gortexOwnedArtifact {
+	t.Helper()
+	for _, artifact := range artifacts {
+		if artifact.Event == event {
+			return artifact
+		}
+	}
+	t.Fatalf("managed Hook artifact for %s was not recorded: %#v", event, artifacts)
+	return gortexOwnedArtifact{}
+}
+
+func TestGortexOwnedCodexHookRemovalPreservesUserGortexHook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	executable := `C:\managed\gortex.exe`
+	if _, artifacts, err := upsertCodexHooks(path, executable); err != nil {
+		t.Fatal(err)
+	} else {
+		artifact := gortexTestHookArtifact(t, artifacts, "PreToolUse")
+		var root map[string]any
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := toml.Decode(string(data), &root); err != nil {
+			t.Fatal(err)
+		}
+		hooks := root["hooks"].(map[string]any)
+		groups := gortexHookList(hooks["PreToolUse"])
+		groups = append(groups, map[string]any{"matcher": ".*", "hooks": []any{map[string]any{"type": "command", "command": `C:\user\gortex.exe hook --agent=codex --mode=enrich`}}})
+		hooks["PreToolUse"] = groups
+		encoded, err := tomlEncode(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ownership := gortexMCPOwnership{Artifacts: map[string]gortexOwnedArtifact{"codex": artifact}}
+		if warnings := gortexRemoveIntegrationsOwned(executable, &ownership); len(warnings) > 0 {
+			t.Fatalf("owned Codex removal warnings = %v", warnings)
+		}
+		cleaned, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var after map[string]any
+		if _, err := toml.Decode(string(cleaned), &after); err != nil {
+			t.Fatal(err)
+		}
+		remaining := after["hooks"].(map[string]any)
+		foundUser := false
+		foundManaged := false
+		for _, rawGroup := range gortexHookList(remaining["PreToolUse"]) {
+			group := rawGroup.(map[string]any)
+			for _, rawHandler := range gortexHookList(group["hooks"]) {
+				command := rawHandler.(map[string]any)["command"].(string)
+				foundUser = foundUser || strings.Contains(command, `C:\user\gortex.exe`)
+				foundManaged = foundManaged || strings.Contains(command, `C:\managed\gortex.exe`)
+			}
+		}
+		if !foundUser || foundManaged {
+			t.Fatalf("Codex owned/user Hook result user=%v managed=%v: %#v", foundUser, foundManaged, remaining)
+		}
+	}
+}
+
+func TestGortexOwnedClaudeHookRemovalPreservesUserGortexHook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.local.json")
+	executable := `C:\managed\gortex.exe`
+	_, artifacts, err := upsertClaudeHooks(path, executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := gortexTestHookArtifact(t, artifacts, "PreToolUse")
+	root, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	groups := gortexHookList(hooks["PreToolUse"])
+	groups = append(groups, map[string]any{"matcher": "*", "hooks": []any{map[string]any{"type": "command", "command": `C:\user\gortex.exe hook --agent=claude`}}})
+	hooks["PreToolUse"] = groups
+	if err := writeGortexJSONObject(path, root); err != nil {
+		t.Fatal(err)
+	}
+	ownership := gortexMCPOwnership{Artifacts: map[string]gortexOwnedArtifact{"claude": artifact}}
+	if warnings := gortexRemoveIntegrationsOwned(executable, &ownership); len(warnings) > 0 {
+		t.Fatalf("owned Claude removal warnings = %v", warnings)
+	}
+	cleaned, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := cleaned["hooks"].(map[string]any)
+	foundUser, foundManaged := false, false
+	for _, rawGroup := range gortexHookList(remaining["PreToolUse"]) {
+		group := rawGroup.(map[string]any)
+		for _, rawHandler := range gortexHookList(group["hooks"]) {
+			command := rawHandler.(map[string]any)["command"].(string)
+			foundUser = foundUser || strings.Contains(command, `C:\user\gortex.exe`)
+			foundManaged = foundManaged || strings.Contains(command, `C:\managed\gortex.exe`)
+		}
+	}
+	if !foundUser || foundManaged {
+		t.Fatalf("Claude owned/user Hook result user=%v managed=%v: %#v", foundUser, foundManaged, remaining)
+	}
+}
+
+func TestGortexOwnedCopilotHookRemovalPreservesUserGortexHook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gortex.json")
+	executable := `C:\managed\gortex.exe`
+	_, artifacts, err := upsertCopilotHooks(path, executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := gortexTestHookArtifact(t, artifacts, "sessionStart")
+	root, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	entries := gortexHookList(hooks["sessionStart"])
+	entries = append(entries, map[string]any{"type": "command", "bash": `C:/user/gortex.exe hook --agent=copilot-cli`, "powershell": "& 'C:\\user\\gortex.exe' hook --agent=copilot-cli", "cwd": ".", "timeoutSec": 10})
+	hooks["sessionStart"] = entries
+	if err := writeGortexJSONObject(path, root); err != nil {
+		t.Fatal(err)
+	}
+	ownership := gortexMCPOwnership{Artifacts: map[string]gortexOwnedArtifact{"copilot": artifact}}
+	if warnings := gortexRemoveIntegrationsOwned(executable, &ownership); len(warnings) > 0 {
+		t.Fatalf("owned Copilot removal warnings = %v", warnings)
+	}
+	cleaned, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := cleaned["hooks"].(map[string]any)
+	foundUser, foundManaged := false, false
+	for _, raw := range gortexHookList(remaining["sessionStart"]) {
+		entry := raw.(map[string]any)
+		command := gortexDirectHookCommand(entry)
+		foundUser = foundUser || strings.Contains(command, "C:/user/gortex.exe")
+		foundManaged = foundManaged || strings.Contains(command, "C:/managed/gortex.exe")
+	}
+	if !foundUser || foundManaged {
+		t.Fatalf("Copilot owned/user Hook result user=%v managed=%v: %#v", foundUser, foundManaged, remaining)
+	}
+}
+
+func TestGortexClaudeHooksUseNativeEventsAndShellSafePath(t *testing.T) {
+	command := gortexHookCommand("claude", `C:\Program Files\Gortex\bin\gortex.exe`)
+	if strings.Contains(command, `\`) || !strings.Contains(command, "C:/Program Files/Gortex/bin/gortex.exe") {
+		t.Fatalf("Claude hook command is not shell-safe: %q", command)
+	}
+	path := filepath.Join(t.TempDir(), "settings.local.json")
+	changed, _, err := upsertClaudeHooks(path, `C:\Program Files\Gortex\bin\gortex.exe`)
+	if err != nil || !changed {
+		t.Fatalf("upsertClaudeHooks() changed=%v error=%v", changed, err)
+	}
+	root, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PreCompact", "SubagentStart", "SubagentStop"} {
+		if len(gortexHookList(hooks[event])) != 1 {
+			t.Fatalf("Claude hooks.%s missing native Gortex entry", event)
+		}
+	}
+	pre := gortexHookList(hooks["PreToolUse"])[0].(map[string]any)
+	if pre["matcher"] != "*" {
+		t.Fatalf("Claude PreToolUse matcher = %v, want *", pre["matcher"])
+	}
+	handler := gortexHookList(pre["hooks"])[0].(map[string]any)
+	if handler["timeout"] != float64(3000) && handler["timeout"] != 3000 {
+		t.Fatalf("Claude PreToolUse timeout = %v, want 3000", handler["timeout"])
+	}
+}
+
+func TestGortexCodexHooksMatchersRoundTripAndRemove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	seed := map[string]any{"hooks": map[string]any{
+		"PreToolUse": []any{map[string]any{"matcher": "UserOnly", "hooks": []any{map[string]any{"type": "command", "command": "echo user-pre"}}}},
+	}}
+	encoded, err := tomlEncode(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executable := `C:\Tools\Gortex\bin\gortex.exe`
+	changed, _, err := upsertCodexHooks(path, executable)
+	if err != nil || !changed {
+		t.Fatalf("upsertCodexHooks() changed=%v error=%v", changed, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if _, err := toml.Decode(string(data), &root); err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	wantMatchers := map[string]string{
+		"PreToolUse":  ".*",
+		"PostToolUse": "^(Bash|apply_patch|(mcp__gortex__|gortex__)(explore|search|read|relations|trace|analyze))$",
+	}
+	for event, wantMatcher := range wantMatchers {
+		found := false
+		for _, raw := range gortexHookList(hooks[event]) {
+			group, ok := raw.(map[string]any)
+			if !ok || !gortexTomlHookCommand(group, executable) {
+				continue
+			}
+			found = true
+			if group["matcher"] != wantMatcher {
+				t.Fatalf("Codex %s matcher = %v, want %q", event, group["matcher"], wantMatcher)
+			}
+			handlers := gortexHookList(group["hooks"])
+			if len(handlers) != 1 || !strings.Contains(handlers[0].(map[string]any)["command"].(string), "--mode=enrich") {
+				t.Fatalf("Codex %s command missing --mode=enrich: %#v", event, handlers)
+			}
+		}
+		if !found {
+			t.Fatalf("Codex %s Gortex hook not found", event)
+		}
+	}
+	userFound := false
+	for _, raw := range gortexHookList(hooks["PreToolUse"]) {
+		group, _ := raw.(map[string]any)
+		for _, handler := range gortexHookList(group["hooks"]) {
+			if handler.(map[string]any)["command"] == "echo user-pre" {
+				userFound = true
+			}
+		}
+	}
+	if !userFound {
+		t.Fatal("user Codex hook was not preserved")
+	}
+	if _, err := removeCodexHooks(path, `D:\new\Gortex\bin\gortex.exe`); err != nil {
+		t.Fatalf("removeCodexHooks() error = %v", err)
+	}
+	cleaned, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cleaned), "--agent=codex") || !strings.Contains(string(cleaned), "echo user-pre") {
+		t.Fatalf("Codex removal did not preserve user hook: %s", cleaned)
+	}
+}
+
+func TestGortexCodexHookCommandWindowsIsRecognized(t *testing.T) {
+	value := map[string]any{
+		"matcher": ".*",
+		"hooks": []any{map[string]any{
+			"type":           "command",
+			"command":        "gortex hook --agent=codex",
+			"commandWindows": `C:\\Tools\\gortex.exe hook --agent=codex --mode=enrich`,
+		}},
+	}
+	if !gortexTomlHookCommand(value, `C:\\Tools\\gortex.exe`) {
+		t.Fatal("Codex commandWindows Hook was not recognized")
+	}
+	handler := gortexNestedCommandHandler(value)
+	if handler == nil || !strings.Contains(handler["commandWindows"].(string), "--agent=codex") {
+		t.Fatalf("commandWindows handler was not selected: %#v", handler)
+	}
+}
+
+func TestGortexCodexTrustHashStates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	executable := `C:\Tools\Gortex\bin\gortex.exe`
+	if _, _, err := upsertCodexHooks(path, executable); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if _, err := toml.Decode(string(data), &root); err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	groups := gortexHookList(hooks["PreToolUse"])
+	found := false
+	for groupIndex, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		for handlerIndex, rawHandler := range gortexHookList(group["hooks"]) {
+			handler := rawHandler.(map[string]any)
+			command := handler["command"].(string)
+			if !gortexCodexHookCommandMatches(command, executable) {
+				continue
+			}
+			identity := codexSnipHookIdentity{GroupIndex: groupIndex, HandlerIndex: handlerIndex, Command: command, Timeout: gortexHookTimeout(handler)}
+			matcher, _ := group["matcher"].(string)
+			if matcher != "" {
+				identity.Matcher = &matcher
+			}
+			status, _ := handler["statusMessage"].(string)
+			if status != "" {
+				identity.StatusMessage = &status
+			}
+			hash, err := codexSnipHookHash(identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			states := map[string]any{path + ":pre_tool_use:" + itoa(groupIndex) + ":" + itoa(handlerIndex): map[string]any{"trusted_hash": hash}}
+			hooks["state"] = states
+			trustedRoot, err := tomlEncode(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			trusted, modified, err := gortexCodexHooksTrusted(trustedRoot, path, executable)
+			if err != nil || !trusted || modified {
+				t.Fatalf("trusted Codex state = trusted:%v modified:%v error:%v", trusted, modified, err)
+			}
+			delete(hooks, "state")
+			missingRoot, _ := tomlEncode(root)
+			missing, _, err := gortexCodexHooksTrusted(missingRoot, path, executable)
+			if err != nil || missing {
+				t.Fatalf("missing trusted_hash reported trusted=%v error=%v", missing, err)
+			}
+			found = true
+			break
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatal("did not find a Codex Gortex PreToolUse hook")
+	}
+}
+
+func itoa(value int) string {
+	if value == 0 {
+		return "0"
+	}
+	// The small helper keeps this test file independent from formatting code
+	// used by the production paths.
+	digits := ""
+	for value > 0 {
+		digits = string(rune('0'+value%10)) + digits
+		value /= 10
+	}
+	return digits
+}
+
+func TestEnsureGortexWatchConfigPreservesUserYAML(t *testing.T) {
+	project := t.TempDir()
+	path := filepath.Join(project, ".gortex.yaml")
+	original := "exclude: [vendor/**]\nwatch: {enabled: false, debounce_ms: 5000, paths: [src]}\nsearch: {index_prose: false, custom: keep}\ninclude: [custom/**]\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGortexWatchConfig(project); err != nil {
+		t.Fatalf("ensureGortexWatchConfig() error = %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(first, &root); err != nil {
+		t.Fatal(err)
+	}
+	watch := root["watch"].(map[string]any)
+	if watch["enabled"] != true || int(watch["debounce_ms"].(int)) != 50 {
+		t.Fatalf("watch config = %#v", watch)
+	}
+	if watch["paths"].([]any)[0] != "src" {
+		t.Fatalf("user watch.paths was not preserved: %#v", watch)
+	}
+	search := root["search"].(map[string]any)
+	if search["index_prose"] != true || search["custom"] != "keep" {
+		t.Fatalf("search config = %#v", search)
+	}
+	include := root["include"].([]any)
+	if len(include) != 1 || include[0] != "custom/**" {
+		t.Fatalf("user include entries were changed: %#v", include)
+	}
+	if err := ensureGortexWatchConfig(project); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("watch config is not idempotent")
+	}
+	missing := filepath.Join(t.TempDir(), "gone")
+	if err := ensureGortexWatchConfig(missing); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(missing, ".gortex.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("missing project was recreated: %v", err)
+	}
+}
+
+func TestGortexCursorRuleUsesFrontmatterAndRemovesOwnedFile(t *testing.T) {
+	project := t.TempDir()
+	ownership := gortexMCPOwnership{Artifacts: map[string]gortexOwnedArtifact{}}
+	if err := gortexRegisterCursorProject(project, &ownership); err != nil {
+		t.Fatalf("gortexRegisterCursorProject() error = %v", err)
+	}
+	path := gortexCursorRulePath(project)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.HasPrefix(text, "---\n") || !strings.Contains(text, "alwaysApply: true") {
+		t.Fatalf("Cursor rule is missing required frontmatter: %s", text)
+	}
+	if !gortexCursorRuleConfigured(project) {
+		t.Fatal("Cursor rule was not reported as configured")
+	}
+	if err := gortexRemoveCursorProject(project, &ownership); err != nil {
+		t.Fatalf("gortexRemoveCursorProject() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("owned Cursor rule file was not removed, stat error = %v", err)
+	}
+}
+
+func TestGortexCursorRulePreservesUnmarkedUserFile(t *testing.T) {
+	project := t.TempDir()
+	path := gortexCursorRulePath(project)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("# User Cursor rule\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ownership := gortexMCPOwnership{Artifacts: map[string]gortexOwnedArtifact{}}
+	if _, _, err := upsertGortexCursorPrompt(path, gortexInstructionBody); err == nil {
+		t.Fatal("unmarked user Cursor rule was overwritten")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("user Cursor rule changed: %q", data)
+	}
+	if err := gortexRegisterCursorProject(project, &ownership); err == nil {
+		t.Fatal("gortexRegisterCursorProject accepted an unmarked user rule")
+	}
+}

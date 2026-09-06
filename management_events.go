@@ -44,6 +44,7 @@ type managementStatusEvent struct {
 	LLMTrim     json.RawMessage   `json:"llmtrim,omitempty"`
 	RTK         json.RawMessage   `json:"rtk,omitempty"`
 	Snip        json.RawMessage   `json:"snip,omitempty"`
+	Gortex      json.RawMessage   `json:"gortex,omitempty"`
 	Errors      map[string]string `json:"errors,omitempty"`
 }
 
@@ -113,6 +114,7 @@ func (g *gateway) managementStatusSnapshot() managementStatusEvent {
 		{name: "llmtrim", path: "/api/llmtrim", handler: http.HandlerFunc(g.llmtrimStatus)},
 		{name: "rtk", path: "/api/rtk", handler: http.HandlerFunc(g.rtkStatus)},
 		{name: "snip", path: "/api/snip", handler: http.HandlerFunc(g.snipStatus)},
+		{name: "gortex", path: "/api/gortex", handler: http.HandlerFunc(g.gortexStatus)},
 	}
 	results := make(chan managementStatusResult, len(tasks))
 	for _, task := range tasks {
@@ -145,6 +147,8 @@ func (g *gateway) managementStatusSnapshot() managementStatusEvent {
 			event.RTK = result.data
 		case "snip":
 			event.Snip = result.data
+		case "gortex":
+			event.Gortex = result.data
 		}
 	}
 	return event

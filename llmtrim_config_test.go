@@ -33,7 +33,7 @@ func TestSavingUpstreamBaseURLTakesOverLLMTrimConfig(t *testing.T) {
 		},
 		configPath: configPath,
 	}
-	request := httptest.NewRequest(http.MethodPut, "/api/settings/upstream_base_url", strings.NewReader(`{"value":"https://Api.Example.test:32400/v1"}`))
+	request := httptest.NewRequest(http.MethodPut, "/api/settings/upstream_base_url", strings.NewReader(`{"value":"  https://Api.Example.test:32400/v1/  "}`))
 	recorder := httptest.NewRecorder()
 
 	gateway.updateSetting(recorder, request)

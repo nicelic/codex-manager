@@ -18,6 +18,7 @@ var (
 	systrayReady           func()
 	systrayExit            func()
 	iconDoubleClickHandler func()
+	taskbarActivateHandler func()
 	menuItems              = make(map[uint32]*MenuItem)
 	menuItemsLock          sync.RWMutex
 
@@ -119,9 +120,26 @@ func SetOnIconDoubleClick(handler func()) {
 	iconDoubleClickHandler = handler
 }
 
+// SetOnTaskbarActivate registers a callback for activating the Windows taskbar button.
+// It is a no-op on platforms without a taskbar integration in this package.
+func SetOnTaskbarActivate(handler func()) {
+	taskbarActivateHandler = handler
+}
+
+// ShowTaskbarIcon creates the minimized taskbar button on supported platforms.
+func ShowTaskbarIcon() {
+	showTaskbarIcon()
+}
+
 func systrayIconDoubleClicked() {
 	if iconDoubleClickHandler != nil {
 		iconDoubleClickHandler()
+	}
+}
+
+func taskbarIconActivated() {
+	if taskbarActivateHandler != nil {
+		taskbarActivateHandler()
 	}
 }
 

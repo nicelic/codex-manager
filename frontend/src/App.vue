@@ -19,6 +19,7 @@ let llmtrimLogStatusRequestRunning = false
 let llmtrimStatusRequestRunning = false
 let rtkStatusRequestRunning = false
 let snipStatusRequestRunning = false
+let gortexStatusRequestRunning = false
 let pendingLLMTrimTarget = null
 let llmtrimOperationToken = 0
 let confirmationAction = null
@@ -75,6 +76,14 @@ const selectedSnipVersion = ref('')
 const snipInstallWorking = ref(false)
 const snipDeleteWorking = ref(false)
 const snipTrustWorking = ref(false)
+const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], defaultProject: '', statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
+const gortexDiagnostics = reactive({ loading: false, doctorOk: false, doctorOutput: '', doctorError: '', statusOk: false, statusOutput: '', statusError: '' })
+const gortexProjectPath = ref('')
+const gortexReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
+const selectedGortexVersion = ref('')
+const gortexBusy = computed(() => gortex.working || gortex.installWorking || gortex.installing)
+const gortexVersionActionBlocked = computed(() => gortexBusy.value || gortex.running || gortex.anyProcessRunning)
+const gortexUninstallBlocked = computed(() => gortex.loading || !gortex.statusKnown || gortexBusy.value || gortex.running)
 const upstreamH2Label = computed(() => `h2${proxy.connections.upstreamH2WebSocket ? '(ws)' : ''}_${proxy.connections.upstreamH2}`)
 const upstreamH3Label = computed(() => `h3${proxy.connections.upstreamH3WebSocket ? '(ws)' : ''}_${proxy.connections.upstreamH3}`)
 const rtkBlocked = computed(() => !rtk.running && (snip.running || snip.desiredRunning || rtk.blockedBy === 'snip'))
@@ -147,6 +156,11 @@ function activationLabel(tool, activeLabel = '已安装/运行中') {
   if (tool.running) return activeLabel
   if (tool.installed) return '已安装/已停止'
   return '未安装'
+}
+
+function gortexArtifactLabel(present, complete) {
+  if (!present) return '未写入'
+  return complete ? '已写入' : '配置残缺/已修改'
 }
 
 function agentStatusLabel(agent) {
@@ -295,6 +309,58 @@ function applySnipStatus(data, { silent = false } = {}) {
 	if (!silent && data.message) snipNotice.value = data.message
 }
 
+function applyGortexStatus(data, { silent = false } = {}) {
+  gortex.statusKnown = Boolean(data && Object.prototype.hasOwnProperty.call(data, 'installing') && Object.prototype.hasOwnProperty.call(data, 'managed_installed') && Object.prototype.hasOwnProperty.call(data, 'running') && Object.prototype.hasOwnProperty.call(data, 'any_process_running') && Object.prototype.hasOwnProperty.call(data, 'integration_present'))
+  gortex.path = data.path || ''
+  gortex.managedInstalled = Boolean(data.managed_installed)
+  gortex.managedRootExists = Boolean(data.managed_root_exists)
+  gortex.version = data.version || ''
+  gortex.installed = Boolean(data.installed)
+  gortex.installing = Boolean(data.installing)
+  gortex.running = Boolean(data.running)
+  gortex.anyProcessRunning = Boolean(data.any_process_running)
+  gortex.unmanagedProcessRunning = Boolean(data.unmanaged_process_running)
+  gortex.integrationPresent = Boolean(data.integration_present)
+  gortex.processId = Number(data.process_id) || 0
+  gortex.activationState = data.activation_state || 'not_installed'
+  gortex.codexAvailable = Boolean(data.codex_available)
+  gortex.codexConfigured = Boolean(data.codex_configured)
+  gortex.codexComplete = Boolean(data.codex_complete)
+  gortex.claudeAvailable = Boolean(data.claude_available)
+  gortex.claudeConfigured = Boolean(data.claude_configured)
+  gortex.claudeComplete = Boolean(data.claude_complete)
+  gortex.cursorAvailable = Boolean(data.cursor_available)
+  gortex.cursorConfigured = Boolean(data.cursor_configured)
+  gortex.cursorComplete = Boolean(data.cursor_complete)
+  gortex.copilotAvailable = Boolean(data.copilot_available)
+  gortex.copilotConfigured = Boolean(data.copilot_configured)
+  gortex.copilotComplete = Boolean(data.copilot_complete)
+  gortex.codexPrompt = Boolean(data.codex_prompt)
+  gortex.codexPromptComplete = Object.prototype.hasOwnProperty.call(data, 'codex_prompt_complete') ? Boolean(data.codex_prompt_complete) : gortex.codexPrompt
+  gortex.claudePrompt = Boolean(data.claude_prompt)
+  gortex.claudePromptComplete = Object.prototype.hasOwnProperty.call(data, 'claude_prompt_complete') ? Boolean(data.claude_prompt_complete) : gortex.claudePrompt
+  gortex.cursorPrompt = Boolean(data.cursor_prompt)
+  gortex.cursorPromptComplete = Object.prototype.hasOwnProperty.call(data, 'cursor_prompt_complete') ? Boolean(data.cursor_prompt_complete) : gortex.cursorPrompt
+  gortex.copilotPrompt = Boolean(data.copilot_prompt)
+  gortex.copilotPromptComplete = Object.prototype.hasOwnProperty.call(data, 'copilot_prompt_complete') ? Boolean(data.copilot_prompt_complete) : gortex.copilotPrompt
+  gortex.codexHook = Boolean(data.codex_hook)
+  gortex.codexHookComplete = Object.prototype.hasOwnProperty.call(data, 'codex_hook_complete') ? Boolean(data.codex_hook_complete) : gortex.codexHook
+  gortex.claudeHook = Boolean(data.claude_hook)
+  gortex.claudeHookComplete = Object.prototype.hasOwnProperty.call(data, 'claude_hook_complete') ? Boolean(data.claude_hook_complete) : gortex.claudeHook
+  gortex.copilotHook = Boolean(data.copilot_hook)
+  gortex.copilotHookComplete = Object.prototype.hasOwnProperty.call(data, 'copilot_hook_complete') ? Boolean(data.copilot_hook_complete) : gortex.copilotHook
+  gortex.userPath = Boolean(data.user_path)
+  gortex.systemPath = Boolean(data.system_path)
+  gortex.codexTrustStatus = data.codex_trust_status || 'not_applicable'
+  gortex.codexTrustRequired = Boolean(data.codex_trust_required)
+  gortex.codexTrustNotice = data.codex_trust_notice || ''
+  gortex.codexTrustSteps = Array.isArray(data.codex_trust_steps) ? data.codex_trust_steps : []
+  gortex.trackedProjects = Array.isArray(data.tracked_projects) ? data.tracked_projects : []
+  gortex.defaultProject = data.default_project || ''
+  gortex.loading = false
+  if (!silent && data.message) gortex.notice = data.message
+}
+
 function applyManagementStatusEvent(event) {
   if (!event || event.type !== 'status') return
   online.value = true
@@ -305,6 +371,7 @@ function applyManagementStatusEvent(event) {
   if (event.llmtrim) applyLLMTrimStatus(event.llmtrim, { silent: true })
   if (event.rtk) applyRTKStatus(event.rtk, { silent: true })
   if (event.snip) applySnipStatus(event.snip, { silent: true })
+  if (event.gortex) applyGortexStatus(event.gortex, { silent: true })
 }
 
 function managementWebSocketURL() {
@@ -777,6 +844,281 @@ async function loadSnipStatus({ silent = false } = {}) {
   }
 }
 
+async function loadGortexStatus({ silent = false } = {}) {
+  if (gortexStatusRequestRunning) return
+  gortexStatusRequestRunning = true
+  if (!silent) gortex.loading = true
+  try {
+    const response = await fetch('/api/gortex', { cache: 'no-store' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 状态接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '读取 Gortex 状态失败')
+    applyGortexStatus(data, { silent })
+    if (!gortex.statusKnown) {
+      gortex.notice = '当前运行的 code-Manager 不支持完整的 Gortex 状态保护，请重启新版 EXE。'
+    }
+  } catch (error) {
+    gortex.statusKnown = false
+    gortex.notice = error.message || '读取 Gortex 状态失败'
+  } finally {
+    if (!silent) gortex.loading = false
+    gortexStatusRequestRunning = false
+  }
+}
+
+async function controlGortex(action) {
+  if (gortexBusy.value || !gortex.managedInstalled) return
+  gortex.working = true
+  gortex.notice = ''
+  try {
+    const response = await fetch(`/api/gortex/${action}`, { method: 'POST' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 操作接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || 'Gortex 操作失败')
+    const warningText = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings.join(' ')}` : ''
+    gortex.notice = `${data.message || 'Gortex 状态已更新。'}${warningText}`
+  } catch (error) {
+    gortex.notice = error.message || 'Gortex 操作失败'
+  } finally {
+    gortex.working = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
+async function installGortex() {
+  if (gortexVersionActionBlocked.value || gortex.loading || !gortex.statusKnown || gortex.managedInstalled || !selectedGortexVersion.value) {
+    if (!selectedGortexVersion.value) gortex.notice = '请先加载并选择一个可用的 Gortex 版本。'
+    return
+  }
+  gortex.installWorking = true
+  gortex.notice = ''
+  try {
+    const response = await fetch('/api/gortex/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag_name: selectedGortexVersion.value }) })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 安装接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '安装 Gortex 失败')
+    gortex.notice = data.message || 'Gortex Release ZIP 已安装。'
+  } catch (error) {
+    gortex.notice = error.message || '安装 Gortex 失败'
+  } finally {
+    gortex.installWorking = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
+function requestInstallGortex(event) {
+  if (gortexVersionActionBlocked.value || gortex.loading || !gortex.statusKnown || gortex.managedInstalled) return
+  openConfirmation({
+    title: '下载并安装 Gortex Release ZIP？',
+    description: `将从官方发布源下载 Gortex ${selectedGortexVersion.value || '所选版本'} 的 Windows x64 ZIP，校验后解压到 code-Manager.exe 同级的 Gortex 目录。不会执行 gortex install，也不会自动启动 daemon。`,
+    confirmLabel: '开始安装',
+    onConfirm: installGortex,
+    trigger: event?.currentTarget,
+  })
+}
+
+async function loadGortexReleases({ more = false } = {}) {
+  if (gortexReleases.loading || gortexVersionActionBlocked.value) return
+  const page = more ? gortexReleases.page + 1 : 1
+  gortexReleases.loading = true
+  gortex.notice = ''
+  try {
+    const response = await fetch(`/api/gortex/releases?page=${page}`, { cache: 'no-store' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 版本接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '读取 Gortex 版本失败')
+    const incoming = Array.isArray(data.releases) ? data.releases : []
+    gortexReleases.items = more ? [...gortexReleases.items, ...incoming] : incoming
+    gortexReleases.page = Number(data.page) || page
+    gortexReleases.hasMore = Boolean(data.has_more)
+    gortexReleases.loaded = true
+    if (!gortexReleases.items.some((item) => item.tag_name === selectedGortexVersion.value && item.available)) {
+      const firstAvailable = gortexReleases.items.find((item) => item.available)
+      selectedGortexVersion.value = firstAvailable ? firstAvailable.tag_name : ''
+    }
+  } catch (error) {
+    gortex.notice = error.message || '读取 Gortex 版本失败'
+  } finally {
+    gortexReleases.loading = false
+  }
+}
+
+function handleGortexVersionChange() {
+  if (selectedGortexVersion.value === '__load_more__') {
+    selectedGortexVersion.value = ''
+    loadGortexReleases({ more: true })
+  }
+}
+
+async function registerGortex() {
+  if (gortexBusy.value || !gortex.managedInstalled) return
+  gortex.working = true
+  gortex.notice = ''
+  try {
+    const response = await fetch('/api/gortex/register', { method: 'POST' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 注册接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '注册 Gortex MCP 失败')
+    const warningText = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings.join(' ')}` : ''
+    gortex.notice = `${data.message || 'Gortex MCP 已注册。'}${warningText}`
+  } catch (error) {
+    gortex.notice = error.message || '注册 Gortex MCP 失败'
+  } finally {
+    gortex.working = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
+async function trustGortexCodex() {
+  if (gortexBusy.value || !gortex.codexTrustRequired) return
+  gortex.working = true
+  gortex.notice = ''
+  try {
+    const response = await fetch('/api/gortex/trust', { method: 'POST' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Codex 信任接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '打开 Codex 信任窗口失败')
+    gortex.notice = data.trust_notice || '已打开 Codex Hook 信任界面，请在 /hooks 中审核 Gortex。'
+  } catch (error) {
+    gortex.notice = error.message || '打开 Codex 信任窗口失败'
+  } finally {
+    gortex.working = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
+async function runGortexDiagnostics() {
+  if (gortexDiagnostics.loading || gortexBusy.value || !gortex.managedInstalled) return
+  gortexDiagnostics.loading = true
+  try {
+    const response = await fetch('/api/gortex/diagnostics', { method: 'POST' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 诊断接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '运行 Gortex 诊断失败')
+    gortexDiagnostics.doctorOk = Boolean(data.doctor_ok)
+    gortexDiagnostics.doctorOutput = data.doctor_output || ''
+    gortexDiagnostics.doctorError = data.doctor_error || ''
+    gortexDiagnostics.statusOk = Boolean(data.status_ok)
+    gortexDiagnostics.statusOutput = data.status_output || ''
+    gortexDiagnostics.statusError = data.status_error || ''
+    gortex.notice = data.message || 'Gortex 诊断已完成。'
+  } catch (error) {
+    gortex.notice = error.message || '运行 Gortex 诊断失败'
+  } finally {
+    gortexDiagnostics.loading = false
+  }
+}
+
+async function removeGortex() {
+  if (gortexBusy.value) return
+  gortex.working = true
+  gortex.notice = ''
+  try {
+    const response = await fetch('/api/gortex/remove', { method: 'POST' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 移除接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '移除 Gortex MCP 失败')
+    const warningText = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings.join(' ')}` : ''
+    gortex.notice = `${data.message || 'Gortex MCP 已移除。'}${warningText}`
+  } catch (error) {
+    gortex.notice = error.message || '移除 Gortex MCP 失败'
+  } finally {
+    gortex.working = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
+async function trackGortexProject() {
+  const pathValue = gortexProjectPath.value.trim()
+  gortexProjectPath.value = pathValue
+  if (gortexBusy.value || !gortex.managedInstalled || !pathValue) {
+    if (!pathValue) gortex.notice = '请输入要 track 的项目绝对路径。'
+    return
+  }
+  gortex.working = true
+  gortex.notice = ''
+  try {
+    const response = await fetch('/api/gortex/track', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: pathValue }) })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex track 接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || 'Gortex track 失败')
+    gortex.notice = data.message || '项目已 track。'
+    gortexProjectPath.value = ''
+  } catch (error) {
+    gortex.notice = error.message || 'Gortex track 失败'
+  } finally {
+    gortex.working = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
+async function untrackGortexProject(pathValue) {
+  if (gortexBusy.value || !gortex.managedInstalled || !pathValue) return
+  gortex.working = true
+  gortex.notice = ''
+  try {
+    const response = await fetch('/api/gortex/untrack', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: pathValue }) })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex untrack 接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || 'Gortex untrack 失败')
+    gortex.notice = data.message || '项目已取消 track。'
+  } catch (error) {
+    gortex.notice = error.message || 'Gortex untrack 失败'
+  } finally {
+    gortex.working = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
+function requestUninstallGortex(event) {
+  if (gortexUninstallBlocked.value || (!gortex.managedInstalled && !gortex.managedRootExists && !gortex.trackedProjects.length && !gortex.codexConfigured && !gortex.claudeConfigured && !gortex.cursorConfigured && !gortex.copilotConfigured)) return
+  openConfirmation({
+    title: '确定卸载 Gortex 吗？',
+    description: '将停止 daemon、取消已记录项目的 track、移除名为 gortex 的 MCP 配置，清理当前受管路径下仍在运行的 Gortex 进程，并删除 code-Manager.exe 同级受管 Gortex 目录。即使 Codex 的 gortex mcp 仍在运行，也会在卸载时结束它；其他 MCP、项目文件和用户目录中的非受管文件会保留。',
+    onConfirm: uninstallGortex,
+    trigger: event?.currentTarget,
+  })
+}
+
+async function uninstallGortex() {
+  if (gortexUninstallBlocked.value) return
+  await loadGortexStatus({ silent: true })
+  if (!gortex.statusKnown) {
+    gortex.notice = '无法确认 Gortex 当前状态，已取消卸载；请刷新状态后重试。'
+    return
+  }
+  if (gortex.installing || gortex.running) {
+    gortex.notice = gortex.installing ? 'Gortex 正在安装，安装完成后才能卸载。' : 'Gortex daemon 正在运行，请先停止 daemon 后再卸载。'
+    return
+  }
+  gortex.working = true
+  gortex.notice = ''
+  try {
+    const response = await fetch('/api/gortex/uninstall', { method: 'POST' })
+    const responseText = await response.text()
+    let data = {}
+    try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 卸载接口返回了无效响应') }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '卸载 Gortex 失败')
+    const warningText = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings.join(' ')}` : ''
+    gortex.notice = `${data.message || 'Gortex 已卸载。'}${warningText}`
+  } catch (error) {
+    gortex.notice = error.message || '卸载 Gortex 失败'
+  } finally {
+    gortex.working = false
+    await loadGortexStatus({ silent: true })
+  }
+}
+
 async function loadRTKReleases({ more = false } = {}) {
   if (rtkReleases.loading) return
   const page = more ? rtkReleases.page + 1 : 1
@@ -1229,6 +1571,7 @@ async function runStatusPoll() {
       loadLLMTrimStatus({ silent: true }),
       loadRTKStatus({ silent: true }),
       loadSnipStatus({ silent: true }),
+      loadGortexStatus({ silent: true }),
     ]
     if (logViewer.showing || logViewer.working) tasks.push(loadLogStatus({ silent: true }))
     if (llmtrimLogViewer.showing || llmtrimLogViewer.working) tasks.push(loadLLMTrimLogStatus({ silent: true }))
@@ -1241,6 +1584,27 @@ async function runStatusPoll() {
 
 function removeLineBreaks(value) {
   return String(value ?? '').replace(/[\r\n]+/g, '')
+}
+
+function normalizeUpstreamBaseURL(value) {
+  const normalized = removeLineBreaks(value).trim()
+  if (!normalized) return ''
+
+  let parsed
+  try {
+    parsed = new URL(normalized)
+  } catch {
+    return normalized
+  }
+  if (parsed.protocol !== 'https:' || !parsed.hostname) return normalized
+
+  const queryOrHashIndex = normalized.search(/[?#]/)
+  const authorityAndPath = queryOrHashIndex >= 0 ? normalized.slice(0, queryOrHashIndex) : normalized
+  const suffix = queryOrHashIndex >= 0 ? normalized.slice(queryOrHashIndex) : ''
+  const schemeIndex = authorityAndPath.indexOf('://')
+  const pathStart = schemeIndex >= 0 ? authorityAndPath.indexOf('/', schemeIndex + 3) : -1
+  if (pathStart < 0) return normalized
+  return `${authorityAndPath.slice(0, pathStart)}${authorityAndPath.slice(pathStart).replace(/\/+$/, '')}${suffix}`
 }
 
 function setSettingValue(key, value) {
@@ -1350,7 +1714,7 @@ function handleVisibilityChange() {
 
 async function saveSetting(key, endpoint, value) {
   notices[key] = ''
-  const normalizedValue = removeLineBreaks(value).trim()
+  const normalizedValue = key === 'upstreamBaseURL' ? normalizeUpstreamBaseURL(value) : removeLineBreaks(value).trim()
   setSettingValue(key, normalizedValue)
   if (!normalizedValue) {
     notices[key] = '请输入有效值。'
@@ -1372,9 +1736,11 @@ async function saveSetting(key, endpoint, value) {
       throw new Error('服务返回了无效响应')
     }
     if (!response.ok) throw new Error(data.message || responseText.trim() || '保存失败')
+    const savedValue = data.value ?? normalizedValue
+    setSettingValue(key, savedValue)
     notices[key] = data.message
     if (key === 'upstreamAPIKey') {
-      apiKey.value = normalizedValue
+      apiKey.value = savedValue
     }
   } catch (error) {
     notices[key] = error.message || '保存失败'
@@ -1515,6 +1881,9 @@ onBeforeUnmount(() => {
         </button>
         <button type="button" class="service-tab" :class="{ active: activeTab === 'llmtrim' }" :aria-selected="activeTab === 'llmtrim'" role="tab" @click="activeTab = 'llmtrim'">
           llmtrim
+        </button>
+        <button type="button" class="service-tab" :class="{ active: activeTab === 'gortex' }" :aria-selected="activeTab === 'gortex'" role="tab" @click="activeTab = 'gortex'">
+          Gortex
         </button>
       </nav>
 
@@ -1662,6 +2031,89 @@ onBeforeUnmount(() => {
           <p v-if="llmtrim.statusMessage" class="daemon-meta">{{ llmtrim.statusMessage }}</p>
           <p v-if="llmtrimNotice" class="notice">{{ llmtrimNotice }}</p>
         </div>
+      </section>
+      <section v-else-if="activeTab === 'gortex'" class="llmtrim-section" aria-labelledby="gortex-title" role="tabpanel">
+        <div class="llmtrim-heading">
+          <div>
+            <p class="eyebrow">GORTEX MCP</p>
+            <h2 id="gortex-title">Gortex 管理</h2>
+          </div>
+          <div class="llmtrim-actions">
+            <span class="daemon-badge" :class="{ running: gortex.running, attention: gortex.activationState === 'attention' }">
+              {{ activationLabel(gortex, 'daemon 运行中') }}
+            </span>
+            <button type="button" :class="{ stop: gortex.running }" :disabled="gortex.loading || gortexBusy || !gortex.managedInstalled" @click="controlGortex(gortex.running ? 'stop' : 'start')">
+              {{ gortex.working ? '处理中…' : (!gortex.managedInstalled ? '仅检测' : (gortex.running ? '停止 daemon' : '启动 daemon')) }}
+            </button>
+            <button type="button" :disabled="gortex.loading || gortexBusy" @click="loadGortexStatus">
+              {{ gortex.loading ? '读取中…' : '刷新状态' }}
+            </button>
+          </div>
+        </div>
+        <div class="llmtrim-install-control">
+          <label>
+            <strong>Gortex 程序</strong>
+            <span>优先使用 code-Manager.exe 同级的 Gortex 受管目录；安装来自远端 Windows x64 ZIP，安装后自动写入用户和系统 PATH。</span>
+          </label>
+          <code class="gortex-path">{{ gortex.path || '未检测到 gortex.exe' }}</code>
+          <div class="llmtrim-install-row gortex-actions-row">
+            <select id="gortex-version" v-model="selectedGortexVersion" :disabled="gortexReleases.loading || gortexVersionActionBlocked" @change="handleGortexVersionChange">
+              <option value="">{{ gortexReleases.loaded ? '请选择版本' : '点击加载版本' }}</option>
+              <option v-for="release in gortexReleases.items" :key="release.tag_name" :value="release.tag_name" :disabled="!release.available">
+                {{ release.tag_name }}{{ release.prerelease ? '（预发布）' : '' }}{{ !release.available ? '（无 Windows x64 包）' : '' }}
+              </option>
+              <option v-if="gortexReleases.hasMore && gortexReleases.loaded" value="__load_more__">加载更多…</option>
+            </select>
+            <button type="button" :class="{ 'is-loading': gortexReleases.loading }" :disabled="gortexReleases.loading || gortexVersionActionBlocked" @click="loadGortexReleases">
+              {{ gortexReleases.loading ? '加载中…' : (gortexReleases.loaded ? '刷新版本' : '加载版本') }}
+            </button>
+            <button type="button" class="install-button" :disabled="gortexVersionActionBlocked || gortex.loading || !gortex.statusKnown || gortex.managedInstalled || !selectedGortexVersion || selectedGortexVersion === '__load_more__'" @click="requestInstallGortex">
+              {{ gortex.installWorking ? '安装中…' : '安装 ZIP' }}
+            </button>
+            <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="registerGortex">注册 MCP</button>
+            <button type="button" :disabled="gortexBusy || !gortex.integrationPresent" @click="removeGortex">移除 MCP</button>
+            <button type="button" class="delete-button" :disabled="gortexUninstallBlocked || !gortex.integrationPresent" @click="requestUninstallGortex">{{ gortex.installing || gortex.installWorking ? '安装中…' : (gortex.running ? '运行中不可卸载' : ((!gortex.statusKnown || gortex.loading) ? '确认状态…' : '卸载')) }}</button>
+            <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="runGortexDiagnostics">{{ gortexDiagnostics.loading ? '验证中…' : '验证 doctor/status' }}</button>
+          </div>
+        </div>
+        <div class="llmtrim-control">
+          <label>
+            <strong>平台接入</strong>
+            <span>注册和移除只处理名为 gortex 的 MCP 项，不会删除其他 MCP。track 需要 daemon 建图，若 daemon 已停止会按需启动；不会在后台自动深度审查所有函数。</span>
+          </label>
+          <p class="daemon-meta version-meta">当前版本 {{ gortex.version || '未记录' }}</p>
+           <p class="daemon-meta">daemon {{ gortex.managedInstalled ? (gortex.running ? '受管运行中' : '受管已停止') : '未安装受管版本' }}<span v-if="gortex.processId"> · PID {{ gortex.processId }}</span> · Gortex 进程 {{ gortex.anyProcessRunning ? (gortex.unmanagedProcessRunning ? '有外部/旧路径进程' : '有受管 MCP 或 daemon 进程') : '无' }}</p>
+          <p class="daemon-meta">PATH 用户 {{ gortex.userPath ? '已配置' : '未配置' }} · 系统 {{ gortex.systemPath ? '已配置' : '未配置' }}</p>
+           <p class="daemon-meta">Codex {{ gortex.codexAvailable ? (gortex.codexConfigured ? (gortex.codexComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.codexPrompt, gortex.codexPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.codexHook, gortex.codexHookComplete) }}</p>
+           <p class="daemon-meta">Claude Code {{ gortex.claudeAvailable ? (gortex.claudeConfigured ? (gortex.claudeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.claudePrompt, gortex.claudePromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.claudeHook, gortex.claudeHookComplete) }}</p>
+           <p class="daemon-meta">Cursor {{ gortex.cursorAvailable ? (gortex.cursorConfigured ? (gortex.cursorComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 项目规则 {{ gortexArtifactLabel(gortex.cursorPrompt, gortex.cursorPromptComplete) }} · GitHub Copilot CLI {{ gortex.copilotAvailable ? (gortex.copilotConfigured ? (gortex.copilotComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 提示词 {{ gortexArtifactLabel(gortex.copilotPrompt, gortex.copilotPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.copilotHook, gortex.copilotHookComplete) }}</p>
+          <p v-if="gortex.codexTrustRequired || gortex.codexTrustStatus === 'trusted'" class="daemon-meta">Codex Hook 信任：{{ gortex.codexTrustStatus === 'trusted' ? '已信任' : '需要在 /hooks 中审核' }} <button v-if="gortex.codexTrustRequired" type="button" :disabled="gortexBusy" @click="trustGortexCodex">打开信任审核</button></p>
+        </div>
+        <div class="llmtrim-install-control">
+          <label for="gortex-project-path">
+            <strong>项目代码图谱</strong>
+            <span>输入项目绝对路径后执行 track；取消 track 只解除 Gortex 对该项目的索引关联，不删除项目文件。</span>
+          </label>
+          <div class="setting-control">
+            <input id="gortex-project-path" v-model="gortexProjectPath" spellcheck="false" autocomplete="off" placeholder="D:\\你的项目所在的目录" />
+            <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="trackGortexProject">track</button>
+          </div>
+          <div v-if="gortex.trackedProjects.length" class="gortex-project-list">
+            <div v-for="project in gortex.trackedProjects" :key="project" class="gortex-project-item">
+              <code>{{ project }}</code>
+              <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="untrackGortexProject(project)">untrack</button>
+            </div>
+          </div>
+          <p v-else class="daemon-meta">尚未记录通过本页面 track 的项目。</p>
+        </div>
+        <div v-if="gortexDiagnostics.doctorOutput || gortexDiagnostics.statusOutput" class="llmtrim-control gortex-diagnostics">
+          <label><strong>Gortex 验证结果</strong><span>doctor 负责检查 MCP、Hook 与运行证据；status 展示 daemon 的全部 tracked repositories。</span></label>
+          <pre v-if="gortexDiagnostics.doctorOutput">doctor {{ gortexDiagnostics.doctorOk ? '通过' : '返回诊断' }}\n{{ gortexDiagnostics.doctorOutput }}</pre>
+          <pre v-if="gortexDiagnostics.statusOutput">status {{ gortexDiagnostics.statusOk ? '通过' : '不可用' }}\n{{ gortexDiagnostics.statusOutput }}</pre>
+          <p v-if="gortexDiagnostics.doctorError" class="notice">doctor：{{ gortexDiagnostics.doctorError }}</p>
+          <p v-if="gortexDiagnostics.statusError" class="notice">status：{{ gortexDiagnostics.statusError }}</p>
+        </div>
+        <p v-if="gortex.notice" class="notice">{{ gortex.notice }}</p>
       </section>
       <div v-else class="service-tab-placeholder" aria-hidden="true"></div>
 

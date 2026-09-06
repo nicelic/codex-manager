@@ -42,6 +42,10 @@ func queryIndependentPathStatus(directory string) (bool, bool, string) {
 }
 
 func configureIndependentPath(ctx context.Context, directory string) (bool, bool, error) {
+	return configureIndependentPathNamed(ctx, directory, "Snip")
+}
+
+func configureIndependentPathNamed(ctx context.Context, directory, productName string) (bool, bool, error) {
 	entry := normalizeWindowsPathEntry(directory)
 	user, system, message := queryIndependentPathStatus(directory)
 	if message != "" {
@@ -50,7 +54,7 @@ func configureIndependentPath(ctx context.Context, directory string) (bool, bool
 	userAdded := false
 	if !user {
 		if err := updateWindowsPathValue(registry.CURRENT_USER, `Environment`, entry, true); err != nil {
-			return false, system, fmt.Errorf("写入 snip 用户 PATH 失败: %w", err)
+			return false, system, fmt.Errorf("写入 %s 用户 PATH 失败: %w", productName, err)
 		}
 		userAdded = true
 	}
@@ -77,7 +81,7 @@ func configureIndependentPath(ctx context.Context, directory string) (bool, bool
 		return user, system, errors.New(message)
 	}
 	if !user || !system {
-		return user, system, errors.New("用户或系统 PATH 写入后仍未检测到 Snip 目录")
+		return user, system, fmt.Errorf("用户或系统 PATH 写入后仍未检测到 %s 目录", productName)
 	}
 	return user, system, nil
 }
@@ -87,6 +91,10 @@ func removeIndependentPath(ctx context.Context, directory string) error {
 }
 
 func removeOwnedIndependentPath(ctx context.Context, directory string, userOwned, systemOwned bool) error {
+	return removeOwnedIndependentPathNamed(ctx, directory, userOwned, systemOwned, "Snip")
+}
+
+func removeOwnedIndependentPathNamed(ctx context.Context, directory string, userOwned, systemOwned bool, productName string) error {
 	entry := normalizeWindowsPathEntry(directory)
 	var failures []string
 	if userOwned {
@@ -126,7 +134,7 @@ func removeOwnedIndependentPath(ctx context.Context, directory string, userOwned
 		return errors.New(message)
 	}
 	if (userOwned && userPresent) || (systemOwned && systemPresent) {
-		return errors.New("受管 Snip PATH 清理后仍存在")
+		return fmt.Errorf("受管 %s PATH 清理后仍存在", productName)
 	}
 	return nil
 }

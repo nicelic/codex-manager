@@ -3,7 +3,9 @@
 /web/dist/
 /releases/
 /assets/tray.png
+/assets/tray-*.png
 /assets/tray.ico
+/code-Manager-icon.syso
 
 # Local executables and runtime files
 /code-Manager.exe
