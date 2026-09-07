@@ -1493,6 +1493,7 @@ WS 二进制帧，后者以普通双向流承载原始 WS 帧。它们不引入 
 C:\EXEXX\edit\
 |
 |-- README.txt                         使用说明、架构图、函数索引和排查顺序
+|-- VERSION.txt                        当前项目发布版本号（例如 v0.1.1），发布前后用于核对版本
 |-- LLMTRIM-部署总结.md                llmtrim 已部署实例的全链路、配置、验收与目录差异
 |-- RTK-部署总结.md                    RTK 通用开发说明：四平台接入、PATH、状态账本与验收边界
 |-- SNIP-部署总结.md                   snip 原生 Hook、Codex 信任、状态账本、验收与目录差异
@@ -2537,26 +2538,27 @@ GitHub 仓库：`nicelic/codex-manager`。
 
 发布原则：
 
+- 当前发布版本统一记录在项目根目录的 `VERSION.txt`，内容使用完整标签格式，例如 `v0.1.1`；修改版本时先更新该文件，再用同名 Git 标签和 Release 发布。
 - 每次发布只以当前工作区的最新代码为准，不需要获取、比对或汇总历史版本的代码变化。
 - 每次发布前都必须运行项目根目录的 `build.bat`，不能直接复用旧的 EXE。
 - `build.bat` 成功后，唯一用于 GitHub Release 的附件是
-  `releases\code-Manager\code-Manager.exe`。
-- 先提交并推送当前源码、文档和忽略规则；不要提交本机配置、日志、`node_modules`、`web/dist`、
+  `releases\code-Manager\code-Manager.exe`；该文件名固定不变，不在名称中追加版本号。
+- 先提交并推送当前源码、文档、`VERSION.txt` 和忽略规则；不要提交本机配置、日志、`node_modules`、`web/dist`、
   `releases` 目录或其他生成的 EXE。
-- GitHub Release 使用对应的语义化版本标签，例如 `v0.1.0`。发布说明可以保持简短，只说明该版本
+- GitHub Release 使用与 `VERSION.txt` 完全一致的语义化版本标签。发布说明可以保持简短，只说明该版本
   已发布并提供 Windows 可执行文件，无需根据历史提交自动生成变更日志。
 
-首次发布 v0.1.0：
+发布 v0.1.1：
 
-1. 确认工作区是准备发布的当前代码。
+1. 在项目根目录确认 `VERSION.txt` 内容为 `v0.1.1`，并检查工作区是准备发布的当前代码。
 2. 在项目根目录运行 `build.bat`，等待它生成最新的
    `releases\code-Manager\code-Manager.exe`。
-3. 检查构建成功且 EXE 存在后，提交并推送当前源码到 GitHub。
-4. 创建标签和 Release：`v0.1.0`。
-5. 将 `releases\code-Manager\code-Manager.exe` 上传为该 Release 的附件。
+3. 检查构建成功且 EXE 存在后，提交并推送当前源码、README 和 `VERSION.txt` 到 GitHub。
+4. 创建与 `VERSION.txt` 一致的标签和 Release：`v0.1.1`。如果远端已经存在同名标签，先确认它是否指向本次发布提交，必要时更新标签指向后再创建 Release。
+5. 将 `releases\code-Manager\code-Manager.exe` 作为该 Release 的附件上传；上传后的附件名称仍为 `code-Manager.exe`。
 
-后续发布版本时重复相同流程：先运行 `build.bat` 生成最新 EXE，再创建该版本的 GitHub Release 并上传
-新生成的 EXE；不需要先获取历史版本代码变化。
+后续发布版本时重复相同流程：先修改 `VERSION.txt`，再运行 `build.bat` 生成最新 EXE，提交并推送源码，最后创建同名 GitHub Release 并上传
+新生成的 `releases\code-Manager\code-Manager.exe`；EXE 名称始终保持 `code-Manager.exe`，不需要先获取历史版本代码变化。
 
 
 十六、Gortex 四平台接入补充
