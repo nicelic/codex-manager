@@ -121,6 +121,11 @@ if not exist "%OUTPUT_EXE%" (
     echo Build failed: output executable was not created.
     goto :fail
 )
+copy /y "%OUTPUT_EXE%" "%ROOT%\code-Manager.exe" >nul
+if errorlevel 1 (
+    echo Build failed: cannot sync development executable.
+    goto :fail
+)
 
 if exist "%ICON_SYSO%" del /q "%ICON_SYSO%"
 

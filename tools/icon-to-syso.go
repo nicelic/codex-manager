@@ -123,7 +123,9 @@ func buildResourceObject(images []icoImage) ([]byte, error) {
 		iconChildren = append(iconChildren, &resourceNode{id: uint32(i + 1), dataID: -1, children: []*resourceNode{lang}})
 	}
 	iconType := &resourceNode{id: imageResourceTypeIcon, dataID: -1, children: iconChildren}
-	root := &resourceNode{id: 0, dataID: -1, children: []*resourceNode{groupType, iconType}}
+	// PE resource IDs must be stored in ascending order for Explorer and the
+	// Windows resource APIs to resolve every type reliably.
+	root := &resourceNode{id: 0, dataID: -1, children: []*resourceNode{iconType, groupType}}
 
 	var directory []byte
 	relocations := make([]resourceRelocation, 0, len(resourceData))
@@ -132,18 +134,27 @@ func buildResourceObject(images []icoImage) ([]byte, error) {
 		if node.dataID >= 0 {
 			offset := uint32(len(directory))
 			directory = append(directory, make([]byte, 16)...)
+			// IMAGE_RESOURCE_DATA_ENTRY stores both the RVA (relocated by the
+			// linker) and the payload size. Leaving Size at zero makes Windows
+			// report a present-but-empty RT_ICON/RT_GROUP_ICON resource.
+			binary.LittleEndian.PutUint32(directory[offset+4:offset+8], uint32(len(resourceData[node.dataID])))
 			relocations = append(relocations, resourceRelocation{offset: offset, dataID: node.dataID})
 			return offset
 		}
 		offset := uint32(len(directory))
-		directory = append(directory, make([]byte, 16+16*len(node.children))...)
+		// IMAGE_RESOURCE_DIRECTORY_ENTRY is eight bytes; only leaf data entries
+		// use the 16-byte IMAGE_RESOURCE_DATA_ENTRY layout.
+		directory = append(directory, make([]byte, 16+8*len(node.children))...)
 		childOffsets := make([]uint32, len(node.children))
 		for i, child := range node.children {
 			childOffsets[i] = encode(child)
 		}
-		binary.LittleEndian.PutUint16(directory[offset+12:offset+14], uint16(len(node.children)))
+		// Resource directories store named and numeric entries separately.
+		// Every icon node here uses numeric IDs, so the count belongs in
+		// NumberOfIdEntries (offset + 14), not NumberOfNamedEntries.
+		binary.LittleEndian.PutUint16(directory[offset+14:offset+16], uint16(len(node.children)))
 		for i, child := range node.children {
-			entry := int(offset) + 16 + 16*i
+			entry := int(offset) + 16 + 8*i
 			binary.LittleEndian.PutUint32(directory[entry:entry+4], child.id)
 			childOffset := childOffsets[i]
 			if child.dataID < 0 {

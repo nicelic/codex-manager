@@ -1330,7 +1330,8 @@ Test-NetConnection 127.0.0.1 -Port 43117
 直接双击 code-Manager.exe 即可启动，程序会自动打开浏览器页面，并在 Windows 底部任务栏和通知区域
 显示由 297763_sort-by-icon.svg 生成的 code-Manager 图标。任务栏图标只在程序运行期间显示，点击它会再次打开管理页面；
 退出 code-Manager 后任务栏和托盘图标都会消失。右键 EXE 发送到桌面创建快捷方式时，快捷方式直接读取 EXE 内嵌的正式图标资源，
-不需要旁边存在 `.ico` 文件。
+不需要旁边存在 `.ico` 文件。程序每次启动（包括检测到旧版实例仍在运行而随后退出的更新启动）都会检查当前用户桌面、公共桌面、开始菜单和启动目录中的 `.lnk`，
+只处理目标文件名为 `code-Manager.exe` 的快捷方式，并把图标位置刷新为当前 EXE 的资源索引 0。刷新失败会跳过该快捷方式，不影响主程序启动；运行时不会释放或写出任何 ICO/PNG 文件。
 
 右键单击托盘图标可以：
 
@@ -1378,9 +1379,11 @@ http://127.0.0.1:7780/healthz
   C:\EXEXX\edit\build.bat
 
 `build.bat` 全程在 CMD 中执行：使用 npm.cmd 安装前端依赖并构建 Vue 页面，再使用 Windows Edge
-的无界面渲染将 297763_sort-by-icon.svg 转为多分辨率 ICO，再生成 Windows PE 图标资源并嵌入 EXE。最终只生成：
+的无界面渲染将 297763_sort-by-icon.svg 转为多分辨率 ICO，再生成 Windows PE 图标资源并嵌入 EXE。最终生成：
 
   C:\EXEXX\edit\releases\code-Manager\code-Manager.exe
+
+并同步覆盖根目录开发用 `code-Manager.exe`。发布目录只保留这一份 EXE。
 
 发布目录不复制 Go/Vue 源码、web/dist、图标源文件、assets 或前端 node_modules；运行所需的前端页面、
 托盘 ICO、EXE 图标资源、完整 RTK 命令参考、Codex 常驻规则和 `uninstall.bat` 模板都会编入这一个 EXE。运行时托盘图标从内存
@@ -1469,11 +1472,11 @@ WS 二进制帧，后者以普通双向流承载原始 WS 帧。它们不引入 
     --go run tools/icon-to-syso.go-->
   code-Manager-icon.syso
     --Go linker 生成 PE RT_GROUP_ICON/RT_ICON-->
-  code-Manager.exe（桌面/快捷方式图标）
+  code-Manager.exe（资源管理器、桌面快捷方式、任务栏窗口图标）
 
   assets/tray.ico
     --go:embed trayIcon + Windows 内存图标 API-->
-  code-Manager.exe（托盘图标和任务栏图标）
+  code-Manager.exe（托盘图标）
 
   assets/RTK-Codex-commands.md
     --go:embed rtkCodexCommands-->
@@ -1537,6 +1540,9 @@ C:\EXEXX\edit\
 |-- snip_trust_test.go                  固定 Codex 目录与信任状态聚焦测试
 |-- tool_state.go                       RTK、snip、llmtrim 的状态文件和统一互斥锁
 |-- single_instance_windows.go         Windows 单实例、进程枚举和进程终止
+|-- shortcut_icon_windows.go            Windows ShellLink 快捷方式图标刷新；只指向 EXE 内嵌资源，不落地图标文件
+|-- shortcut_icon_windows_test.go       快捷方式目标筛选和 ShellLink 图标刷新聚焦测试
+|-- shortcut_icon_other.go              非 Windows 构建的快捷方式刷新空实现
 |-- cleanup_helper_windows.go           主进程退出监测、强制退出后的工具清理助手
 |-- cleanup_helper_other.go             非 Windows 构建的清理助手空实现
 |-- go.mod                             Go 模块、Go 版本和直接依赖
@@ -1589,6 +1595,7 @@ C:\EXEXX\edit\
 |   |-- render-tray-icon.html           供 Edge 截图的可变尺寸图标页面
 |   |-- icon-to-ico.go                  多 PNG 到多分辨率 ICO 的转换工具
 |   |-- icon-to-syso.go                 ICO 到 Windows PE 图标资源的转换工具
+|   |-- icon-to-syso_test.go            PE 资源目录计数字段、类型排序和数据大小聚焦测试
 |
 |-- code-Manager.exe                    根目录历史/本地构建产物，非发布目录内容
 |-- code-Manager-test.exe               临时/测试构建产物，不是源码
@@ -1637,6 +1644,7 @@ YAML 无法解析、监听地址非法、端口被占用、上游 URL 非 HTTPS�
 
 - application.onTrayReady()
   - 设置 tray.ico 图标和“code-Manager 本地网关”提示。
+  - 后台刷新指向 code-Manager.exe 的快捷方式图标，失败只记日志，不阻塞托盘启动。
   - 创建“打开网页”和“退出 code-Manager”菜单。
   - 托盘右键单击显示上述菜单；左键单击不执行任何操作；左键双击调用 openBrowser(app.localURL)
     打开管理网页。
@@ -1658,7 +1666,7 @@ YAML 无法解析、监听地址非法、端口被占用、上游 URL 非 HTTPS�
 3. 重复启动处理
 
 - acquireSingleInstance() 使用名称 Local\\code-Manager-single-instance 的 Windows 互斥体。
-- 如果同一个程序已经运行，新的 EXE 不绑定第二个端口，也不创建第二个托盘图标。
+- 如果同一个程序已经运行，新的 EXE 不绑定第二个端口，也不创建第二个托盘图标；但会先刷新指向 code-Manager.exe 的快捷方式图标，再打开已有页面或静默退出。
 - openExistingInstance() 始终打开固定的管理页面 127.0.0.1:7780，不读取反代 listen_address；仅由手动重复启动调用。
 - isCodeManagerRunning() 请求 /healthz，同时检查 HTTP 200 和精确响应体。
 - waitForService() 每 100 毫秒轮询一次，最长等待 5 秒。
@@ -2333,7 +2341,8 @@ build.bat 的实际步骤：
 - `frontend/src` 是 Vue + Vite 前端源码。
 - `web/dist` 是 Vite 编译产物，由构建命令生成，不手工修改。
 - `main.go` 使用 `//go:embed web/dist` 将页面嵌入 EXE，同时嵌入 `assets/tray.ico`；Windows systray 从 ICO 字节直接创建图标句柄，
-  不再写入 `%TEMP%\systray_temp_icon_*`。根目录 `.syso` 由 Go linker 合并为 EXE 的 `RT_GROUP_ICON`/`RT_ICON` 资源，供 Explorer、桌面快捷方式和任务栏使用；
+  不再写入 `%TEMP%\systray_temp_icon_*`。根目录 `.syso` 由 Go linker 合并为 EXE 的 `RT_GROUP_ICON`/`RT_ICON` 资源，供 Explorer、桌面快捷方式和任务栏窗口使用；
+  启动时只刷新目标文件名为 `code-Manager.exe` 的 `.lnk` 图标位置，使其指向当前 EXE 资源索引 0，运行时不释放任何图标文件。
   `rtk_codex_commands.go` 使用 `//go:embed assets/RTK-Codex-commands.md` 和
   `//go:embed assets/RTK-Codex-agent-instructions.md` 将完整参考与专属常驻规则嵌入 EXE；
   `uninstall.bat.template` 也会嵌入 EXE，首次正常运行时才释放到同级目录。

@@ -410,7 +410,13 @@ func main() {
 	instance, err := acquireSingleInstance(instanceMutexName)
 	if err != nil {
 		if errors.Is(err, errAlreadyRunning) {
-			// 手动双击已有实例时只打开管理页；开机后台实例则静默退出，不能破坏后台运行语义。
+			// 即使旧版进程仍在运行，也先让新 EXE 修复已有快捷方式的图标资源。
+			// 之后仍遵守单实例语义：手动启动只打开现有页面，开机启动则静默退出。
+			if executable, shortcutErr := currentCodeManagerExecutable(); shortcutErr != nil {
+				log.Printf("刷新 code-Manager 快捷方式图标失败: %v", shortcutErr)
+			} else if shortcutErr := refreshCodeManagerShortcutIcons(executable); shortcutErr != nil {
+				log.Printf("刷新 code-Manager 快捷方式图标失败: %v", shortcutErr)
+			}
 			if !startupMode {
 				openExistingInstance()
 			}
@@ -538,6 +544,16 @@ func main() {
 
 func (app *application) onTrayReady() {
 	systray.SetIcon(trayIcon)
+	go func() {
+		executable, err := currentCodeManagerExecutable()
+		if err != nil {
+			log.Printf("刷新 code-Manager 快捷方式图标失败: %v", err)
+			return
+		}
+		if err := refreshCodeManagerShortcutIcons(executable); err != nil {
+			log.Printf("刷新 code-Manager 快捷方式图标失败: %v", err)
+		}
+	}()
 	systray.SetTooltip("code-Manager 本地网关")
 	systray.SetOnIconDoubleClick(func() {
 		openBrowser(app.localURL)
