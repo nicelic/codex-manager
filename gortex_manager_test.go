@@ -119,7 +119,8 @@ func TestGortexManagedEnvUsesSiblingRoot(t *testing.T) {
 		"XDG_DATA_HOME":             filepath.Join(root, "data"),
 		"XDG_CACHE_HOME":            filepath.Join(root, "cache"),
 		"GORTEX_DAEMON_SOCKET":      filepath.Join(root, "run", "daemon.sock"),
-		"GORTEX_RECONCILE_INTERVAL": "20m",
+		"GORTEX_RECONCILE_INTERVAL":  "1h",
+		"GORTEX_DAEMON_IDLE_TIMEOUT": "0",
 	} {
 		if !strings.Contains(joined, key+"="+suffix) {
 			t.Fatalf("managed env missing %s", key)

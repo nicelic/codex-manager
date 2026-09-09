@@ -198,7 +198,7 @@ func gortexManagedEnv() []string {
 	if root == "" {
 		return os.Environ()
 	}
-	values := map[string]string{"XDG_CONFIG_HOME": filepath.Join(root, "config"), "XDG_DATA_HOME": filepath.Join(root, "data"), "XDG_CACHE_HOME": filepath.Join(root, "cache"), "GORTEX_DAEMON_SOCKET": filepath.Join(root, "run", "daemon.sock"), "GORTEX_DAEMON_PIDFILE": filepath.Join(root, "run", "daemon.pid"), "GORTEX_DAEMON_LOGFILE": filepath.Join(root, "run", "daemon.log"), "GORTEX_DAEMON_STATEFILE": filepath.Join(root, "run", "daemon.state.json"), "GORTEX_RECONCILE_INTERVAL": "20m"}
+	values := map[string]string{"XDG_CONFIG_HOME": filepath.Join(root, "config"), "XDG_DATA_HOME": filepath.Join(root, "data"), "XDG_CACHE_HOME": filepath.Join(root, "cache"), "GORTEX_DAEMON_SOCKET": filepath.Join(root, "run", "daemon.sock"), "GORTEX_DAEMON_PIDFILE": filepath.Join(root, "run", "daemon.pid"), "GORTEX_DAEMON_LOGFILE": filepath.Join(root, "run", "daemon.log"), "GORTEX_DAEMON_STATEFILE": filepath.Join(root, "run", "daemon.state.json"), "GORTEX_RECONCILE_INTERVAL": "1h", "GORTEX_DAEMON_IDLE_TIMEOUT": "0"}
 	env := os.Environ()
 	for key, value := range values {
 		env = setEnvValue(env, key, value)
@@ -210,7 +210,7 @@ func gortexMCPEnv() map[string]string {
 	if root == "" {
 		return map[string]string{}
 	}
-	return map[string]string{"XDG_CONFIG_HOME": filepath.Join(root, "config"), "XDG_DATA_HOME": filepath.Join(root, "data"), "XDG_CACHE_HOME": filepath.Join(root, "cache"), "GORTEX_DAEMON_SOCKET": filepath.Join(root, "run", "daemon.sock"), "GORTEX_DAEMON_PIDFILE": filepath.Join(root, "run", "daemon.pid"), "GORTEX_DAEMON_LOGFILE": filepath.Join(root, "run", "daemon.log"), "GORTEX_DAEMON_STATEFILE": filepath.Join(root, "run", "daemon.state.json"), "GORTEX_INDEX_WORKERS": "8"}
+	return map[string]string{"XDG_CONFIG_HOME": filepath.Join(root, "config"), "XDG_DATA_HOME": filepath.Join(root, "data"), "XDG_CACHE_HOME": filepath.Join(root, "cache"), "GORTEX_DAEMON_SOCKET": filepath.Join(root, "run", "daemon.sock"), "GORTEX_DAEMON_PIDFILE": filepath.Join(root, "run", "daemon.pid"), "GORTEX_DAEMON_LOGFILE": filepath.Join(root, "run", "daemon.log"), "GORTEX_DAEMON_STATEFILE": filepath.Join(root, "run", "daemon.state.json"), "GORTEX_INDEX_WORKERS": "8", "GORTEX_RECONCILE_INTERVAL": "1h", "GORTEX_DAEMON_IDLE_TIMEOUT": "0"}
 }
 
 func uniqueCleanPaths(paths []string) []string {

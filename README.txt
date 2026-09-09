@@ -2512,7 +2512,7 @@ Gortex 管理补充
 - Gortex 的启动、停止、MCP 注册、track 和 untrack 只允许使用 code-Manager.exe 同级 `Gortex\\bin\\gortex.exe`；PATH 中已有的外部版本仅用于状态检测，普通管理操作不会控制它们。卸载是例外：为确保删除完整，会按精确进程名清理所有 `gortex.exe`。
 - Gortex 状态页会定期通过 `gortex.exe version` 查询版本，并通过受管 `Gortex\\run\\daemon.sock` 与 `daemon.pid` 确认真实 daemon；同路径的 `gortex.exe mcp` MCP stdio 客户端不计入 daemon 运行状态。Windows 下这些查询和 daemon 操作均使用隐藏子进程，不应周期性弹出控制台窗口；若仍看到闪窗，应确认运行的是重新构建后的 EXE，而不是旧发布目录中的版本。
 - Gortex 的配置、数据、索引、缓存、daemon 运行文件和日志均通过受管环境变量归档到同级 `Gortex\\` 目录；卸载只删除该受管目录及本程序拥有的 MCP/项目记录，不删除其他 MCP 或项目文件。
-- 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=20m`；项目 watcher 使用 `debounce_ms: 100`，前者控制定期 reconcile，后者控制文件变更后的延迟索引。
+- 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=1h` 和 `GORTEX_DAEMON_IDLE_TIMEOUT=0`；项目 watcher 使用 `debounce_ms: 300`，前者分别控制定期 reconcile 与常驻不空闲退出，后者控制文件变更后的延迟索引。
 - “启动 daemon”“停止 daemon”只负责受管 Gortex daemon 的真实进程生命周期，不会隐式注册或移除 MCP。Codex 等宿主启动的 `gortex.exe mcp` 不属于 daemon 状态；daemon 被 MCP 调用按需重新启动后，管理页的 1 秒级 WebSocket 状态快照会自动显示运行中。
 - “注册 MCP”与“移除 MCP”分别扫描 Codex、Claude Code、Cursor、GitHub Copilot CLI、OpenCode、Google Antigravity、Gemini CLI 的用户级配置。注册会修复仍明显指向 `gortex mcp` 但缺少受管环境变量的残缺条目；移除只删除本程序账本拥有或仍明显属于 Gortex 的条目，用户改写成其它命令的配置会保留并在页面提示。
 - Gortex MCP 客户端可以连接或按自身配置启动 daemon，但 `track` 建图需要 daemon 控制接口。页面 track 会在 daemon 已停止时按需启动受管 daemon，然后调用 `gortex track <path> --wait --wait-timeout 30m` 等待索引稳定；因此大型项目可能需要较长时间，失败时输入框内容保留，成功后输入框清空且已完成目录显示在下方。
@@ -2662,14 +2662,14 @@ git push origin v0.1.1
 
 ### 8. 后续版本流程
 
-以后发布 `v0.1.4` 等版本时，严格按以下顺序执行：
+以后发布 `v0.1.5` 等版本时，严格按以下顺序执行：
 
-1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.4`。
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.5`。
 2. 检查隐私文件和工作区改动。
 3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
 4. 人工确认后提交并推送源码和 `vision.md`。
-5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.4` 并推送。
-6. 通过 GitHub API 创建标题同为 `v0.1.4` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
+5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.5` 并推送。
+6. 通过 GitHub API 创建标题同为 `v0.1.5` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
 7. 发布完成后核对 `vision.md` 中的版本值、标签、Release 标题和附件名称四者一致；任何一项不一致都先停止，不要擅自覆盖远端对象。
 
 ### 9. 应用内版本安装与回退
