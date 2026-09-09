@@ -818,15 +818,10 @@ func TestGortexMCPRemovalClearsLedgerWhenCodexEntryIsMissing(t *testing.T) {
 	}
 }
 
-func TestAntigravityMCPInjectsActiveProjectCWD(t *testing.T) {
+func TestAntigravityMCPGenericConfig(t *testing.T) {
 	profile := t.TempDir()
 	t.Setenv("USERPROFILE", profile)
 	preserveGortexOwnershipForTest(t)
-
-	projectDir := t.TempDir()
-	if err := writeGortexProjectRegistry(gortexProjectRegistry{Projects: []string{projectDir}}); err != nil {
-		t.Fatal(err)
-	}
 
 	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
 	if _, err := updateJSONMCPConfigOwned("antigravity", executable, false); err != nil {
@@ -847,17 +842,14 @@ func TestAntigravityMCPInjectsActiveProjectCWD(t *testing.T) {
 		t.Fatalf("%s entry not found", gortexMCPName)
 	}
 
-	cwd, ok := entry["cwd"].(string)
-	if !ok || !strings.EqualFold(filepath.Clean(cwd), filepath.Clean(projectDir)) {
-		t.Fatalf("Antigravity MCP cwd = %q, want %q", cwd, projectDir)
+	if cwd, ok := entry["cwd"].(string); ok && cwd != "" {
+		t.Fatalf("Antigravity global MCP should not have hardcoded cwd, got %q", cwd)
 	}
 
-	env, ok := entry["env"].(map[string]any)
-	if !ok {
-		t.Fatalf("Antigravity MCP env not a map: %#v", entry["env"])
-	}
-	if ws, ok := env["ANTIGRAVITY_WORKSPACE"].(string); !ok || !strings.EqualFold(filepath.Clean(ws), filepath.Clean(projectDir)) {
-		t.Fatalf("Antigravity MCP ANTIGRAVITY_WORKSPACE = %q, want %q", ws, projectDir)
+	if env, ok := entry["env"].(map[string]any); ok {
+		if ws, ok := env["ANTIGRAVITY_WORKSPACE"].(string); ok && ws != "" {
+			t.Fatalf("Antigravity global MCP should not have hardcoded ANTIGRAVITY_WORKSPACE, got %q", ws)
+		}
 	}
 
 	if present, complete := queryJSONMCPState("antigravity", executable); !present || !complete {
@@ -865,15 +857,10 @@ func TestAntigravityMCPInjectsActiveProjectCWD(t *testing.T) {
 	}
 }
 
-func TestCursorMCPInjectsActiveProjectCWDAndWorkspace(t *testing.T) {
+func TestCursorMCPGenericConfig(t *testing.T) {
 	profile := t.TempDir()
 	t.Setenv("USERPROFILE", profile)
 	preserveGortexOwnershipForTest(t)
-
-	projectDir := t.TempDir()
-	if err := writeGortexProjectRegistry(gortexProjectRegistry{Projects: []string{projectDir}}); err != nil {
-		t.Fatal(err)
-	}
 
 	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
 	if _, err := updateJSONMCPConfigOwned("cursor", executable, false); err != nil {
@@ -894,17 +881,14 @@ func TestCursorMCPInjectsActiveProjectCWDAndWorkspace(t *testing.T) {
 		t.Fatalf("%s entry not found", gortexMCPName)
 	}
 
-	cwd, ok := entry["cwd"].(string)
-	if !ok || !strings.EqualFold(filepath.Clean(cwd), filepath.Clean(projectDir)) {
-		t.Fatalf("Cursor MCP cwd = %q, want %q", cwd, projectDir)
+	if cwd, ok := entry["cwd"].(string); ok && cwd != "" {
+		t.Fatalf("Cursor global MCP should not have hardcoded cwd, got %q", cwd)
 	}
 
-	env, ok := entry["env"].(map[string]any)
-	if !ok {
-		t.Fatalf("Cursor MCP env not a map: %#v", entry["env"])
-	}
-	if ws, ok := env["CURSOR_WORKSPACE"].(string); !ok || !strings.EqualFold(filepath.Clean(ws), filepath.Clean(projectDir)) {
-		t.Fatalf("Cursor MCP CURSOR_WORKSPACE = %q, want %q", ws, projectDir)
+	if env, ok := entry["env"].(map[string]any); ok {
+		if ws, ok := env["CURSOR_WORKSPACE"].(string); ok && ws != "" {
+			t.Fatalf("Cursor global MCP should not have hardcoded CURSOR_WORKSPACE, got %q", ws)
+		}
 	}
 
 	if present, complete := queryJSONMCPState("cursor", executable); !present || !complete {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -858,8 +859,22 @@ func replaceUTF8File(filePath string, data []byte) error {
 		return err
 	}
 	if hadExisting {
-		if err := os.Remove(backupPath); err != nil {
-			return err
+		var removeErr error
+		for i := 0; i < 5; i++ {
+			if removeErr = os.Remove(backupPath); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			go func(p string) {
+				for retry := 0; retry < 10; retry++ {
+					time.Sleep(100 * time.Millisecond)
+					if err := os.Remove(p); err == nil || errors.Is(err, os.ErrNotExist) {
+						return
+					}
+				}
+			}(backupPath)
 		}
 	}
 	keep = true

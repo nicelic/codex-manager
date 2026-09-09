@@ -70,7 +70,7 @@ func gortexProjectMCPKey(agent, project string) string {
 
 func gortexProjectMCPUsesCWD(agent string) bool {
 	switch agent {
-	case "codex", "opencode", "antigravity", "gemini":
+	case "codex", "opencode", "gemini":
 		return true
 	default:
 		return false
@@ -90,6 +90,13 @@ func gortexProjectMCPEntry(agent, executable, project string) map[string]any {
 	}
 	if gortexProjectMCPUsesCWD(agent) {
 		entry["cwd"] = project
+	}
+	if agent == "antigravity" {
+		if env, ok := entry["env"].(map[string]string); ok {
+			env["ANTIGRAVITY_WORKSPACE"] = project
+		} else if env, ok := entry["env"].(map[string]any); ok {
+			env["ANTIGRAVITY_WORKSPACE"] = project
+		}
 	}
 	return entry
 }
@@ -118,6 +125,27 @@ func gortexProjectMCPEntryLooksManaged(value any, agent, project string) bool {
 		}
 	} else if !gortexMCPEntryLooksManaged(value) {
 		return false
+	}
+	if agent == "antigravity" {
+		if entry, ok := value.(map[string]any); ok {
+			if env, ok := entry["env"].(map[string]any); ok {
+				if ws, ok := env["ANTIGRAVITY_WORKSPACE"].(string); ok && strings.TrimSpace(ws) != "" {
+					left, leftErr := filepath.Abs(filepath.Clean(ws))
+					right, rightErr := filepath.Abs(filepath.Clean(project))
+					if leftErr != nil || rightErr != nil || !strings.EqualFold(filepath.Clean(left), filepath.Clean(right)) {
+						return false
+					}
+				}
+			} else if env, ok := entry["env"].(map[string]string); ok {
+				if ws, ok := env["ANTIGRAVITY_WORKSPACE"]; ok && strings.TrimSpace(ws) != "" {
+					left, leftErr := filepath.Abs(filepath.Clean(ws))
+					right, rightErr := filepath.Abs(filepath.Clean(project))
+					if leftErr != nil || rightErr != nil || !strings.EqualFold(filepath.Clean(left), filepath.Clean(right)) {
+						return false
+					}
+				}
+			}
+		}
 	}
 	return !gortexProjectMCPUsesCWD(agent) || gortexProjectMCPEntryCWDMatches(value, project)
 }

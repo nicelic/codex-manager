@@ -77,6 +77,13 @@ func TestGortexProjectMCPWritesOfficialProjectFilesAndOnlyConfirmedCWD(t *testin
 				t.Fatalf("%s project entry contains unconfirmed cwd: %#v", agent, entryMap)
 			}
 		}
+		if agent == "antigravity" {
+			entryMap, _ := entry.(map[string]any)
+			env, _ := entryMap["env"].(map[string]any)
+			if ws, _ := env["ANTIGRAVITY_WORKSPACE"].(string); !strings.EqualFold(filepath.Clean(ws), filepath.Clean(project)) {
+				t.Fatalf("antigravity entry missing ANTIGRAVITY_WORKSPACE: %#v", entryMap)
+			}
+		}
 	}
 
 	ownership, err := readGortexOwnership()
@@ -282,7 +289,7 @@ func TestGortexProjectMCPPreservesUserModifiedEntry(t *testing.T) {
 
 func TestGortexProjectMCPEntryDoesNotAddCWDToUnconfirmedPlatforms(t *testing.T) {
 	project := filepath.Clean(t.TempDir())
-	for _, agent := range []string{"claude", "cursor", "copilot"} {
+	for _, agent := range []string{"antigravity", "claude", "cursor", "copilot"} {
 		entry := gortexProjectMCPEntry(agent, "gortex.exe", project)
 		if _, ok := entry["cwd"]; ok {
 			t.Fatalf("%s entry unexpectedly contains cwd: %#v", agent, entry)

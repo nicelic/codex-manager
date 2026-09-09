@@ -915,22 +915,7 @@ func gortexActiveProjectForAgent(agent, executable string) string {
 }
 
 func gortexPlatformMCPEntry(agent, executable string) map[string]any {
-	entry := gortexMCPEntry(executable, agent == "copilot")
-	project := gortexActiveProjectForAgent(agent, executable)
-	if project != "" {
-		if agent == "antigravity" {
-			entry["cwd"] = project
-			if env, ok := entry["env"].(map[string]string); ok {
-				env["ANTIGRAVITY_WORKSPACE"] = project
-			}
-		} else if agent == "cursor" {
-			entry["cwd"] = project
-			if env, ok := entry["env"].(map[string]string); ok {
-				env["CURSOR_WORKSPACE"] = project
-			}
-		}
-	}
-	return entry
+	return gortexMCPEntry(executable, agent == "copilot")
 }
 
 func gortexAgentMCPEntryComplete(existing any, agent, executable string) bool {
@@ -938,45 +923,7 @@ func gortexAgentMCPEntryComplete(existing any, agent, executable string) bool {
 		return false
 	}
 	if agent == "antigravity" || agent == "cursor" {
-		if gortexFingerprint(existing) == gortexFingerprint(gortexPlatformMCPEntry(agent, executable)) {
-			return true
-		}
-		if gortexMCPEntryLooksManaged(existing) {
-			if entry, ok := existing.(map[string]any); ok {
-				projects, _ := gortexMCPProjectsForRegistration(executable)
-				if cwd, ok := entry["cwd"].(string); ok && cwd != "" {
-					for _, p := range projects {
-						if strings.EqualFold(filepath.Clean(cwd), filepath.Clean(p)) {
-							return true
-						}
-					}
-				}
-				var wsKey string
-				if agent == "antigravity" {
-					wsKey = "ANTIGRAVITY_WORKSPACE"
-				} else if agent == "cursor" {
-					wsKey = "CURSOR_WORKSPACE"
-				}
-				if env, ok := entry["env"].(map[string]any); ok {
-					if ws, ok := env[wsKey].(string); ok && ws != "" {
-						for _, p := range projects {
-							if strings.EqualFold(filepath.Clean(ws), filepath.Clean(p)) {
-								return true
-							}
-						}
-					}
-				} else if env, ok := entry["env"].(map[string]string); ok {
-					if ws, ok := env[wsKey]; ok && ws != "" {
-						for _, p := range projects {
-							if strings.EqualFold(filepath.Clean(ws), filepath.Clean(p)) {
-								return true
-							}
-						}
-					}
-				}
-			}
-		}
-		return false
+		return gortexFingerprint(existing) == gortexFingerprint(gortexPlatformMCPEntry(agent, executable))
 	}
 	return gortexMCPEntryComplete(existing, executable, agent == "copilot")
 }
@@ -2328,22 +2275,6 @@ func (g *gateway) gortexTrack(w http.ResponseWriter, r *http.Request) {
 			if err := writeGortexOwnership(ownership); err != nil {
 				warnings = append(warnings, "保存 Gortex 接入归属失败: "+err.Error())
 			}
-			if available["antigravity"] {
-				key := gortexOwnershipKey("antigravity", gortexConfigPath("antigravity"))
-				if _, registered := ownership.Platforms[key]; registered {
-					if _, err := updateJSONMCPConfigOwned("antigravity", exe, false); err != nil {
-						warnings = append(warnings, "Antigravity 全局工作区对齐: "+err.Error())
-					}
-				}
-			}
-			if available["cursor"] {
-				key := gortexOwnershipKey("cursor", gortexConfigPath("cursor"))
-				if _, registered := ownership.Platforms[key]; registered {
-					if _, err := updateJSONMCPConfigOwned("cursor", exe, false); err != nil {
-						warnings = append(warnings, "Cursor 全局工作区对齐: "+err.Error())
-					}
-				}
-			}
 		}
 	}
 	message := "已建立 Gortex 项目代码图谱；后续深度分析由 AI 按任务需要调用 MCP。"
@@ -2404,22 +2335,6 @@ func (g *gateway) gortexUntrack(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := writeGortexOwnership(ownership); err != nil {
 			warnings = append(warnings, "保存 Gortex 接入归属失败: "+err.Error())
-		}
-		if available := gortexDetectedMCPAgents(); available["antigravity"] {
-			key := gortexOwnershipKey("antigravity", gortexConfigPath("antigravity"))
-			if _, registered := ownership.Platforms[key]; registered {
-				if _, err := updateJSONMCPConfigOwned("antigravity", exe, false); err != nil {
-					warnings = append(warnings, "Antigravity 全局工作区对齐: "+err.Error())
-				}
-			}
-		}
-		if available := gortexDetectedMCPAgents(); available["cursor"] {
-			key := gortexOwnershipKey("cursor", gortexConfigPath("cursor"))
-			if _, registered := ownership.Platforms[key]; registered {
-				if _, err := updateJSONMCPConfigOwned("cursor", exe, false); err != nil {
-					warnings = append(warnings, "Cursor 全局工作区对齐: "+err.Error())
-				}
-			}
 		}
 	}
 	message := "已取消该项目的 Gortex track；不会删除项目文件。"

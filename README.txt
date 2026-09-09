@@ -2662,14 +2662,14 @@ git push origin v0.1.1
 
 ### 8. 后续版本流程
 
-以后发布 `v0.1.3` 等版本时，严格按以下顺序执行：
+以后发布 `v0.1.4` 等版本时，严格按以下顺序执行：
 
-1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.3`。
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.4`。
 2. 检查隐私文件和工作区改动。
 3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
 4. 人工确认后提交并推送源码和 `vision.md`。
-5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.3` 并推送。
-6. 通过 GitHub API 创建标题同为 `v0.1.3` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
+5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.4` 并推送。
+6. 通过 GitHub API 创建标题同为 `v0.1.4` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
 7. 发布完成后核对 `vision.md` 中的版本值、标签、Release 标题和附件名称四者一致；任何一项不一致都先停止，不要擅自覆盖远端对象。
 
 ### 9. 应用内版本安装与回退
@@ -2696,7 +2696,7 @@ git push origin v0.1.1
   track 成功也会为新项目补写配置和 Cursor 项目规则。项目配置路径分别为 Codex=`<项目>\\.codex\\config.toml`、Claude Code=`<项目>\\.mcp.json`、
   Cursor=`<项目>\\.cursor\\mcp.json`、GitHub Copilot CLI=`<项目>\\.github\\mcp.json`、OpenCode=`<项目>\\opencode.json`、
   Google Antigravity=`<项目>\\.agents\\mcp_config.json`、Gemini CLI=`<项目>\\.gemini\\settings.json`。只有官方明确支持服务器级
-  `cwd` 的 Codex、OpenCode、Google Antigravity 和 Gemini CLI 写入项目绝对路径；Claude Code、Cursor、Copilot CLI 不写未经确认的通用 `cwd`。
+  `cwd` 的 Codex、OpenCode 和 Gemini CLI 写入项目绝对路径；Google Antigravity 官方 MCP Schema 不支持 `cwd`，项目级 MCP 仅注入 `ANTIGRAVITY_WORKSPACE` 环境变量。Claude Code、Cursor、Copilot CLI 不写未经确认的通用 `cwd`。全局用户级 MCP 配置保持为纯净通用的服务定义，不硬编码单一项目的 `cwd` 与特定工作区环境变量，避免在同时修改多个项目时产生跨项目工作区劫持与冲突。
 - “移除 MCP”会清理所有受管用户级和项目级 `gortex` MCP，并关闭项目级自动补写状态；之后再次注册会重新生成。单独 `untrack` 只清理该项目的项目级
   MCP，保留用户级 MCP；配置中的其他 MCP 和被用户修改过的 `gortex` 条目会保留并显示警告。
 - OpenCode 在 `%USERPROFILE%\.config\opencode\opencode.json` 的 `mcp` 节点注册 MCP，并在同目录 `AGENTS.md`
