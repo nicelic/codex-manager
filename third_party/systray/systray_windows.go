@@ -272,7 +272,8 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 		t.showTaskbarWindow()
 	case WM_ACTIVATE:
 		if hWnd == t.taskbarWindow && uint16(wParam) != WA_INACTIVE {
-			taskbarIconActivated()
+			// WM_SYSCOMMAND/SC_RESTORE below is the canonical taskbar activation path.
+			// Handling WM_ACTIVATE here too would open the page twice for one click.
 			pShowWindow.Call(uintptr(t.taskbarWindow), SW_MINIMIZE)
 		}
 	case 0x0112: // WM_SYSCOMMAND

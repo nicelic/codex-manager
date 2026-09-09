@@ -119,7 +119,7 @@ func TestGortexManagedEnvUsesSiblingRoot(t *testing.T) {
 		"XDG_DATA_HOME":             filepath.Join(root, "data"),
 		"XDG_CACHE_HOME":            filepath.Join(root, "cache"),
 		"GORTEX_DAEMON_SOCKET":      filepath.Join(root, "run", "daemon.sock"),
-		"GORTEX_RECONCILE_INTERVAL": "3m",
+		"GORTEX_RECONCILE_INTERVAL": "20m",
 	} {
 		if !strings.Contains(joined, key+"="+suffix) {
 			t.Fatalf("managed env missing %s", key)
@@ -222,6 +222,256 @@ func TestGortexCustomAgentConfigPaths(t *testing.T) {
 	}
 	if got, want := gortexCopilotConfigDir(), copilotDir; got != want {
 		t.Fatalf("Copilot config dir = %q, want %q", got, want)
+	}
+	if got, want := gortexConfigPath("opencode"), filepath.Join(profile, ".config", "opencode", "opencode.json"); got != want {
+		t.Fatalf("OpenCode config path = %q, want %q", got, want)
+	}
+	if got, want := gortexConfigPath("antigravity"), filepath.Join(profile, ".gemini", "config", "mcp_config.json"); got != want {
+		t.Fatalf("Antigravity config path = %q, want %q", got, want)
+	}
+	if got, want := gortexConfigPath("gemini"), filepath.Join(profile, ".gemini", "settings.json"); got != want {
+		t.Fatalf("Gemini config path = %q, want %q", got, want)
+	}
+}
+
+func TestAntigravityDirectoryDoesNotImplyGeminiCLI(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("PATH", "")
+	if err := os.MkdirAll(gortexAntigravityConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if gortexAgentAvailable("gemini") {
+		t.Fatal("Antigravity configuration directory incorrectly implied Gemini CLI availability")
+	}
+}
+
+func TestClaudeDirectoryDoesNotImplyClaudeCode(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("PATH", "")
+	if err := os.MkdirAll(gortexClaudeConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if gortexAgentAvailable("claude") {
+		t.Fatal("Claude configuration directory incorrectly implied Claude Code availability")
+	}
+}
+
+func TestClaudeOnlyManagedMCPDoesNotImplyClaudeCode(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("PATH", "")
+	if err := writeGortexJSONObject(gortexConfigPath("claude"), map[string]any{
+		"mcpServers": map[string]any{
+			gortexMCPName: gortexMCPEntry("gortex.exe", false),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gortexAgentAvailable("claude") {
+		t.Fatal("a config containing only Gortex MCP incorrectly implied Claude Code availability")
+	}
+}
+
+func TestClaudeUserConfigEvidenceDetectsClaudeCode(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("PATH", "")
+	if err := writeGortexJSONObject(gortexConfigPath("claude"), map[string]any{
+		"hasCompletedOnboarding": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !gortexAgentAvailable("claude") {
+		t.Fatal("Claude user configuration was not detected")
+	}
+}
+
+func TestAntigravityExecutableDetectionDoesNotImplyGeminiCLI(t *testing.T) {
+	profile := t.TempDir()
+	localAppData := filepath.Join(profile, "AppData", "Local")
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("ProgramFiles", filepath.Join(profile, "Program Files"))
+	t.Setenv("PATH", "")
+	executable := filepath.Join(localAppData, "Programs", "antigravity", "Antigravity.exe")
+	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("stub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !gortexAgentAvailable("antigravity") {
+		t.Fatal("installed Antigravity executable was not detected")
+	}
+	if gortexAgentAvailable("gemini") {
+		t.Fatal("Antigravity executable incorrectly implied Gemini CLI availability")
+	}
+}
+
+func TestGeminiCLIConfigDoesNotImplyAntigravity(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("LOCALAPPDATA", filepath.Join(profile, "AppData", "Local"))
+	t.Setenv("ProgramFiles", filepath.Join(profile, "Program Files"))
+	t.Setenv("PATH", "")
+	if err := os.MkdirAll(gortexGeminiConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gortexConfigPath("gemini"), []byte("{\"theme\":\"Default\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !gortexAgentAvailable("gemini") {
+		t.Fatal("Gemini CLI configuration was not detected")
+	}
+	if gortexAgentAvailable("antigravity") {
+		t.Fatal("Gemini CLI configuration incorrectly implied Antigravity availability")
+	}
+}
+
+func TestOpenCodeMCPConfigPreservesOtherServers(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	configPath := gortexConfigPath("opencode")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGortexJSONObject(configPath, map[string]any{"mcp": map[string]any{"other": map[string]any{"type": "remote", "url": "https://example.test/mcp"}}}); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	if _, err := updateOpenCodeMCPConfigOwned(executable, false); err != nil {
+		t.Fatalf("register OpenCode MCP: %v", err)
+	}
+	root, err := readGortexJSONObject(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers := root["mcp"].(map[string]any)
+	if _, ok := servers["other"]; !ok {
+		t.Fatal("OpenCode other MCP was removed during registration")
+	}
+	if !gortexOpenCodeMCPEntryComplete(servers[gortexMCPName], executable) {
+		t.Fatalf("OpenCode gortex MCP = %#v, want managed entry", servers[gortexMCPName])
+	}
+	if present, complete := queryOpenCodeMCPState(executable); !present || !complete {
+		t.Fatalf("OpenCode MCP status present=%v complete=%v, want true,true", present, complete)
+	}
+	if _, err := updateOpenCodeMCPConfigOwned("", true); err != nil {
+		t.Fatalf("remove OpenCode MCP: %v", err)
+	}
+	root, err = readGortexJSONObject(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers = root["mcp"].(map[string]any)
+	if _, ok := servers[gortexMCPName]; ok {
+		t.Fatal("OpenCode gortex MCP was not removed")
+	}
+	if _, ok := servers["other"]; !ok {
+		t.Fatal("OpenCode other MCP was removed during cleanup")
+	}
+}
+
+func TestAntigravityMCPUsesNativeConfigPath(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	if _, err := updateJSONMCPConfigOwned("antigravity", executable, false); err != nil {
+		t.Fatalf("register Antigravity MCP: %v", err)
+	}
+	path := filepath.Join(profile, ".gemini", "config", "mcp_config.json")
+	if got := gortexConfigPath("antigravity"); got != path {
+		t.Fatalf("Antigravity config path = %q, want %q", got, path)
+	}
+	if present, complete := queryJSONMCPState("antigravity", executable); !present || !complete {
+		t.Fatalf("Antigravity MCP status present=%v complete=%v, want true,true", present, complete)
+	}
+}
+
+func TestGeminiMCPUsesNativeSettingsPath(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	if _, err := updateJSONMCPConfigOwned("gemini", executable, false); err != nil {
+		t.Fatalf("register Gemini MCP: %v", err)
+	}
+	path := filepath.Join(profile, ".gemini", "settings.json")
+	if got := gortexConfigPath("gemini"); got != path {
+		t.Fatalf("Gemini config path = %q, want %q", got, path)
+	}
+	if present, complete := queryJSONMCPState("gemini", executable); !present || !complete {
+		t.Fatalf("Gemini MCP status present=%v complete=%v, want true,true", present, complete)
+	}
+}
+
+func TestLegacyAntigravityMCPMigrationRequiresOwnership(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	legacyPath := gortexLegacyAntigravityConfigPath()
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updateJSONMCPConfigOwned("antigravity", executable, false); err != nil {
+		t.Fatalf("register native Antigravity MCP: %v", err)
+	}
+	if err := writeGortexJSONObject(legacyPath, map[string]any{"mcpServers": map[string]any{gortexMCPName: gortexMCPEntry(executable, false), "other": map[string]any{"command": "other.exe"}}}); err != nil {
+		t.Fatal(err)
+	}
+	ownership, err := readGortexOwnership()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := gortexOwnershipKey("antigravity", legacyPath)
+	ownership.Platforms[key] = gortexOwnedMCP{Fingerprint: gortexFingerprint(gortexMCPEntry(executable, false))}
+	if err := writeGortexOwnership(ownership); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := removeLegacyAntigravityMCP(); err != nil {
+		t.Fatalf("remove legacy Antigravity MCP: %v", err)
+	}
+	root, err := readGortexJSONObject(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers := root["mcpServers"].(map[string]any)
+	if _, ok := servers[gortexMCPName]; ok {
+		t.Fatal("owned legacy Antigravity MCP was not removed")
+	}
+	if _, ok := servers["other"]; !ok {
+		t.Fatal("unrelated legacy MCP was removed")
+	}
+}
+
+func TestLegacyAntigravityMCPWithoutOwnershipIsPreserved(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	legacyPath := gortexLegacyAntigravityConfigPath()
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGortexJSONObject(legacyPath, map[string]any{"mcpServers": map[string]any{gortexMCPName: gortexMCPEntry(executable, false), "other": map[string]any{"command": "other.exe"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := removeLegacyAntigravityMCP(); err != nil {
+		t.Fatalf("remove unowned legacy Antigravity MCP: %v", err)
+	}
+	root, err := readGortexJSONObject(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers := root["mcpServers"].(map[string]any)
+	if _, ok := servers[gortexMCPName]; !ok {
+		t.Fatal("unowned legacy Antigravity MCP was removed")
+	}
+	if _, ok := servers["other"]; !ok {
+		t.Fatal("unrelated legacy MCP was removed")
 	}
 }
 
@@ -372,6 +622,43 @@ func TestInstallGortexZIPWritesOnlyManagedBinary(t *testing.T) {
 	}
 	if string(data) != "test-binary" {
 		t.Fatalf("installed binary = %q, want %q", data, "test-binary")
+	}
+}
+
+func TestInstallGortexZIPRejectsEmptyExecutableWithoutReplacingTarget(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "gortex-empty.zip")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	if _, err := writer.Create("gortex.exe"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	installDir := filepath.Join(t.TempDir(), "Gortex", "bin")
+	if err := os.MkdirAll(installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(installDir, gortexExecutableName)
+	if err := os.WriteFile(target, []byte("old-binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := installGortexZIP(archivePath, installDir); err == nil {
+		t.Fatal("installGortexZIP() accepted an empty gortex.exe")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old-binary" {
+		t.Fatalf("old executable changed after invalid archive: %q", data)
 	}
 }
 

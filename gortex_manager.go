@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,70 +31,94 @@ import (
 )
 
 const (
-	gortexExecutableName    = "gortex.exe"
-	gortexMCPName           = "gortex"
-	gortexCommandTimeout    = 30 * time.Second
-	gortexDaemonTimeout     = 2 * time.Minute
-	gortexTrackTimeout      = 35 * time.Minute
-	gortexUntrackTimeout    = 10 * time.Minute
-	gortexGitHubReleasesURL = "https://api.github.com/repos/zzet/gortex/releases"
-	gortexReleasePageSize   = 5
-	gortexWindowsAssetName  = "gortex_windows_amd64.zip"
-	gortexOwnershipFileName = "mcp-ownership.json"
+	gortexExecutableName     = "gortex.exe"
+	gortexMCPName            = "gortex"
+	gortexCommandTimeout     = 30 * time.Second
+	gortexDaemonTimeout      = 2 * time.Minute
+	gortexProcessStopTimeout = 15 * time.Second
+	gortexTrackTimeout       = 35 * time.Minute
+	gortexUntrackTimeout     = 10 * time.Minute
+	gortexGitHubReleasesURL  = "https://api.github.com/repos/zzet/gortex/releases"
+	gortexReleasePageSize    = 5
+	gortexWindowsAssetName   = "gortex_windows_amd64.zip"
+	gortexOwnershipFileName  = "mcp-ownership.json"
 )
 
 var gortexTagPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 var gortexChecksumPattern = regexp.MustCompile(`(?i)[a-f0-9]{64}`)
 
 type gortexStatusResponse struct {
-	Path                    string   `json:"path"`
-	ManagedRoot             string   `json:"managed_root"`
-	ManagedRootExists       bool     `json:"managed_root_exists"`
-	Version                 string   `json:"version"`
-	Installed               bool     `json:"installed"`
-	ManagedInstalled        bool     `json:"managed_installed"`
-	Installing              bool     `json:"installing"`
-	Running                 bool     `json:"running"`
-	AnyProcessRunning       bool     `json:"any_process_running"`
-	ProcessID               int      `json:"process_id,omitempty"`
-	ActivationState         string   `json:"activation_state"`
-	CodexAvailable          bool     `json:"codex_available"`
-	CodexConfigured         bool     `json:"codex_configured"`
-	CodexComplete           bool     `json:"codex_complete"`
-	ClaudeAvailable         bool     `json:"claude_available"`
-	ClaudeConfigured        bool     `json:"claude_configured"`
-	ClaudeComplete          bool     `json:"claude_complete"`
-	CursorAvailable         bool     `json:"cursor_available"`
-	CursorConfigured        bool     `json:"cursor_configured"`
-	CursorComplete          bool     `json:"cursor_complete"`
-	CopilotAvailable        bool     `json:"copilot_available"`
-	CopilotConfigured       bool     `json:"copilot_configured"`
-	CopilotComplete         bool     `json:"copilot_complete"`
-	CodexPrompt             bool     `json:"codex_prompt"`
-	CodexPromptComplete     bool     `json:"codex_prompt_complete"`
-	ClaudePrompt            bool     `json:"claude_prompt"`
-	ClaudePromptComplete    bool     `json:"claude_prompt_complete"`
-	CursorPrompt            bool     `json:"cursor_prompt"`
-	CursorPromptComplete    bool     `json:"cursor_prompt_complete"`
-	CopilotPrompt           bool     `json:"copilot_prompt"`
-	CopilotPromptComplete   bool     `json:"copilot_prompt_complete"`
-	CodexHook               bool     `json:"codex_hook"`
-	CodexHookComplete       bool     `json:"codex_hook_complete"`
-	ClaudeHook              bool     `json:"claude_hook"`
-	ClaudeHookComplete      bool     `json:"claude_hook_complete"`
-	CopilotHook             bool     `json:"copilot_hook"`
-	CopilotHookComplete     bool     `json:"copilot_hook_complete"`
-	UserPath                bool     `json:"user_path"`
-	SystemPath              bool     `json:"system_path"`
-	UnmanagedProcessRunning bool     `json:"unmanaged_process_running"`
-	CodexTrustStatus        string   `json:"codex_trust_status,omitempty"`
-	CodexTrustRequired      bool     `json:"codex_trust_required"`
-	CodexTrustNotice        string   `json:"codex_trust_notice,omitempty"`
-	CodexTrustSteps         []string `json:"codex_trust_steps,omitempty"`
-	TrackedProjects         []string `json:"tracked_projects"`
-	DefaultProject          string   `json:"default_project"`
-	IntegrationPresent      bool     `json:"integration_present"`
-	Message                 string   `json:"message"`
+	Path                      string   `json:"path"`
+	ManagedRoot               string   `json:"managed_root"`
+	ManagedRootExists         bool     `json:"managed_root_exists"`
+	Version                   string   `json:"version"`
+	Installed                 bool     `json:"installed"`
+	ManagedInstalled          bool     `json:"managed_installed"`
+	Installing                bool     `json:"installing"`
+	Running                   bool     `json:"running"`
+	AnyProcessRunning         bool     `json:"any_process_running"`
+	ProcessID                 int      `json:"process_id,omitempty"`
+	ActivationState           string   `json:"activation_state"`
+	CodexAvailable            bool     `json:"codex_available"`
+	CodexConfigured           bool     `json:"codex_configured"`
+	CodexComplete             bool     `json:"codex_complete"`
+	ClaudeAvailable           bool     `json:"claude_available"`
+	ClaudeConfigured          bool     `json:"claude_configured"`
+	ClaudeComplete            bool     `json:"claude_complete"`
+	CursorAvailable           bool     `json:"cursor_available"`
+	CursorConfigured          bool     `json:"cursor_configured"`
+	CursorComplete            bool     `json:"cursor_complete"`
+	CopilotAvailable          bool     `json:"copilot_available"`
+	CopilotConfigured         bool     `json:"copilot_configured"`
+	CopilotComplete           bool     `json:"copilot_complete"`
+	OpenCodeAvailable         bool     `json:"opencode_available"`
+	OpenCodeConfigured        bool     `json:"opencode_configured"`
+	OpenCodeComplete          bool     `json:"opencode_complete"`
+	OpenCodeHook              bool     `json:"opencode_hook"`
+	OpenCodeHookComplete      bool     `json:"opencode_hook_complete"`
+	AntigravityAvailable      bool     `json:"antigravity_available"`
+	AntigravityConfigured     bool     `json:"antigravity_configured"`
+	AntigravityComplete       bool     `json:"antigravity_complete"`
+	GeminiAvailable           bool     `json:"gemini_available"`
+	GeminiConfigured          bool     `json:"gemini_configured"`
+	GeminiComplete            bool     `json:"gemini_complete"`
+	CodexPrompt               bool     `json:"codex_prompt"`
+	CodexPromptComplete       bool     `json:"codex_prompt_complete"`
+	ClaudePrompt              bool     `json:"claude_prompt"`
+	ClaudePromptComplete      bool     `json:"claude_prompt_complete"`
+	CursorPrompt              bool     `json:"cursor_prompt"`
+	CursorPromptComplete      bool     `json:"cursor_prompt_complete"`
+	CopilotPrompt             bool     `json:"copilot_prompt"`
+	CopilotPromptComplete     bool     `json:"copilot_prompt_complete"`
+	OpenCodePrompt            bool     `json:"opencode_prompt"`
+	OpenCodePromptComplete    bool     `json:"opencode_prompt_complete"`
+	AntigravityPrompt         bool     `json:"antigravity_prompt"`
+	AntigravityPromptComplete bool     `json:"antigravity_prompt_complete"`
+	GeminiPrompt              bool     `json:"gemini_prompt"`
+	GeminiPromptComplete      bool     `json:"gemini_prompt_complete"`
+	CodexHook                 bool     `json:"codex_hook"`
+	CodexHookComplete         bool     `json:"codex_hook_complete"`
+	ClaudeHook                bool     `json:"claude_hook"`
+	ClaudeHookComplete        bool     `json:"claude_hook_complete"`
+	CopilotHook               bool     `json:"copilot_hook"`
+	CopilotHookComplete       bool     `json:"copilot_hook_complete"`
+	AntigravityHook           bool     `json:"antigravity_hook"`
+	AntigravityHookComplete   bool     `json:"antigravity_hook_complete"`
+	GeminiHook                bool     `json:"gemini_hook"`
+	GeminiHookComplete        bool     `json:"gemini_hook_complete"`
+	UserPath                  bool     `json:"user_path"`
+	SystemPath                bool     `json:"system_path"`
+	UnmanagedProcessRunning   bool     `json:"unmanaged_process_running"`
+	CodexTrustStatus          string   `json:"codex_trust_status,omitempty"`
+	CodexTrustRequired        bool     `json:"codex_trust_required"`
+	CodexTrustNotice          string   `json:"codex_trust_notice,omitempty"`
+	CodexTrustSteps           []string `json:"codex_trust_steps,omitempty"`
+	TrackedProjects           []string `json:"tracked_projects"`
+	ProjectMCPEnabled         bool     `json:"project_mcp_enabled"`
+	ProjectMCPProjects        []string `json:"project_mcp_projects,omitempty"`
+	DefaultProject            string   `json:"default_project"`
+	IntegrationPresent        bool     `json:"integration_present"`
+	Message                   string   `json:"message"`
 }
 
 type gortexOperationRequest struct {
@@ -127,10 +152,12 @@ type gortexOwnedMCP struct {
 	Fingerprint string `json:"fingerprint"`
 }
 type gortexMCPOwnership struct {
-	Platforms  map[string]gortexOwnedMCP      `json:"platforms"`
-	Artifacts  map[string]gortexOwnedArtifact `json:"artifacts,omitempty"`
-	UserPath   bool                           `json:"user_path,omitempty"`
-	SystemPath bool                           `json:"system_path,omitempty"`
+	Platforms         map[string]gortexOwnedMCP        `json:"platforms"`
+	ProjectMCP        map[string]gortexOwnedProjectMCP `json:"project_mcp,omitempty"`
+	ProjectMCPEnabled bool                             `json:"project_mcp_enabled,omitempty"`
+	Artifacts         map[string]gortexOwnedArtifact   `json:"artifacts,omitempty"`
+	UserPath          bool                             `json:"user_path,omitempty"`
+	SystemPath        bool                             `json:"system_path,omitempty"`
 }
 
 var gortexMCPStatusCache = struct {
@@ -171,7 +198,7 @@ func gortexManagedEnv() []string {
 	if root == "" {
 		return os.Environ()
 	}
-	values := map[string]string{"XDG_CONFIG_HOME": filepath.Join(root, "config"), "XDG_DATA_HOME": filepath.Join(root, "data"), "XDG_CACHE_HOME": filepath.Join(root, "cache"), "GORTEX_DAEMON_SOCKET": filepath.Join(root, "run", "daemon.sock"), "GORTEX_DAEMON_PIDFILE": filepath.Join(root, "run", "daemon.pid"), "GORTEX_DAEMON_LOGFILE": filepath.Join(root, "run", "daemon.log"), "GORTEX_DAEMON_STATEFILE": filepath.Join(root, "run", "daemon.state.json"), "GORTEX_RECONCILE_INTERVAL": "3m"}
+	values := map[string]string{"XDG_CONFIG_HOME": filepath.Join(root, "config"), "XDG_DATA_HOME": filepath.Join(root, "data"), "XDG_CACHE_HOME": filepath.Join(root, "cache"), "GORTEX_DAEMON_SOCKET": filepath.Join(root, "run", "daemon.sock"), "GORTEX_DAEMON_PIDFILE": filepath.Join(root, "run", "daemon.pid"), "GORTEX_DAEMON_LOGFILE": filepath.Join(root, "run", "daemon.log"), "GORTEX_DAEMON_STATEFILE": filepath.Join(root, "run", "daemon.state.json"), "GORTEX_RECONCILE_INTERVAL": "20m"}
 	env := os.Environ()
 	for key, value := range values {
 		env = setEnvValue(env, key, value)
@@ -334,8 +361,8 @@ func gortexUnmanagedProcessRunning() bool {
 	return false
 }
 
-// stopAllGortexProcesses is used only by uninstall. It deliberately stops
-// every exact-name gortex.exe process, including MCP clients from another
+// stopAllGortexProcesses is used before install/upgrade and uninstall. It
+// deliberately stops every exact-name gortex.exe process, including MCP clients from another
 // installation or launcher, because the executable and its shared data are
 // about to be removed.
 func stopAllGortexProcesses(timeout time.Duration) error {
@@ -443,6 +470,69 @@ func gortexCopilotConfigDir() string {
 		return ""
 	}
 	return filepath.Join(profile, ".copilot")
+}
+
+func gortexOpenCodeConfigDir() string {
+	if dir := gortexAbsoluteEnvPath("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "opencode")
+	}
+	profile := userProfileDir()
+	if profile == "" {
+		return ""
+	}
+	return filepath.Join(profile, ".config", "opencode")
+}
+
+func gortexAntigravityConfigDir() string {
+	profile := userProfileDir()
+	if profile == "" {
+		return ""
+	}
+	return filepath.Join(profile, ".gemini", "config")
+}
+
+func gortexGeminiConfigDir() string {
+	profile := userProfileDir()
+	if profile == "" {
+		return ""
+	}
+	return filepath.Join(profile, ".gemini")
+}
+
+// gortexLegacyAntigravityConfigPath is the path used by older code-Manager
+// builds. It is retained only for ownership-checked cleanup during migration.
+func gortexLegacyAntigravityConfigPath() string {
+	profile := userProfileDir()
+	if profile == "" {
+		return ""
+	}
+	return filepath.Join(profile, ".gemini", "antigravity", "mcp_config.json")
+}
+
+func gortexAntigravityExecutableCandidates() []string {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	paths := []string{}
+	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+		paths = append(paths, filepath.Join(local, "Programs", "antigravity", "Antigravity.exe"))
+	}
+	if programFiles := strings.TrimSpace(os.Getenv("ProgramFiles")); programFiles != "" {
+		paths = append(paths, filepath.Join(programFiles, "Antigravity", "Antigravity.exe"))
+	}
+	return uniqueCleanPaths(paths)
+}
+
+func gortexAntigravityInstalled() bool {
+	if gortexCommandAvailable("antigravity") {
+		return true
+	}
+	for _, path := range gortexAntigravityExecutableCandidates() {
+		if fileExists(path) {
+			return true
+		}
+	}
+	return false
 }
 
 func fileExists(path string) bool      { info, err := os.Stat(path); return err == nil && !info.IsDir() }
@@ -638,20 +728,146 @@ func gortexConfigPath(agent string) string {
 			return filepath.Join(dir, "mcp-config.json")
 		}
 		return ""
+	case "opencode":
+		if dir := gortexOpenCodeConfigDir(); dir != "" {
+			return filepath.Join(dir, "opencode.json")
+		}
+		return ""
+	case "antigravity":
+		if dir := gortexAntigravityConfigDir(); dir != "" {
+			return filepath.Join(dir, "mcp_config.json")
+		}
+		return ""
+	case "gemini":
+		if dir := gortexGeminiConfigDir(); dir != "" {
+			return filepath.Join(dir, "settings.json")
+		}
+		return ""
 	}
 	return ""
 }
-func gortexAgentAvailable(agent string) bool {
-	profile := userProfileDir()
+
+// gortexJSONConfigHasPlatformEvidence avoids treating a directory or a file
+// containing only Gortex's own MCP entry as proof that the host is installed.
+// The latter state is common after removing Gortex MCP from an otherwise empty
+// configuration file.
+func gortexJSONConfigHasPlatformEvidence(path, serverKey string) bool {
+	if !fileExists(path) {
+		return false
+	}
+	root, err := readGortexJSONObject(path)
+	if err != nil || len(root) == 0 {
+		return false
+	}
+	for key, value := range root {
+		if key != serverKey {
+			return true
+		}
+		servers, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		for name := range servers {
+			if name != gortexMCPName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Gemini CLI and Antigravity share ~/.gemini/settings.json for lifecycle
+// hooks. A hooks-only file therefore proves that Gortex configured a host,
+// not that Gemini CLI itself is installed. Ignore the shared hooks key while
+// retaining ordinary user settings and non-Gortex MCP servers as evidence.
+func gortexGeminiConfigHasPlatformEvidence(path string) bool {
+	if !fileExists(path) {
+		return false
+	}
+	root, err := readGortexJSONObject(path)
+	if err != nil || len(root) == 0 {
+		return false
+	}
+	for key, value := range root {
+		switch key {
+		case "hooks":
+			continue
+		case "mcpServers":
+			servers, ok := value.(map[string]any)
+			if !ok {
+				return false
+			}
+			for name := range servers {
+				if name != gortexMCPName {
+					return true
+				}
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func gortexTOMLConfigHasPlatformEvidence(path, serverKey string) bool {
+	if !fileExists(path) {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(bytes.TrimSpace(data)) == 0 {
+		return false
+	}
+	root := map[string]any{}
+	if _, err := toml.Decode(string(data), &root); err != nil || len(root) == 0 {
+		return false
+	}
+	for key, value := range root {
+		if key != serverKey {
+			return true
+		}
+		servers, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		for name := range servers {
+			if name != gortexMCPName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func gortexAgentConfigEvidence(agent string) bool {
 	switch agent {
 	case "codex":
-		return gortexCommandAvailable("codex") || directoryExists(filepath.Join(profile, ".codex"))
+		return gortexTOMLConfigHasPlatformEvidence(gortexConfigPath(agent), "mcp_servers")
+	case "opencode":
+		return gortexJSONConfigHasPlatformEvidence(gortexConfigPath(agent), "mcp")
+	case "antigravity":
+		return gortexJSONConfigHasPlatformEvidence(gortexConfigPath(agent), "mcpServers") ||
+			gortexJSONConfigHasPlatformEvidence(gortexLegacyAntigravityConfigPath(), "mcpServers")
+	default:
+		return gortexJSONConfigHasPlatformEvidence(gortexConfigPath(agent), "mcpServers")
+	}
+}
+
+func gortexAgentAvailable(agent string) bool {
+	switch agent {
+	case "codex":
+		return gortexCommandAvailable("codex") || gortexAgentConfigEvidence(agent)
 	case "claude":
-		return gortexCommandAvailable("claude") || fileExists(gortexConfigPath("claude")) || directoryExists(gortexClaudeConfigDir())
+		return gortexCommandAvailable("claude") || gortexAgentConfigEvidence(agent)
 	case "cursor":
-		return gortexCommandAvailable("cursor") || directoryExists(filepath.Join(profile, ".cursor"))
+		return gortexCommandAvailable("cursor") || gortexAgentConfigEvidence(agent)
 	case "copilot":
-		return gortexCommandAvailable("copilot") || fileExists(gortexConfigPath("copilot")) || directoryExists(gortexCopilotConfigDir())
+		return gortexCommandAvailable("copilot") || gortexAgentConfigEvidence(agent)
+	case "opencode":
+		return gortexCommandAvailable("opencode") || gortexAgentConfigEvidence(agent)
+	case "antigravity":
+		return gortexAntigravityInstalled() || gortexAgentConfigEvidence(agent)
+	case "gemini":
+		return gortexCommandAvailable("gemini") || gortexGeminiConfigHasPlatformEvidence(gortexConfigPath(agent))
 	}
 	return false
 }
@@ -685,6 +901,45 @@ func gortexMCPEntry(executable string, copilot bool) map[string]any {
 		entry["type"] = "local"
 	}
 	return entry
+}
+
+func gortexOpenCodeMCPEntry(executable string) map[string]any {
+	return map[string]any{
+		"type":        "local",
+		"command":     []string{executable, "mcp"},
+		"enabled":     true,
+		"environment": gortexMCPEnv(),
+	}
+}
+
+func gortexOpenCodeMCPEntryLooksManaged(value any) bool {
+	entry, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	var command []string
+	switch value := entry["command"].(type) {
+	case []string:
+		command = value
+	case []any:
+		for _, item := range value {
+			text, ok := item.(string)
+			if !ok {
+				return false
+			}
+			command = append(command, text)
+		}
+	default:
+		return false
+	}
+	if len(command) < 2 || command[1] != "mcp" {
+		return false
+	}
+	return strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(command[0], "/", `\\`))), ".exe") == "gortex"
+}
+
+func gortexOpenCodeMCPEntryComplete(value any, executable string) bool {
+	return executable != "" && gortexFingerprint(value) == gortexFingerprint(gortexOpenCodeMCPEntry(executable))
 }
 
 func gortexCodexMCPEntry(executable string) map[string]any {
@@ -732,7 +987,7 @@ func gortexFingerprint(value any) string {
 }
 func gortexOwnershipPath() string { return gortexManagedPath("config", gortexOwnershipFileName) }
 func readGortexOwnership() (gortexMCPOwnership, error) {
-	result := gortexMCPOwnership{Platforms: map[string]gortexOwnedMCP{}, Artifacts: map[string]gortexOwnedArtifact{}}
+	result := gortexMCPOwnership{Platforms: map[string]gortexOwnedMCP{}, ProjectMCP: map[string]gortexOwnedProjectMCP{}, Artifacts: map[string]gortexOwnedArtifact{}}
 	path := gortexOwnershipPath()
 	if path == "" {
 		return result, nil
@@ -750,6 +1005,9 @@ func readGortexOwnership() (gortexMCPOwnership, error) {
 	if result.Platforms == nil {
 		result.Platforms = map[string]gortexOwnedMCP{}
 	}
+	if result.ProjectMCP == nil {
+		result.ProjectMCP = map[string]gortexOwnedProjectMCP{}
+	}
 	if result.Artifacts == nil {
 		result.Artifacts = map[string]gortexOwnedArtifact{}
 	}
@@ -759,6 +1017,9 @@ func writeGortexOwnership(value gortexMCPOwnership) error {
 	if value.Platforms == nil {
 		value.Platforms = map[string]gortexOwnedMCP{}
 	}
+	if value.ProjectMCP == nil {
+		value.ProjectMCP = map[string]gortexOwnedProjectMCP{}
+	}
 	if value.Artifacts == nil {
 		value.Artifacts = map[string]gortexOwnedArtifact{}
 	}
@@ -766,7 +1027,7 @@ func writeGortexOwnership(value gortexMCPOwnership) error {
 	if path == "" {
 		return nil
 	}
-	if len(value.Platforms) == 0 && len(value.Artifacts) == 0 && !value.UserPath && !value.SystemPath {
+	if len(value.Platforms) == 0 && len(value.ProjectMCP) == 0 && !value.ProjectMCPEnabled && len(value.Artifacts) == 0 && !value.UserPath && !value.SystemPath {
 		_ = os.Remove(path)
 		return nil
 	}
@@ -923,6 +1184,135 @@ func updateJSONMCPConfigOwned(agent, executable string, remove bool) (bool, erro
 	}
 	return true, nil
 }
+
+// removeLegacyAntigravityMCP clears only entries owned by older code-Manager
+// releases at Antigravity's former MCP path. It never infers ownership from a command.
+func removeLegacyAntigravityMCP() (bool, error) {
+	path := gortexLegacyAntigravityConfigPath()
+	if path == "" {
+		return false, nil
+	}
+	ownership, err := readGortexOwnership()
+	if err != nil {
+		return false, err
+	}
+	key := gortexOwnershipKey("antigravity", path)
+	owned, recorded := ownership.Platforms[key]
+	if !recorded {
+		return false, nil
+	}
+	root, err := readGortexJSONObject(path)
+	if errors.Is(err, os.ErrNotExist) {
+		delete(ownership.Platforms, key)
+		return true, writeGortexOwnership(ownership)
+	}
+	if err != nil {
+		return false, err
+	}
+	servers, err := jsonServers(root, path)
+	if err != nil {
+		return false, err
+	}
+	existing, present := servers[gortexMCPName]
+	if !present {
+		delete(ownership.Platforms, key)
+		return true, writeGortexOwnership(ownership)
+	}
+	if owned.Fingerprint == "" || owned.Fingerprint != gortexFingerprint(existing) {
+		return false, errors.New("旧 Antigravity MCP 已被用户修改，已保留")
+	}
+	delete(servers, gortexMCPName)
+	if len(servers) == 0 {
+		delete(root, "mcpServers")
+	}
+	if err := writeGortexJSONObject(path, root); err != nil {
+		return false, err
+	}
+	delete(ownership.Platforms, key)
+	if err := writeGortexOwnership(ownership); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func updateOpenCodeMCPConfigOwned(executable string, remove bool) (bool, error) {
+	path := gortexConfigPath("opencode")
+	if path == "" {
+		return false, nil
+	}
+	root := map[string]any{}
+	if _, err := os.Stat(path); err == nil {
+		var err error
+		root, err = readGortexJSONObject(path)
+		if err != nil {
+			return false, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	servers := map[string]any{}
+	if value, exists := root["mcp"]; exists {
+		var ok bool
+		servers, ok = value.(map[string]any)
+		if !ok {
+			return false, fmt.Errorf("%s 的 mcp 不是对象，拒绝覆盖用户配置", path)
+		}
+	}
+	ownership, ownershipErr := readGortexOwnership()
+	if ownershipErr != nil {
+		if !remove {
+			return false, ownershipErr
+		}
+		ownership = gortexMCPOwnership{Platforms: map[string]gortexOwnedMCP{}, Artifacts: map[string]gortexOwnedArtifact{}}
+	}
+	key := gortexOwnershipKey("opencode", path)
+	existing, exists := servers[gortexMCPName]
+	if remove {
+		if !exists {
+			if ownershipErr == nil {
+				if _, stale := ownership.Platforms[key]; stale {
+					delete(ownership.Platforms, key)
+					if err := writeGortexOwnership(ownership); err != nil {
+						return false, err
+					}
+					return true, nil
+				}
+			}
+			return false, nil
+		}
+		owned := ownership.Platforms[key]
+		if (owned.Fingerprint == "" || owned.Fingerprint != gortexFingerprint(existing)) && !gortexOpenCodeMCPEntryLooksManaged(existing) {
+			return false, errors.New("OpenCode 的 gortex MCP 已被用户修改，已保留")
+		}
+		delete(servers, gortexMCPName)
+		delete(ownership.Platforms, key)
+	} else {
+		entry := gortexOpenCodeMCPEntry(executable)
+		if exists {
+			owned := ownership.Platforms[key]
+			if !gortexMCPRegistrationAllowed(existing, entry, owned) && !gortexOpenCodeMCPEntryLooksManaged(existing) {
+				return false, errors.New("OpenCode 已存在用户配置的 gortex MCP，已保留")
+			}
+		}
+		servers[gortexMCPName] = entry
+		ownership.Platforms[key] = gortexOwnedMCP{Fingerprint: gortexFingerprint(entry)}
+	}
+	if len(servers) == 0 {
+		delete(root, "mcp")
+	} else {
+		root["mcp"] = servers
+	}
+	if err := writeGortexJSONObject(path, root); err != nil {
+		return false, err
+	}
+	if ownershipErr == nil {
+		if err := writeGortexOwnership(ownership); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func updateCodexMCPConfig(executable string, remove bool) (bool, error) {
 	path := gortexConfigPath("codex")
 	if path == "" {
@@ -1030,6 +1420,27 @@ func queryJSONMCPState(agent string, executable string) (present, complete bool)
 	}
 	return true, gortexMCPEntryComplete(existing, executable, agent == "copilot")
 }
+
+func queryOpenCodeMCPState(executable string) (present, complete bool) {
+	path := gortexConfigPath("opencode")
+	if !fileExists(path) {
+		return false, false
+	}
+	root, err := readGortexJSONObject(path)
+	if err != nil {
+		return false, false
+	}
+	servers, ok := root["mcp"].(map[string]any)
+	if !ok {
+		return false, false
+	}
+	existing, ok := servers[gortexMCPName]
+	if !ok {
+		return false, false
+	}
+	return true, gortexOpenCodeMCPEntryComplete(existing, executable)
+}
+
 func queryCodexMCPState(executable string) (present, complete bool) {
 	path := gortexConfigPath("codex")
 	data, err := os.ReadFile(path)
@@ -1052,23 +1463,32 @@ func queryCodexMCPState(executable string) (present, complete bool) {
 }
 func gortexRegisterMCP(executable string) []string {
 	warnings := []string{}
-	if gortexAgentAvailable("codex") {
+	available := gortexDetectedMCPAgents()
+	if available["codex"] {
 		if _, err := updateCodexMCPConfig(executable, false); err != nil {
 			warnings = append(warnings, "Codex: "+err.Error())
 		}
 	}
-	for _, agent := range []string{"claude", "cursor", "copilot"} {
-		if gortexAgentAvailable(agent) {
+	for _, agent := range []string{"claude", "cursor", "copilot", "antigravity", "gemini"} {
+		if available[agent] {
 			if _, err := updateJSONMCPConfigOwned(agent, executable, false); err != nil {
 				warnings = append(warnings, agent+": "+err.Error())
 			}
+		}
+	}
+	if _, err := removeLegacyAntigravityMCP(); err != nil {
+		warnings = append(warnings, "Antigravity 旧配置: "+err.Error())
+	}
+	if available["opencode"] {
+		if _, err := updateOpenCodeMCPConfigOwned(executable, false); err != nil {
+			warnings = append(warnings, "OpenCode: "+err.Error())
 		}
 	}
 	ownership, err := readGortexOwnership()
 	if err != nil {
 		warnings = append(warnings, "读取 Gortex 归属账本失败: "+err.Error())
 	} else {
-		artifacts, integrationWarnings := gortexRegisterIntegrations(executable)
+		artifacts, integrationWarnings := gortexRegisterIntegrations(executable, available)
 		for _, warning := range integrationWarnings {
 			warnings = append(warnings, warning)
 		}
@@ -1083,10 +1503,12 @@ func gortexRegisterMCP(executable string) []string {
 			warnings = append(warnings, "保存 Gortex 接入归属失败: "+err.Error())
 		}
 	}
+	warnings = append(warnings, gortexEnableAndRegisterProjectMCP(executable, available)...)
 	return warnings
 }
 func gortexRemoveMCP() []string {
 	warnings := []string{}
+	warnings = append(warnings, gortexRemoveAllProjectMCP(gortexManagedExecutablePath())...)
 	_, ownershipErr := readGortexOwnership()
 	if ownershipErr != nil {
 		warnings = append(warnings, "读取 Gortex 归属账本失败: "+ownershipErr.Error())
@@ -1100,11 +1522,19 @@ func gortexRemoveMCP() []string {
 			warnings = append(warnings, "Codex: "+err.Error())
 		}
 	}
-	for _, agent := range []string{"claude", "cursor", "copilot"} {
+	for _, agent := range []string{"claude", "cursor", "copilot", "antigravity", "gemini"} {
 		if gortexConfigPath(agent) != "" {
 			if _, err := updateJSONMCPConfigOwned(agent, "", true); err != nil {
 				warnings = append(warnings, agent+": "+err.Error())
 			}
+		}
+	}
+	if _, err := removeLegacyAntigravityMCP(); err != nil {
+		warnings = append(warnings, "Antigravity 旧配置: "+err.Error())
+	}
+	if gortexConfigPath("opencode") != "" {
+		if _, err := updateOpenCodeMCPConfigOwned("", true); err != nil {
+			warnings = append(warnings, "OpenCode: "+err.Error())
 		}
 	}
 
@@ -1140,18 +1570,30 @@ func gortexStatusSnapshot() gortexStatusResponse {
 	response.ClaudeAvailable = gortexAgentAvailable("claude")
 	response.CursorAvailable = gortexAgentAvailable("cursor")
 	response.CopilotAvailable = gortexAgentAvailable("copilot")
+	response.OpenCodeAvailable = gortexAgentAvailable("opencode")
+	response.AntigravityAvailable = gortexAgentAvailable("antigravity")
+	response.GeminiAvailable = gortexAgentAvailable("gemini")
 	response.CodexConfigured, response.CodexComplete = queryCodexMCPState(exe)
 	response.ClaudeConfigured, response.ClaudeComplete = queryJSONMCPState("claude", exe)
 	response.CursorConfigured, response.CursorComplete = queryJSONMCPState("cursor", exe)
 	response.CopilotConfigured, response.CopilotComplete = queryJSONMCPState("copilot", exe)
+	response.OpenCodeConfigured, response.OpenCodeComplete = queryOpenCodeMCPState(exe)
+	response.AntigravityConfigured, response.AntigravityComplete = queryJSONMCPState("antigravity", exe)
+	response.GeminiConfigured, response.GeminiComplete = queryJSONMCPState("gemini", exe)
 	response.CodexPrompt, response.CodexPromptComplete = gortexPromptStatus("codex")
 	response.ClaudePrompt, response.ClaudePromptComplete = gortexPromptStatus("claude")
 	response.CursorPrompt = false
 	response.CursorPromptComplete = false
 	response.CopilotPrompt, response.CopilotPromptComplete = gortexPromptStatus("copilot")
+	response.OpenCodePrompt, response.OpenCodePromptComplete = gortexPromptStatus("opencode")
+	response.AntigravityPrompt, response.AntigravityPromptComplete = gortexPromptStatus("antigravity")
+	response.GeminiPrompt, response.GeminiPromptComplete = gortexPromptStatus("gemini")
 	response.CodexHook, response.CodexHookComplete = gortexHookStatus("codex", exe)
 	response.ClaudeHook, response.ClaudeHookComplete = gortexHookStatus("claude", exe)
 	response.CopilotHook, response.CopilotHookComplete = gortexHookStatus("copilot", exe)
+	response.OpenCodeHook, response.OpenCodeHookComplete = gortexHookStatus("opencode", exe)
+	response.AntigravityHook, response.AntigravityHookComplete = gortexHookStatus("antigravity", exe)
+	response.GeminiHook, response.GeminiHookComplete = gortexHookStatus("gemini", exe)
 	trust := gortexCodexTrustStatus(exe)
 	response.CodexTrustStatus, response.CodexTrustRequired, response.CodexTrustNotice, response.CodexTrustSteps = trust.Status, trust.Required, trust.Notice, trust.Steps
 	if managedRoot != "" {
@@ -1197,7 +1639,9 @@ func gortexStatusSnapshot() gortexStatusResponse {
 		}
 	}
 	if ownership, err := readGortexOwnership(); err == nil {
-		response.IntegrationPresent = response.IntegrationPresent || len(ownership.Platforms) > 0 || len(ownership.Artifacts) > 0 || ownership.UserPath || ownership.SystemPath
+		response.ProjectMCPEnabled = ownership.ProjectMCPEnabled
+		response.ProjectMCPProjects = gortexProjectMCPProjectsFromOwnership(ownership)
+		response.IntegrationPresent = response.IntegrationPresent || len(ownership.Platforms) > 0 || len(ownership.ProjectMCP) > 0 || ownership.ProjectMCPEnabled || len(ownership.Artifacts) > 0 || ownership.UserPath || ownership.SystemPath
 	} else {
 		// A damaged ownership file is itself a cleanup residual; expose it so
 		// the UI keeps the removal/uninstall controls available and can report
@@ -1207,7 +1651,7 @@ func gortexStatusSnapshot() gortexStatusResponse {
 			response.Message = "Gortex 归属账本需要修复: " + err.Error()
 		}
 	}
-	response.IntegrationPresent = response.IntegrationPresent || response.CodexConfigured || response.ClaudeConfigured || response.CursorConfigured || response.CopilotConfigured || response.CodexPrompt || response.ClaudePrompt || response.CursorPrompt || response.CopilotPrompt || response.CodexHook || response.ClaudeHook || response.CopilotHook || response.UserPath || response.SystemPath || len(response.TrackedProjects) > 0
+	response.IntegrationPresent = response.IntegrationPresent || response.CodexConfigured || response.ClaudeConfigured || response.CursorConfigured || response.CopilotConfigured || response.OpenCodeConfigured || response.AntigravityConfigured || response.GeminiConfigured || response.CodexPrompt || response.ClaudePrompt || response.CursorPrompt || response.CopilotPrompt || response.OpenCodePrompt || response.AntigravityPrompt || response.GeminiPrompt || response.CodexHook || response.ClaudeHook || response.CopilotHook || response.OpenCodeHook || response.AntigravityHook || response.GeminiHook || response.UserPath || response.SystemPath || len(response.TrackedProjects) > 0
 	if response.Running {
 		response.ActivationState = "running"
 		if response.Message == "" {
@@ -1246,10 +1690,6 @@ func (g *gateway) gortexReleases(w http.ResponseWriter, r *http.Request) {
 	}
 	if gortexInstallInProgress.Load() {
 		http.Error(w, "Gortex 正在安装，暂不能加载远端版本", http.StatusConflict)
-		return
-	}
-	if gortexAnyProcessRunning() {
-		http.Error(w, "Gortex 进程正在运行，暂不能加载远端版本", http.StatusConflict)
 		return
 	}
 	page := 1
@@ -1305,10 +1745,6 @@ func (g *gateway) gortexInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Gortex 正在安装，请等待当前安装完成", http.StatusConflict)
 		return
 	}
-	if gortexAnyProcessRunning() {
-		http.Error(w, "Gortex 进程正在运行，暂不能安装或升级", http.StatusConflict)
-		return
-	}
 	if runtime.GOOS != "windows" {
 		http.Error(w, "Gortex 一键安装目前只支持 Windows", 501)
 		return
@@ -1337,6 +1773,11 @@ func (g *gateway) gortexInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "版本标识无效", 400)
 		return
 	}
+	if err := stopAllGortexProcesses(gortexProcessStopTimeout); err != nil {
+		http.Error(w, "Gortex 安装失败：无法停止所有 Gortex 进程: "+err.Error(), http.StatusConflict)
+		return
+	}
+	invalidateGortexMCPStatusCache()
 	root := gortexInstallRoot()
 	bin := gortexManagedPath("bin")
 	for _, path := range []string{root, bin, gortexManagedPath("config"), gortexManagedPath("data"), gortexManagedPath("cache"), gortexManagedPath("run")} {
@@ -1351,6 +1792,7 @@ func (g *gateway) gortexInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Gortex 安装失败: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	invalidateGortexMCPStatusCache()
 	ownership, ownershipErr := readGortexOwnership()
 	userPath, systemPath, pathErr := configureGortexPath(ctx, bin)
 	if pathErr != nil {
@@ -1449,6 +1891,13 @@ func parseGortexChecksum(text, assetName string) (string, error) {
 func replaceGortexExecutable(stagedPath, targetPath string) error {
 	if strings.TrimSpace(stagedPath) == "" || strings.TrimSpace(targetPath) == "" {
 		return errors.New("Gortex 可执行文件路径不能为空")
+	}
+	stagedInfo, err := os.Stat(stagedPath)
+	if err != nil {
+		return fmt.Errorf("读取暂存的 Gortex 可执行文件失败: %w", err)
+	}
+	if !stagedInfo.Mode().IsRegular() || stagedInfo.Size() == 0 {
+		return errors.New("暂存的 Gortex 可执行文件无效或为空")
 	}
 	if info, err := os.Stat(targetPath); err == nil && info.IsDir() {
 		return fmt.Errorf("Gortex 可执行文件目标是目录: %s", targetPath)
@@ -1553,14 +2002,22 @@ func installGortexZIP(zipPath, installDir string) error {
 	if !found {
 		return errors.New("Gortex ZIP 中没有 gortex.exe")
 	}
+	stagedPath := filepath.Join(stagingDir, gortexExecutableName)
+	stagedInfo, err := os.Stat(stagedPath)
+	if err != nil {
+		return fmt.Errorf("读取暂存的 Gortex 可执行文件失败: %w", err)
+	}
+	if !stagedInfo.Mode().IsRegular() || stagedInfo.Size() == 0 {
+		return errors.New("Gortex ZIP 中的 gortex.exe 无效或为空")
+	}
 	if err := os.MkdirAll(installDir, 0o700); err != nil {
 		return fmt.Errorf("创建 Gortex bin 目录失败（%s）: %w", installDir, err)
 	}
 	target := filepath.Join(installDir, gortexExecutableName)
-	if gortexProcessRunning(target) || gortexAnyProcessRunning() {
-		return errors.New("Gortex daemon 正在运行，请先停止 daemon 后再安装")
+	if err := stopAllGortexProcesses(gortexProcessStopTimeout); err != nil {
+		return fmt.Errorf("替换前停止全部 Gortex 进程失败: %w", err)
 	}
-	if err := replaceGortexExecutable(filepath.Join(stagingDir, gortexExecutableName), target); err != nil {
+	if err := replaceGortexExecutable(stagedPath, target); err != nil {
 		return fmt.Errorf("替换 Gortex 可执行文件失败（%s）: %w", target, err)
 	}
 	return nil
@@ -1768,19 +2225,37 @@ func (g *gateway) gortexTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "保存 Gortex 项目记录失败: "+err.Error(), 500)
 		return
 	}
+	warnings := []string{}
 	if err := ensureGortexWatchConfig(project); err != nil {
-		writeJSON(w, 200, gortexOperationResponse{Message: "已建立 Gortex 项目代码图谱，但自动监视配置写入失败。", Warnings: []string{err.Error()}})
-		return
+		warnings = append(warnings, "自动监视配置: "+err.Error())
 	}
+	available := gortexDetectedMCPAgents()
 	ownership, ownershipErr := readGortexOwnership()
-	if ownershipErr == nil {
-		if err := gortexRegisterCursorProject(project, &ownership); err != nil {
-			writeJSON(w, 200, gortexOperationResponse{Message: "已建立 Gortex 项目代码图谱，但 Cursor 项目规则写入失败。", Warnings: []string{err.Error()}})
-			return
+	if ownershipErr != nil {
+		warnings = append(warnings, "读取 Gortex 归属账本失败: "+ownershipErr.Error())
+	} else {
+		if ownership.ProjectMCPEnabled {
+			warnings = append(warnings, gortexRegisterProjectMCPForProject(project, exe, available)...)
 		}
-		_ = writeGortexOwnership(ownership)
+		ownership, ownershipErr = readGortexOwnership()
+		if ownershipErr != nil {
+			warnings = append(warnings, "重新读取 Gortex 归属账本失败: "+ownershipErr.Error())
+		} else {
+			if available["cursor"] {
+				if err := gortexRegisterCursorProject(project, &ownership); err != nil {
+					warnings = append(warnings, "Cursor 项目规则: "+err.Error())
+				}
+			}
+			if err := writeGortexOwnership(ownership); err != nil {
+				warnings = append(warnings, "保存 Gortex 接入归属失败: "+err.Error())
+			}
+		}
 	}
-	writeJSON(w, 200, gortexOperationResponse{Message: "已建立 Gortex 项目代码图谱；后续深度分析由 AI 按任务需要调用 MCP。"})
+	message := "已建立 Gortex 项目代码图谱；后续深度分析由 AI 按任务需要调用 MCP。"
+	if len(warnings) > 0 {
+		message = "已建立 Gortex 项目代码图谱，但部分接入配置需要处理。"
+	}
+	writeJSON(w, 200, gortexOperationResponse{Message: message, Warnings: warnings})
 }
 func (g *gateway) gortexUntrack(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1824,15 +2299,23 @@ func (g *gateway) gortexUntrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "保存 Gortex 项目记录失败: "+err.Error(), 500)
 		return
 	}
-	if ownership, ownershipErr := readGortexOwnership(); ownershipErr == nil {
+	warnings := gortexRemoveProjectMCP(exe, project)
+	ownership, ownershipErr := readGortexOwnership()
+	if ownershipErr != nil {
+		warnings = append(warnings, "读取 Gortex 归属账本失败: "+ownershipErr.Error())
+	} else {
 		if err := gortexRemoveCursorProject(project, &ownership); err != nil {
-			warnings := []string{err.Error()}
-			writeJSON(w, 200, gortexOperationResponse{Message: "已取消该项目的 Gortex track，但 Cursor 项目规则未能安全移除。", Warnings: warnings})
-			return
+			warnings = append(warnings, "Cursor 项目规则: "+err.Error())
 		}
-		_ = writeGortexOwnership(ownership)
+		if err := writeGortexOwnership(ownership); err != nil {
+			warnings = append(warnings, "保存 Gortex 接入归属失败: "+err.Error())
+		}
 	}
-	writeJSON(w, 200, gortexOperationResponse{Message: "已取消该项目的 Gortex track；不会删除项目文件。"})
+	message := "已取消该项目的 Gortex track；不会删除项目文件。"
+	if len(warnings) > 0 {
+		message = "已取消该项目的 Gortex track，但部分项目接入配置需要处理。"
+	}
+	writeJSON(w, 200, gortexOperationResponse{Message: message, Warnings: warnings})
 }
 func (g *gateway) gortexUninstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1909,7 +2392,7 @@ func (g *gateway) gortexUninstall(w http.ResponseWriter, r *http.Request) {
 	// MCP clients are removed above before process termination. Now terminate
 	// every exact-name gortex.exe, including stdio clients or daemons launched
 	// outside code-Manager, so the managed directory can be removed safely.
-	if err := stopAllGortexProcesses(15 * time.Second); err != nil {
+	if err := stopAllGortexProcesses(gortexProcessStopTimeout); err != nil {
 		warnings = append(warnings, "停止全部 Gortex 进程失败: "+err.Error())
 		incomplete = true
 	}
@@ -1968,7 +2451,7 @@ func (g *gateway) gortexUninstall(w http.ResponseWriter, r *http.Request) {
 	// A failed cleanup must retain the ledger and managed root so the user can
 	// retry safely. Only remove the root after every ownership and process
 	// operation completed without warnings.
-	if ownershipErr == nil && (len(ownership.Platforms) > 0 || len(ownership.Artifacts) > 0 || ownership.UserPath || ownership.SystemPath) {
+	if ownershipErr == nil && (len(ownership.Platforms) > 0 || len(ownership.ProjectMCP) > 0 || ownership.ProjectMCPEnabled || len(ownership.Artifacts) > 0 || ownership.UserPath || ownership.SystemPath) {
 		incomplete = true
 	}
 	root := gortexInstallRoot()

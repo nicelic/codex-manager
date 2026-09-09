@@ -55,7 +55,7 @@ func repairInstalledGortexPath() {
 	}
 }
 
-const gortexWatchDebounceMilliseconds = 50
+const gortexWatchDebounceMilliseconds = 100
 
 func yamlMappingValue(node *yaml.Node, key string) (*yaml.Node, bool) {
 	if node == nil || node.Kind != yaml.MappingNode {
@@ -204,15 +204,22 @@ func enforceGortexWatchConfigs() {
 }
 
 const (
-	gortexRulesStartMarker = "<!-- code-manager:gortex:rules:start -->"
-	gortexRulesEndMarker   = "<!-- code-manager:gortex:rules:end -->"
-	gortexArtifactPrompt   = "prompt:"
-	gortexArtifactHook     = "hook:"
-	gortexPromptFileName   = "gortex提示词.md"
+	gortexRulesStartMarker         = "<!-- code-manager:gortex:rules:start -->"
+	gortexRulesEndMarker           = "<!-- code-manager:gortex:rules:end -->"
+	gortexArtifactPrompt           = "prompt:"
+	gortexArtifactHook             = "hook:"
+	gortexPromptFileName           = "gortex提示词.md"
+	gortexOpenCodePluginMarker     = "// code-manager:gortex:opencode-plugin"
+	gortexOpenCodePluginBinKey     = "{{GORTEX_BIN}}"
+	gortexOpenCodePluginArgvKey    = "{{GORTEX_HOOK_ARGV}}"
+	gortexOpenCodePluginEnforceKey = "{{GORTEX_ENFORCE}}"
 )
 
 //go:embed assets/gortex提示词.md
 var gortexPromptDocument []byte
+
+//go:embed assets/gortex-opencode-plugin.js
+var gortexOpenCodePluginDocument []byte
 
 // gortexInstructionBody is the complete, marker-free source document shipped
 // with the managed Gortex installation. Integration code alone adds and removes
@@ -247,6 +254,58 @@ type gortexOwnedArtifact struct {
 	HandlerFingerprint string `json:"handler_fingerprint,omitempty"`
 }
 
+func gortexOpenCodePluginPath() string {
+	directory := gortexOpenCodeConfigDir()
+	if directory == "" {
+		return ""
+	}
+	return filepath.Join(directory, "plugin", "gortex.js")
+}
+
+func gortexOpenCodePluginSource(executable string) (string, error) {
+	if strings.TrimSpace(executable) == "" {
+		return "", errors.New("Gortex 可执行文件路径为空")
+	}
+	if len(gortexOpenCodePluginDocument) == 0 {
+		return "", errors.New("内置 OpenCode Gortex 插件为空")
+	}
+	cleanExecutable := filepath.Clean(executable)
+	encoded, err := json.Marshal(cleanExecutable)
+	if err != nil {
+		return "", err
+	}
+	hookArgv, err := json.Marshal([]string{cleanExecutable, "hook", "--agent=opencode"})
+	if err != nil {
+		return "", err
+	}
+	source := string(gortexOpenCodePluginDocument)
+	source = strings.ReplaceAll(source, gortexOpenCodePluginBinKey, string(encoded))
+	source = strings.ReplaceAll(source, gortexOpenCodePluginArgvKey, string(hookArgv))
+	source = strings.ReplaceAll(source, gortexOpenCodePluginEnforceKey, "true")
+	if strings.Contains(source, gortexOpenCodePluginBinKey) ||
+		strings.Contains(source, gortexOpenCodePluginArgvKey) ||
+		strings.Contains(source, gortexOpenCodePluginEnforceKey) {
+		return "", errors.New("OpenCode Gortex 插件未完成可执行文件路径替换")
+	}
+	return source, nil
+}
+
+func gortexAntigravityPromptPaths() []string {
+	profile := userProfileDir()
+	if profile == "" {
+		return nil
+	}
+	return []string{filepath.Join(profile, ".gemini", "GEMINI.md")}
+}
+
+func gortexGeminiPromptPaths() []string {
+	profile := userProfileDir()
+	if profile == "" {
+		return nil
+	}
+	return []string{filepath.Join(profile, ".gemini", "GEMINI.md")}
+}
+
 func gortexPromptPaths(agent string) []string {
 	profile := userProfileDir()
 	if profile == "" {
@@ -259,6 +318,12 @@ func gortexPromptPaths(agent string) []string {
 		return []string{filepath.Join(gortexClaudeConfigDir(), "CLAUDE.md")}
 	case "copilot":
 		return []string{filepath.Join(gortexCopilotConfigDir(), "copilot-instructions.md")}
+	case "opencode":
+		return []string{filepath.Join(gortexOpenCodeConfigDir(), "AGENTS.md")}
+	case "antigravity":
+		return gortexAntigravityPromptPaths()
+	case "gemini":
+		return gortexGeminiPromptPaths()
 	default:
 		return nil
 	}
@@ -280,6 +345,10 @@ func gortexHookPath(agent string) string {
 		return filepath.Join(gortexClaudeConfigDir(), "settings.local.json")
 	case "copilot":
 		return filepath.Join(gortexCopilotConfigDir(), "hooks", "gortex.json")
+	case "opencode":
+		return gortexOpenCodePluginPath()
+	case "antigravity", "gemini":
+		return filepath.Join(profile, ".gemini", "settings.json")
 	default:
 		return ""
 	}
@@ -531,9 +600,28 @@ func gortexHookCommand(agent, executable string) string {
 		return gortexClaudeHookCommand(executable)
 	case "copilot":
 		return quoteWindowsExecutable(executable) + " hook --agent=copilot-cli"
+	case "opencode":
+		return quoteWindowsExecutable(executable) + " hook --agent=opencode"
+	case "antigravity", "gemini":
+		return quoteWindowsExecutable(executable) + " hook --agent " + agent
 	default:
 		return quoteWindowsExecutable(executable) + " hook"
 	}
+}
+
+func gortexGeminiHookEntry(command, matcher, description string) map[string]any {
+	inner := map[string]any{
+		"type":        "command",
+		"command":     command,
+		"name":        "gortex",
+		"timeout":     10000,
+		"description": description,
+	}
+	entry := map[string]any{"hooks": []any{inner}}
+	if matcher != "" {
+		entry["matcher"] = matcher
+	}
+	return entry
 }
 
 // Claude Code executes hook commands through a POSIX-compatible shell even on
@@ -776,6 +864,177 @@ func removeClaudeHooks(path, executable string) (bool, error) {
 	return true, replaceUTF8File(path, append(encoded, '\n'))
 }
 
+func gortexGeminiHookEvents(agent, executable string) map[string]map[string]any {
+	command := gortexHookCommand(agent, executable)
+	return map[string]map[string]any{
+		"SessionStart": gortexGeminiHookEntry(command, "", "Gortex session orientation"),
+		"AfterTool":    gortexGeminiHookEntry(command, "run_shell_command|search_file_content|glob", "Gortex graph context + stale-index hint"),
+	}
+}
+
+func gortexGeminiHookEntryIsOurs(value any, agent string) bool {
+	entry, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range gortexHookList(entry["hooks"]) {
+		if gortexGeminiHookHandlerIsOurs(raw, agent) {
+			return true
+		}
+	}
+	return false
+}
+
+func gortexGeminiHookEntryMatchesCanonical(value any, event, executable string) bool {
+	for _, agent := range []string{"antigravity", "gemini"} {
+		want, ok := gortexGeminiHookEvents(agent, executable)[event]
+		if ok && gortexFingerprint(value) == gortexFingerprint(want) {
+			return true
+		}
+	}
+	return false
+}
+
+func gortexGeminiHookHandlerIsOurs(value any, agent string) bool {
+	handler, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	if name, _ := handler["name"].(string); name == "gortex" {
+		return true
+	}
+	return gortexCommandInvokesAgentHook(gortexTomlEffectiveCommand(handler), agent)
+}
+
+func upsertGeminiHooks(path, agent, executable string) (bool, []gortexOwnedArtifact, error) {
+	root := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &root); err != nil {
+			return false, nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, nil, err
+	}
+	hooks := map[string]any{}
+	if raw, exists := root["hooks"]; exists {
+		var ok bool
+		hooks, ok = raw.(map[string]any)
+		if !ok {
+			return false, nil, fmt.Errorf("%s Hook 配置的 hooks 必须是对象，已保留用户配置", agent)
+		}
+	}
+	changed := false
+	owned := []gortexOwnedArtifact{}
+	for event, want := range gortexGeminiHookEvents(agent, executable) {
+		if raw, exists := hooks[event]; exists && raw != nil && gortexHookList(raw) == nil {
+			return false, nil, fmt.Errorf("%s Hook 事件 %s 不是数组，已保留用户配置", agent, event)
+		}
+		list := gortexHookList(hooks[event])
+		found := false
+		managed := any(want)
+		kept := make([]any, 0, len(list)+1)
+		for _, item := range list {
+			if !gortexGeminiHookEntryIsOurs(item, agent) {
+				kept = append(kept, item)
+				continue
+			}
+			if !found {
+				found = true
+				if gortexFingerprint(item) == gortexFingerprint(want) || gortexGeminiHookEntryMatchesCanonical(item, event, executable) {
+					kept = append(kept, item)
+					managed = item
+				} else {
+					kept = append(kept, want)
+					changed = true
+				}
+			} else {
+				changed = true
+			}
+		}
+		if !found {
+			kept = append(kept, want)
+			changed = true
+		}
+		hooks[event] = kept
+		handler := gortexNestedCommandHandler(managed)
+		owned = append(owned, gortexOwnedArtifact{
+			Kind: gortexArtifactHook, Agent: agent, Path: path, Event: event,
+			Fingerprint: gortexJSONArtifactFingerprint(managed),
+			Command: func() string {
+				if handler == nil {
+					return ""
+				}
+				return gortexTomlEffectiveCommand(handler)
+			}(),
+			GroupFingerprint:   gortexFingerprint(managed),
+			HandlerFingerprint: gortexFingerprint(handler),
+		})
+	}
+	root["hooks"] = hooks
+	encoded, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return false, nil, err
+	}
+	if changed || !fileExists(path) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return false, nil, err
+		}
+		if err := replaceUTF8File(path, append(encoded, '\n')); err != nil {
+			return false, nil, err
+		}
+	}
+	return changed, owned, nil
+}
+
+func removeGeminiHooks(path, agent, executable string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	root := map[string]any{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false, err
+	}
+	hooks, _ := root["hooks"].(map[string]any)
+	if hooks == nil {
+		return false, nil
+	}
+	changed := false
+	for _, event := range []string{"SessionStart", "AfterTool"} {
+		if raw, exists := hooks[event]; exists && raw != nil && gortexHookList(raw) == nil {
+			continue
+		}
+		list := gortexHookList(hooks[event])
+		kept := make([]any, 0, len(list))
+		for _, item := range list {
+			if gortexGeminiHookEntryIsOurs(item, agent) {
+				changed = true
+				continue
+			}
+			kept = append(kept, item)
+		}
+		if len(kept) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = kept
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if len(hooks) == 0 {
+		delete(root, "hooks")
+	}
+	encoded, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	return true, replaceUTF8File(path, append(encoded, '\n'))
+}
+
 func upsertCopilotHooks(path, executable string) (bool, []gortexOwnedArtifact, error) {
 	root := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
@@ -871,6 +1130,74 @@ func upsertCopilotHooks(path, executable string) (bool, []gortexOwnedArtifact, e
 		}
 	}
 	return changed, owned, nil
+}
+
+func upsertOpenCodePlugin(path, executable string) (bool, []gortexOwnedArtifact, error) {
+	source, err := gortexOpenCodePluginSource(executable)
+	if err != nil {
+		return false, nil, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		data = nil
+	} else if err != nil {
+		return false, nil, err
+	}
+	if len(data) > 0 && string(data) != source && !strings.Contains(string(data), gortexOpenCodePluginMarker) {
+		return false, nil, fmt.Errorf("OpenCode 插件文件 %s 已存在用户内容，已保留", path)
+	}
+	changed := string(data) != source
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return false, nil, err
+		}
+		if err := replaceUTF8File(path, []byte(source)); err != nil {
+			return false, nil, err
+		}
+	}
+	return changed, []gortexOwnedArtifact{{
+		Kind:        gortexArtifactHook,
+		Agent:       "opencode",
+		Path:        path,
+		Event:       "plugin",
+		Fingerprint: gortexArtifactFingerprint([]byte(source)),
+		Command:     gortexHookCommand("opencode", executable),
+	}}, nil
+}
+
+func gortexOpenCodePluginStatus(path, executable string) (present, complete bool) {
+	if path == "" || !fileExists(path) {
+		return false, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), gortexOpenCodePluginMarker) {
+		return false, false
+	}
+	source, err := gortexOpenCodePluginSource(executable)
+	if err != nil {
+		return true, false
+	}
+	return true, gortexArtifactFingerprint(data) == gortexArtifactFingerprint([]byte(source))
+}
+
+func gortexRemoveOpenCodePluginArtifact(path, executable string, artifact gortexOwnedArtifact) (bool, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !strings.Contains(string(data), gortexOpenCodePluginMarker) {
+		return false, fmt.Errorf("OpenCode 插件文件 %s 不是 Gortex 归属内容，已保留", path)
+	}
+	if artifact.Fingerprint != "" && gortexArtifactFingerprint(data) != artifact.Fingerprint {
+		return false, fmt.Errorf("OpenCode Gortex 插件已被用户修改，已保留")
+	}
+	if err := os.Remove(path); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func removeCopilotHooks(path, executable string) (bool, error) {
@@ -1272,11 +1599,15 @@ func tomlEncode(root map[string]any) (string, error) {
 	return builder.String(), err
 }
 
-func gortexRegisterIntegrations(executable string) ([]gortexOwnedArtifact, []string) {
+func gortexRegisterIntegrations(executable string, detected ...map[string]bool) ([]gortexOwnedArtifact, []string) {
 	var artifacts []gortexOwnedArtifact
 	var warnings []string
-	for _, agent := range []string{"codex", "claude", "copilot"} {
-		if !gortexAgentAvailable(agent) {
+	available := gortexDetectedMCPAgents()
+	if len(detected) > 0 && detected[0] != nil {
+		available = detected[0]
+	}
+	for _, agent := range gortexProjectMCPAgents {
+		if !available[agent] {
 			continue
 		}
 		for _, path := range gortexPromptPaths(agent) {
@@ -1299,6 +1630,10 @@ func gortexRegisterIntegrations(executable string) ([]gortexOwnedArtifact, []str
 			changed, hooks, err = upsertClaudeHooks(gortexHookPath(agent), executable)
 		case "copilot":
 			changed, hooks, err = upsertCopilotHooks(gortexHookPath(agent), executable)
+		case "opencode":
+			changed, hooks, err = upsertOpenCodePlugin(gortexHookPath(agent), executable)
+		case "antigravity", "gemini":
+			changed, hooks, err = upsertGeminiHooks(gortexHookPath(agent), agent, executable)
 		}
 		_ = changed
 		if err != nil {
@@ -1531,6 +1866,94 @@ func gortexRemoveClaudeHookArtifact(path, executable string, artifact gortexOwne
 	return true, replaceUTF8File(path, append(encoded, '\n'))
 }
 
+func gortexRemoveGeminiHookArtifact(path, agent, executable string, artifact gortexOwnedArtifact) (bool, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	root := map[string]any{}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false, err
+	}
+	hooks, _ := root["hooks"].(map[string]any)
+	if hooks == nil || artifact.Event == "" {
+		return false, fmt.Errorf("%s Hook 归属缺少事件信息，已保留", agent)
+	}
+	list := gortexHookList(hooks[artifact.Event])
+	if list == nil {
+		return false, nil
+	}
+	candidates, exact := 0, 0
+	groupIndex, handlerIndex := -1, -1
+	for i, raw := range list {
+		group, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		for j, rawHandler := range gortexHookList(group["hooks"]) {
+			if !gortexGeminiHookHandlerIsOurs(rawHandler, agent) {
+				continue
+			}
+			handler, _ := rawHandler.(map[string]any)
+			command := gortexTomlEffectiveCommand(handler)
+			candidates++
+			if gortexHookArtifactMatches(artifact, group, handler, command) {
+				exact++
+				groupIndex, handlerIndex = i, j
+			}
+		}
+	}
+	if exact == 0 {
+		if candidates > 0 {
+			return false, fmt.Errorf("%s %s Hook 已被修改或重复，已保留", agent, artifact.Event)
+		}
+		return false, nil
+	}
+	if exact != 1 {
+		return false, fmt.Errorf("%s %s Hook 存在重复归属候选，已保留", agent, artifact.Event)
+	}
+	keptGroups := make([]any, 0, len(list))
+	for i, raw := range list {
+		if i != groupIndex {
+			keptGroups = append(keptGroups, raw)
+			continue
+		}
+		group, _ := raw.(map[string]any)
+		handlers := gortexHookList(group["hooks"])
+		keptHandlers := make([]any, 0, len(handlers)-1)
+		for j, handler := range handlers {
+			if j != handlerIndex {
+				keptHandlers = append(keptHandlers, handler)
+			}
+		}
+		if len(keptHandlers) == 0 {
+			continue
+		}
+		clone := make(map[string]any, len(group))
+		for key, value := range group {
+			clone[key] = value
+		}
+		clone["hooks"] = keptHandlers
+		keptGroups = append(keptGroups, clone)
+	}
+	if len(keptGroups) == 0 {
+		delete(hooks, artifact.Event)
+	} else {
+		hooks[artifact.Event] = keptGroups
+	}
+	if len(hooks) == 0 {
+		delete(root, "hooks")
+	}
+	encoded, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	return true, replaceUTF8File(path, append(encoded, '\n'))
+}
+
 func gortexRemoveCopilotHookArtifact(path, executable string, artifact gortexOwnedArtifact) (bool, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1619,6 +2042,10 @@ func gortexRemoveIntegrationsOwned(executable string, ownership *gortexMCPOwners
 				_, err = gortexRemoveClaudeHookArtifact(artifact.Path, executable, artifact)
 			case "copilot":
 				_, err = gortexRemoveCopilotHookArtifact(artifact.Path, executable, artifact)
+			case "opencode":
+				_, err = gortexRemoveOpenCodePluginArtifact(artifact.Path, executable, artifact)
+			case "antigravity", "gemini":
+				_, err = gortexRemoveGeminiHookArtifact(artifact.Path, artifact.Agent, executable, artifact)
 			default:
 				err = fmt.Errorf("未知 Gortex artifact 类型 %q，已保留", artifact.Agent)
 			}
@@ -1640,7 +2067,7 @@ func gortexRemoveIntegrationsOwned(executable string, ownership *gortexMCPOwners
 // untouched.
 func gortexRemoveKnownIntegrations(executable string) []string {
 	warnings := []string{}
-	for _, agent := range []string{"codex", "claude", "copilot"} {
+	for _, agent := range []string{"codex", "claude", "copilot", "opencode", "gemini", "antigravity"} {
 		for _, path := range gortexPromptPaths(agent) {
 			if _, err := removeGortexPrompt(path, ""); err != nil {
 				warnings = append(warnings, agent+" prompt: "+err.Error())
@@ -1658,6 +2085,10 @@ func gortexRemoveKnownIntegrations(executable string) []string {
 			_, err = removeClaudeHooks(path, executable)
 		case "copilot":
 			_, err = removeCopilotHooks(path, executable)
+		case "opencode":
+			_, err = gortexRemoveOpenCodePluginArtifact(path, executable, gortexOwnedArtifact{Agent: agent, Path: path})
+		case "antigravity", "gemini":
+			_, err = removeGeminiHooks(path, agent, executable)
 		}
 		if err != nil {
 			warnings = append(warnings, agent+" hook: "+err.Error())
@@ -1782,6 +2213,9 @@ func gortexHookStatus(agent, executable string) (present, complete bool) {
 	if path == "" || !fileExists(path) {
 		return false, false
 	}
+	if agent == "opencode" {
+		return gortexOpenCodePluginStatus(path, executable)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, false
@@ -1832,6 +2266,25 @@ func gortexHookStatus(agent, executable string) (present, complete bool) {
 				found = true
 				present = true
 				if gortexFingerprint(item) == gortexFingerprint(want) {
+					exact = true
+				}
+			}
+			if !found || !exact {
+				complete = false
+			}
+		}
+		return present, present && complete
+	}
+	if agent == "antigravity" || agent == "gemini" {
+		for event, want := range gortexGeminiHookEvents(agent, executable) {
+			found, exact := false, false
+			for _, item := range gortexHookList(hooks[event]) {
+				if !gortexGeminiHookEntryIsOurs(item, agent) {
+					continue
+				}
+				found = true
+				present = true
+				if gortexFingerprint(item) == gortexFingerprint(want) || gortexGeminiHookEntryMatchesCanonical(item, event, executable) {
 					exact = true
 				}
 			}

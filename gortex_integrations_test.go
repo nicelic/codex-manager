@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -176,6 +177,270 @@ func TestGortexPromptIntegrationKeepsMarkerTextInUserContent(t *testing.T) {
 	}
 	if string(data) != "" {
 		t.Fatalf("removed prompt file = %q, want empty", string(data))
+	}
+}
+
+func TestGortexPromptPathsKeepAntigravityAndGeminiIndependent(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	if got, want := gortexPromptPaths("opencode"), []string{filepath.Join(profile, ".config", "opencode", "AGENTS.md")}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("OpenCode prompt paths = %#v, want %#v", got, want)
+	}
+	wantGeminiPrompt := []string{filepath.Join(profile, ".gemini", "GEMINI.md")}
+	if got := gortexPromptPaths("antigravity"); !reflect.DeepEqual(got, wantGeminiPrompt) {
+		t.Fatalf("Antigravity prompt paths = %#v, want %#v", got, wantGeminiPrompt)
+	}
+	if got := gortexPromptPaths("gemini"); !reflect.DeepEqual(got, wantGeminiPrompt) {
+		t.Fatalf("Gemini prompt paths = %#v, want %#v", got, wantGeminiPrompt)
+	}
+}
+
+func TestGortexOpenCodePluginBridgeIsOwnedAndIdempotent(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	path := gortexOpenCodePluginPath()
+
+	changed, artifacts, err := upsertOpenCodePlugin(path, executable)
+	if err != nil || !changed || len(artifacts) != 1 {
+		t.Fatalf("first OpenCode plugin write changed=%v artifacts=%d error=%v", changed, len(artifacts), err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), gortexOpenCodePluginMarker) || !strings.Contains(string(data), "--agent=opencode") {
+		t.Fatalf("OpenCode plugin bridge is missing its managed identity: %s", data)
+	}
+	if strings.Contains(string(data), gortexOpenCodePluginBinKey) {
+		t.Fatal("OpenCode plugin executable placeholder was not rendered")
+	}
+	for _, placeholder := range []string{gortexOpenCodePluginArgvKey, gortexOpenCodePluginEnforceKey} {
+		if strings.Contains(string(data), placeholder) {
+			t.Fatalf("OpenCode plugin placeholder %q was not rendered", placeholder)
+		}
+	}
+	for _, hook := range []string{"tool.execute.before", "tool.execute.after", "permission.ask", "chat.message"} {
+		if !strings.Contains(string(data), `"`+hook+`"`) {
+			t.Fatalf("OpenCode plugin is missing official hook %q", hook)
+		}
+	}
+	if !strings.Contains(string(data), "decision.additional_context") || !strings.Contains(string(data), "decision.block") {
+		t.Fatal("OpenCode plugin does not apply BridgeDecision context/block fields")
+	}
+	if present, complete := gortexOpenCodePluginStatus(path, executable); !present || !complete {
+		t.Fatalf("OpenCode plugin status = %v,%v, want true,true", present, complete)
+	}
+	changed, _, err = upsertOpenCodePlugin(path, executable)
+	if err != nil || changed {
+		t.Fatalf("second OpenCode plugin write changed=%v error=%v, want idempotent", changed, err)
+	}
+
+	artifact := artifacts[0]
+	if err := os.WriteFile(path, append(data, []byte("\n// user change\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gortexRemoveOpenCodePluginArtifact(path, executable, artifact); err == nil {
+		t.Fatal("modified OpenCode plugin was removed")
+	}
+	if _, _, err := upsertOpenCodePlugin(path, executable); err != nil {
+		t.Fatalf("repair OpenCode plugin: %v", err)
+	}
+	removed, err := gortexRemoveOpenCodePluginArtifact(path, executable, artifact)
+	if err != nil || !removed {
+		t.Fatalf("remove OpenCode plugin = %v, error=%v", removed, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("OpenCode plugin survived exact removal: %v", err)
+	}
+}
+
+func TestGortexRegisterIntegrationsAddsOpenCodePluginAndAllSupportedPrompts(t *testing.T) {
+	profile := t.TempDir()
+	localAppData := filepath.Join(profile, "AppData", "Local")
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("ProgramFiles", filepath.Join(profile, "Program Files"))
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("PATH", "")
+	if err := os.MkdirAll(gortexOpenCodeConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGortexJSONObject(gortexConfigPath("opencode"), map[string]any{
+		"mcp": map[string]any{
+			"other": map[string]any{"type": "remote", "url": "https://example.test/mcp"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(gortexGeminiConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gortexConfigPath("gemini"), []byte("{\"theme\":\"Default\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	antigravityExecutable := filepath.Join(localAppData, "Programs", "antigravity", "Antigravity.exe")
+	if err := os.MkdirAll(filepath.Dir(antigravityExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(antigravityExecutable, []byte("stub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts, warnings := gortexRegisterIntegrations(filepath.Join(profile, "Gortex", "bin", gortexExecutableName))
+	if len(warnings) != 0 {
+		t.Fatalf("registration warnings = %#v", warnings)
+	}
+	wantPaths := map[string]string{
+		"opencode":    filepath.Join(profile, ".config", "opencode", "AGENTS.md"),
+		"antigravity": filepath.Join(profile, ".gemini", "GEMINI.md"),
+		"gemini":      filepath.Join(profile, ".gemini", "GEMINI.md"),
+	}
+	gotPaths := map[string]string{}
+	foundOpenCodeHook := false
+	foundAntigravityHook := false
+	foundGeminiHook := false
+	for _, artifact := range artifacts {
+		switch {
+		case artifact.Kind == gortexArtifactPrompt:
+			gotPaths[artifact.Agent] = artifact.Path
+		case artifact.Kind == gortexArtifactHook:
+			switch artifact.Agent {
+			case "opencode":
+				foundOpenCodeHook = true
+			case "antigravity":
+				foundAntigravityHook = true
+			case "gemini":
+				foundGeminiHook = true
+			default:
+				t.Fatalf("unexpected hook artifact for %s", artifact.Agent)
+			}
+		default:
+			t.Fatalf("unexpected %s artifact for %s", artifact.Kind, artifact.Agent)
+		}
+	}
+	if !reflect.DeepEqual(gotPaths, wantPaths) {
+		t.Fatalf("registered prompt artifacts = %#v, want %#v", gotPaths, wantPaths)
+	}
+	if !foundOpenCodeHook {
+		t.Fatalf("OpenCode plugin artifact was not registered: %#v", artifacts)
+	}
+	if !foundAntigravityHook || !foundGeminiHook {
+		t.Fatalf("Gemini-style hook artifacts were not registered: %#v", artifacts)
+	}
+	for agent := range wantPaths {
+		if present, complete := gortexPromptStatus(agent); !present || !complete {
+			t.Fatalf("%s prompt status = %v,%v, want true,true", agent, present, complete)
+		}
+	}
+	if present, complete := gortexHookStatus("opencode", filepath.Join(profile, "Gortex", "bin", gortexExecutableName)); !present || !complete {
+		t.Fatalf("OpenCode hook status = %v,%v, want true,true", present, complete)
+	}
+	for _, agent := range []string{"antigravity", "gemini"} {
+		if present, complete := gortexHookStatus(agent, filepath.Join(profile, "Gortex", "bin", gortexExecutableName)); !present || !complete {
+			t.Fatalf("%s hook status = %v,%v, want true,true", agent, present, complete)
+		}
+	}
+}
+
+func TestGortexGeminiStyleHooksShareSettingsAndPreserveUserHooks(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	path := gortexHookPath("antigravity")
+	if err := writeGortexJSONObject(path, map[string]any{
+		"hooks": map[string]any{
+			"AfterTool": []any{
+				map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "user-hook", "name": "user"}}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, artifacts, err := upsertGeminiHooks(path, "antigravity", executable)
+	if err != nil || !changed || len(artifacts) != 2 {
+		t.Fatalf("Antigravity hook write changed=%v artifacts=%d error=%v", changed, len(artifacts), err)
+	}
+	if changed, _, err := upsertGeminiHooks(path, "gemini", executable); err != nil || changed {
+		t.Fatalf("shared Gemini hook write changed=%v error=%v, want idempotent reuse", changed, err)
+	}
+	for _, agent := range []string{"antigravity", "gemini"} {
+		if present, complete := gortexHookStatus(agent, executable); !present || !complete {
+			t.Fatalf("%s hook status = %v,%v, want true,true", agent, present, complete)
+		}
+	}
+
+	root, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := root["hooks"].(map[string]any)
+	afterTool := hooks["AfterTool"].([]any)
+	if len(afterTool) != 2 {
+		t.Fatalf("AfterTool groups = %d, want one user and one Gortex group", len(afterTool))
+	}
+	foundUser := false
+	for _, raw := range afterTool {
+		group := raw.(map[string]any)
+		for _, handlerRaw := range gortexHookList(group["hooks"]) {
+			handler := handlerRaw.(map[string]any)
+			if handler["command"] == "user-hook" {
+				foundUser = true
+			}
+		}
+	}
+	if !foundUser {
+		t.Fatal("user Gemini-style hook was removed")
+	}
+
+	for _, artifact := range artifacts {
+		if removed, err := gortexRemoveGeminiHookArtifact(path, "antigravity", executable, artifact); err != nil || !removed {
+			t.Fatalf("remove %s hook = %v, error=%v", artifact.Event, removed, err)
+		}
+	}
+	if present, _ := gortexHookStatus("antigravity", executable); present {
+		t.Fatal("Antigravity Gortex hooks survived exact removal")
+	}
+}
+
+func TestGortexRegisterIntegrationsAddsAntigravityPromptWithoutGeminiCLI(t *testing.T) {
+	profile := t.TempDir()
+	localAppData := filepath.Join(profile, "AppData", "Local")
+	t.Setenv("USERPROFILE", profile)
+	t.Setenv("LOCALAPPDATA", localAppData)
+	t.Setenv("ProgramFiles", filepath.Join(profile, "Program Files"))
+	t.Setenv("PATH", "")
+	antigravityExecutable := filepath.Join(localAppData, "Programs", "antigravity", "Antigravity.exe")
+	if err := os.MkdirAll(filepath.Dir(antigravityExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(antigravityExecutable, []byte("stub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts, warnings := gortexRegisterIntegrations(filepath.Join(profile, "Gortex", "bin", gortexExecutableName))
+	if len(warnings) != 0 {
+		t.Fatalf("registration warnings = %#v", warnings)
+	}
+	promptPath := filepath.Join(profile, ".gemini", "GEMINI.md")
+	found := false
+	for _, artifact := range artifacts {
+		if artifact.Agent == "antigravity" && artifact.Kind == gortexArtifactPrompt && artifact.Path == promptPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Antigravity prompt artifact was not registered: %#v", artifacts)
+	}
+	if _, err := os.Stat(promptPath); err != nil {
+		t.Fatalf("Antigravity prompt file was not written: %v", err)
+	}
+	if gortexAgentAvailable("gemini") {
+		t.Fatal("Antigravity prompt registration incorrectly implied Gemini CLI availability")
+	}
+	if present, complete := gortexPromptStatus("antigravity"); !present || !complete {
+		t.Fatalf("Antigravity prompt status = %v,%v, want true,true", present, complete)
 	}
 }
 
@@ -604,7 +869,7 @@ func TestEnsureGortexWatchConfigPreservesUserYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	watch := root["watch"].(map[string]any)
-	if watch["enabled"] != true || int(watch["debounce_ms"].(int)) != 50 {
+	if watch["enabled"] != true || int(watch["debounce_ms"].(int)) != 100 {
 		t.Fatalf("watch config = %#v", watch)
 	}
 	if watch["paths"].([]any)[0] != "src" {

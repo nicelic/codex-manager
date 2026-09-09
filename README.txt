@@ -1493,7 +1493,7 @@ WS 二进制帧，后者以普通双向流承载原始 WS 帧。它们不引入 
 C:\EXEXX\edit\
 |
 |-- README.txt                         使用说明、架构图、函数索引和排查顺序
-|-- VERSION.txt                        当前项目发布版本号（例如 v0.1.1），发布前后用于核对版本
+|-- vision.md                          当前项目版本标识（例如 vision: v0.1.1），会直接嵌入 EXE
 |-- LLMTRIM-部署总结.md                llmtrim 已部署实例的全链路、配置、验收与目录差异
 |-- RTK-部署总结.md                    RTK 通用开发说明：四平台接入、PATH、状态账本与验收边界
 |-- SNIP-部署总结.md                   snip 原生 Hook、Codex 信任、状态账本、验收与目录差异
@@ -2337,11 +2337,13 @@ build.bat 的实际步骤：
     --npm.cmd run build-->
   web/dist/*
     --Go //go:embed web/dist-->
+  vision.md
+    --Go //go:embed vision.md-->
   releases/code-Manager/code-Manager.exe
 
 - `frontend/src` 是 Vue + Vite 前端源码。
 - `web/dist` 是 Vite 编译产物，由构建命令生成，不手工修改。
-- `main.go` 使用 `//go:embed web/dist` 将页面嵌入 EXE，同时嵌入 `assets/tray.ico`；Windows systray 从 ICO 字节直接创建图标句柄，
+- `main.go` 使用 `//go:embed web/dist` 将页面嵌入 EXE，并使用 `//go:embed vision.md` 读取内置版本标识；两者均不会在运行时释放到磁盘。它同时嵌入 `assets/tray.ico`；Windows systray 从 ICO 字节直接创建图标句柄，
   不再写入 `%TEMP%\systray_temp_icon_*`。根目录 `.syso` 由 Go linker 合并为 EXE 的 `RT_GROUP_ICON`/`RT_ICON` 资源，供 Explorer、桌面快捷方式和任务栏窗口使用；
   启动时只刷新目标文件名为 `code-Manager.exe` 的 `.lnk` 图标位置，使其指向当前 EXE 资源索引 0，运行时不释放任何图标文件。
   `rtk_codex_commands.go` 使用 `//go:embed assets/RTK-Codex-commands.md` 和
@@ -2510,12 +2512,13 @@ Gortex 管理补充
 - Gortex 的启动、停止、MCP 注册、track 和 untrack 只允许使用 code-Manager.exe 同级 `Gortex\\bin\\gortex.exe`；PATH 中已有的外部版本仅用于状态检测，普通管理操作不会控制它们。卸载是例外：为确保删除完整，会按精确进程名清理所有 `gortex.exe`。
 - Gortex 状态页会定期通过 `gortex.exe version` 查询版本，并通过受管 `Gortex\\run\\daemon.sock` 与 `daemon.pid` 确认真实 daemon；同路径的 `gortex.exe mcp` MCP stdio 客户端不计入 daemon 运行状态。Windows 下这些查询和 daemon 操作均使用隐藏子进程，不应周期性弹出控制台窗口；若仍看到闪窗，应确认运行的是重新构建后的 EXE，而不是旧发布目录中的版本。
 - Gortex 的配置、数据、索引、缓存、daemon 运行文件和日志均通过受管环境变量归档到同级 `Gortex\\` 目录；卸载只删除该受管目录及本程序拥有的 MCP/项目记录，不删除其他 MCP 或项目文件。
+- 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=20m`；项目 watcher 使用 `debounce_ms: 100`，前者控制定期 reconcile，后者控制文件变更后的延迟索引。
 - “启动 daemon”“停止 daemon”只负责受管 Gortex daemon 的真实进程生命周期，不会隐式注册或移除 MCP。Codex 等宿主启动的 `gortex.exe mcp` 不属于 daemon 状态；daemon 被 MCP 调用按需重新启动后，管理页的 1 秒级 WebSocket 状态快照会自动显示运行中。
-- “注册 MCP”与“移除 MCP”分别扫描 Codex、Claude Code、Cursor、GitHub Copilot CLI 的用户级配置。注册会修复仍明显指向 `gortex mcp` 但缺少受管环境变量的残缺条目；移除只删除本程序账本拥有或仍明显属于 Gortex 的条目，用户改写成其它命令的配置会保留并在页面提示。
+- “注册 MCP”与“移除 MCP”分别扫描 Codex、Claude Code、Cursor、GitHub Copilot CLI、OpenCode、Google Antigravity、Gemini CLI 的用户级配置。注册会修复仍明显指向 `gortex mcp` 但缺少受管环境变量的残缺条目；移除只删除本程序账本拥有或仍明显属于 Gortex 的条目，用户改写成其它命令的配置会保留并在页面提示。
 - Gortex MCP 客户端可以连接或按自身配置启动 daemon，但 `track` 建图需要 daemon 控制接口。页面 track 会在 daemon 已停止时按需启动受管 daemon，然后调用 `gortex track <path> --wait --wait-timeout 30m` 等待索引稳定；因此大型项目可能需要较长时间，失败时输入框内容保留，成功后输入框清空且已完成目录显示在下方。
 - track 项目录入只写入同级 `Gortex\\config\\projects.json`；取消 track 不删除项目文件。track/untrack 的命令超时独立于版本查询，分别允许较长索引/清理操作，避免统一的 30 秒超时导致 `context deadline exceeded`。
-- Windows 安装不再执行远端 `install.ps1`，而是直接读取 GitHub Release API，下载 `gortex_windows_amd64.zip` 和 `checksums.txt`，校验 SHA-256 后安全解压到受管 `Gortex\\bin`；安装只写入 Gortex 文件，不启动 daemon，也不修改 MCP，因此不会再把安装后的 `daemon status` 非零误报为网络或下载失败。
-- 安装进行中会锁定 Gortex 的版本、安装、daemon、MCP、track 和卸载操作；状态未确认或 daemon 运行中时，卸载按钮保持禁用。daemon 停止确认后，即使 Codex 的 `gortex.exe mcp` 仍在运行，卸载按钮也会启用；卸载确认后先移除受管 MCP 配置、停止受管 daemon，再按精确进程名检查并结束所有路径下的 `gortex.exe`（包括外部启动的 MCP/daemon），最后删除 Gortex 目录。该操作可能影响用户手工安装的其他 Gortex 实例，因此只在用户明确确认卸载时执行。
+- Windows 安装不再执行远端 `install.ps1`，而是直接读取 GitHub Release API，下载 `gortex_windows_amd64.zip` 和 `checksums.txt`，校验 SHA-256 后安全解压到受管 `Gortex\\bin`；安装或升级前会先强制结束所有路径下精确匹配的 `gortex.exe`（包括外部启动的 MCP/daemon），等待全部退出后才下载和解压；只有临时目录中的新 exe 已成功得到且通过有效文件检查后，才使用备份回滚方式替换当前文件，下载、解压或替换失败不会先删除旧版本。安装只写入 Gortex 文件，不启动 daemon，也不修改 MCP。
+- 安装进行中会锁定 Gortex 的版本、安装、daemon、MCP、track 和卸载操作；受管 daemon 运行时，管理页要求先停止 daemon，停止确认后才允许安装或升级。外部或 MCP 进程不会阻塞版本列表加载，点击安装时会统一清理；状态版本会把 `gortex version` 输出中的构建后缀（例如 `v0.64.1+173cad8`）与 Release tag `v0.64.1` 归一化比较，同版本禁用重复安装，版本不同显示升级。卸载确认后先移除受管 MCP 配置、停止受管 daemon，再按精确进程名检查并结束所有路径下的 `gortex.exe`（包括外部启动的 MCP/daemon），最后删除 Gortex 目录。该操作可能影响用户手工安装的其他 Gortex 实例，因此只在用户明确确认卸载时执行。
 
 
 十四、变更后的交付检查清单
@@ -2531,48 +2534,170 @@ Gortex 管理补充
 - 是否需要同步更新本 README 的文件职责或函数索引？
 
 
-十五、GitHub 发布流程
----------------------
+十五、GitHub 发布流程（必读）
+-------------------------------
 
 GitHub 仓库：`nicelic/codex-manager`。
 
-发布原则：
+本章是发布前后的强制核对清单。版本号、Release 名称、标签名称和 EXE 文件名是四个不同的概念，不能混用；任何远端写入都必须在执行前得到明确确认。
 
-- 当前发布版本统一记录在项目根目录的 `VERSION.txt`，内容使用完整标签格式，例如 `v0.1.1`；修改版本时先更新该文件，再用同名 Git 标签和 Release 发布。
-- 每次发布只以当前工作区的最新代码为准，不需要获取、比对或汇总历史版本的代码变化。
-- 每次发布前都必须运行项目根目录的 `build.bat`，不能直接复用旧的 EXE。
-- `build.bat` 成功后，唯一用于 GitHub Release 的附件是
-  `releases\code-Manager\code-Manager.exe`；该文件名固定不变，不在名称中追加版本号。
-- 先提交并推送当前源码、文档、`VERSION.txt` 和忽略规则；不要提交本机配置、日志、`node_modules`、`web/dist`、
-  `releases` 目录或其他生成的 EXE。
-- GitHub Release 使用与 `VERSION.txt` 完全一致的语义化版本标签。发布说明可以保持简短，只说明该版本
-  已发布并提供 Windows 可执行文件，无需根据历史提交自动生成变更日志。
+### 1. 固定名称和版本文件
 
-发布 v0.1.1：
+- 项目根目录版本文件固定为 `vision.md`，使用 UTF-8 文本保存，内容只有一行版本标识，例如：
 
-1. 在项目根目录确认 `VERSION.txt` 内容为 `v0.1.1`，并检查工作区是准备发布的当前代码。
-2. 在项目根目录运行 `build.bat`，等待它生成最新的
-   `releases\code-Manager\code-Manager.exe`。
-3. 检查构建成功且 EXE 存在后，提交并推送当前源码、README 和 `VERSION.txt` 到 GitHub。
-4. 创建与 `VERSION.txt` 一致的标签和 Release：`v0.1.1`。如果远端已经存在同名标签，先确认它是否指向本次发布提交，必要时更新标签指向后再创建 Release。
-5. 将 `releases\code-Manager\code-Manager.exe` 作为该 Release 的附件上传；上传后的附件名称仍为 `code-Manager.exe`。
+  `vision: v0.1.1`
 
-后续发布版本时重复相同流程：先修改 `VERSION.txt`，再运行 `build.bat` 生成最新 EXE，提交并推送源码，最后创建同名 GitHub Release 并上传
-新生成的 `releases\code-Manager\code-Manager.exe`；EXE 名称始终保持 `code-Manager.exe`，不需要先获取历史版本代码变化。
+- `vision.md` 是版本号的唯一对照来源。程序将其直接嵌入 EXE，管理页面运行时经本机接口读取该内置版本；以后发布新版本时，先修改其中的版本值，再让 Git 标签和 GitHub Release 使用完全相同的版本号。
+- 用户在 GitHub 发布请求中提到版本号、版本升级、版本回退或指定版本时，必须先同步修改 `vision.md` 为唯一一行 `vision: vX.Y.Z`；不得只修改 Git 标签、Release 标题或发布说明。继续发布前，必须核对 `vision.md` 中的版本值、Git 标签和 GitHub Release 标题完全一致。
+- GitHub Release 的标题必须与标签完全一致：`v0.1.1`。不能擅自改成 `code-Manager v0.1.1`、`v0.1.1 code-Manager` 或其它名称。
+- 发布附件的文件名固定为 `code-Manager.exe`。以下两个路径都不能追加版本号：
+  - 构建输出：`releases\code-Manager\code-Manager.exe`
+  - GitHub Release 附件：`code-Manager.exe`
+- `releases\code-Manager` 目录和 EXE 属于构建产物，默认由 `.gitignore` 排除；它们只在 GitHub Release 页面作为附件上传，不提交到源码仓库。
+- GitHub 自动生成的 `Source code (zip)` 和 `Source code (tar.gz)` 属于 GitHub 的正常附加项，不需要手工改名或删除。
+
+### 2. 使用的工具和职责
+
+- 本地构建使用项目根目录的 `build.bat`，入口是 Windows CMD；脚本内部固定调用 `npm.cmd install --no-audit`、`npm.cmd run build` 和 `go build`。
+- 不使用 PowerShell 的 `npm` 别名，不使用 `npm` 替代 `npm.cmd`。
+- Git 操作使用 Git for Windows 命令行，例如 `git status`、`git add`、`git commit`、`git push` 和 `git tag`。
+- GitHub Release 使用 GitHub 网页的 Releases 页面手工操作：选择已有标签、填写同名 Release 标题、上传固定名称的 EXE，再点击发布。
+- 本项目不使用、也不保留自动创建 GitHub Release 或自动上传附件的脚本。`build.bat` 只负责本地构建，不能联网发布、不能创建标签、不能执行 `git push`、不能调用 GitHub API，也不能读取或保存 GitHub 凭据。
+- 如果以后新增本地准备脚本，它只能做版本格式检查、构建、文件存在性检查和 SHA-256 计算；禁止包含 GitHub Token、API Key、密码、Cookie、远端上传接口、`git push`、`gh release` 或等价发布逻辑。脚本默认不得写入隐私信息、凭据文件或带密钥的日志。
+
+### 3. 发布前隐私和文件检查
+
+发布前必须确认以下内容不会进入 Git 提交或 Release 附件：
+
+- `config\config.yaml`、`config\code-Manager.log`、任何 `*.log`、`.env`、`.env.*`；这些文件可能包含 API Key、绝对路径或机器信息。
+- `frontend\node_modules`、`web\dist`、`releases`、图标 PNG/ICO、`code-Manager-icon.syso` 和本机 EXE；这些是生成物或本地文件。
+- Gortex、llmtrim、RTK、snip 的运行目录、缓存、状态账本、用户配置、Token、证书和日志。
+- 任何临时压缩包、调试转储、浏览器导出文件和包含个人信息的截图。
+
+使用 Git for Windows 检查：
+
+```text
+git status --short
+git diff --check
+git diff --cached --name-only
+```
+
+发现敏感文件、未知生成物或不属于本次版本的改动时，先停止发布并人工处理；不要使用强制命令掩盖问题。
+
+### 4. 本地构建和验收
+
+1. 在项目根目录确认 `vision.md` 的内容，例如 `vision: v0.1.1`。
+2. 关闭正在运行的旧版 `code-Manager.exe`，避免 Windows 单实例机制让浏览器连接到旧进程。
+3. 运行完整构建入口：
+
+```text
+cd C:\EXEXX\edit
+build.bat
+```
+
+4. 构建过程必须成功完成前端和后端步骤。成功后检查唯一发布文件：
+
+```text
+releases\code-Manager\code-Manager.exe
+```
+
+5. 确认文件名严格为 `code-Manager.exe`，不存在 `code-Manager-v0.1.1.exe`、`code-Manager_0.1.1.exe` 等变体。
+6. 可使用以下命令记录本地文件大小和 SHA-256；该命令只读，不会上传文件：
+
+```text
+Get-Item .\releases\code-Manager\code-Manager.exe | Select-Object FullName,Length
+Get-FileHash .\releases\code-Manager\code-Manager.exe -Algorithm SHA256
+```
+
+7. 不要为了发布运行 `go test ./service` 或其它长时间全量测试。根据本次改动执行必要的聚焦验证；最基本的发布门槛是 `build.bat` 成功、EXE 存在、文件名正确且 `git diff --check` 无输出。
+
+### 5. 提交源码和推送主分支
+
+构建验证通过后，先只提交源码、文档和版本文件，不提交 `releases` 或其它生成物：
+
+```text
+git add README.txt vision.md <本次实际修改的源码文件>
+git diff --cached --check
+git commit -m "Prepare release v0.1.1"
+git push origin main
+```
+
+`<本次实际修改的源码文件>` 必须替换为真实文件，不能把整目录无差别加入暂存区。推送前再次确认提交内容和远端仓库名称。推送属于远端写入，必须在执行前获得明确确认。
+
+### 6. 创建标签
+
+标签名称必须与 `vision.md` 中的版本值完全一致：
+
+```text
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+如果本地或远端已经存在 `v0.1.1`：
+
+- 先停止，不得直接使用 `git tag -f`、`git push --force`、删除远端标签或覆盖已有 Release。
+- 使用 `git rev-parse v0.1.1`、`git rev-parse HEAD` 和 `git ls-remote --tags origin v0.1.1` 只读核对指向。
+- 只有用户明确确认后，才可以讨论移动标签、删除标签或替换 Release；默认保留远端现状。
+
+### 7. 在 GitHub 网页创建 Release
+
+1. 打开仓库的 Releases 页面，点击 `Draft a new release`。
+2. 选择已经推送的标签 `v0.1.1`；如果页面要求创建新标签，名称仍必须是 `v0.1.1`。
+3. Release 标题填写 `v0.1.1`，不要添加项目名或 EXE 名称。
+4. 发布说明只写本次版本的必要信息，例如“v0.1.1 release. Windows executable included.”；不要粘贴 API Key、日志、绝对路径或机器信息。
+5. 上传本地文件 `releases\code-Manager\code-Manager.exe`。上传后页面中的附件名称必须仍是 `code-Manager.exe`。
+6. 在点击 `Publish release` 前，人工复核标签、标题、附件名称、附件大小和说明内容；确认无误后再发布。
+7. 发布完成后只读核对 Release 页面：标题为 `v0.1.1`，标签为 `v0.1.1`，附件为 `code-Manager.exe`。不要因为页面自动显示 Source code 压缩包而改动它们。
+8. GitHub Release API 必须为 `code-Manager.exe` 返回有效的 `sha256:<64 位十六进制>` 附件 digest。应用内安装会先校验该摘要；缺少或格式无效时版本仍可显示，但会标记为不可安装。发布后应在 Releases API 或应用内“加载版本”中确认该摘要可用。
+
+### 8. 后续版本流程
+
+以后发布 `v0.1.2` 等版本时，严格按以下顺序执行：
+
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.2`。
+2. 检查隐私文件和工作区改动。
+3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
+4. 人工确认后提交并推送源码和 `vision.md`。
+5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.2` 并推送。
+6. 在 GitHub 网页创建标题同为 `v0.1.2` 的 Release，上传仍名为 `code-Manager.exe` 的附件。
+7. 发布完成后核对 `vision.md` 中的版本值、标签、Release 标题和附件名称四者一致；任何一项不一致都先停止，不要擅自覆盖远端对象。
+
+### 9. 应用内版本安装与回退
+
+- 首页“版本更新”按每页 5 个 Release 加载可选版本；只有正式附件名精确为 `code-Manager.exe`、且 GitHub API 返回有效 SHA-256 digest 的版本可安装。当前版本、重新安装和选择旧版本回退都使用同一流程，不按版本号大小阻断。
+- 安装请求只提交 Release tag；服务端重新读取该 tag 的 Release、选择精确附件、下载到当前 EXE 同级临时文件、验证 SHA-256 与 PE `MZ` 标识后才允许替换。开发目录（含 `go.mod`、`main.go` 或 `frontend` 等标记）拒绝覆盖，避免把远端 EXE 写入源码工作区。
+- 若顶部代理正在运行或连接中，更新先完整停止代理并记录恢复意图；llmtrim、RTK、snip、Gortex 不会被停止、清理、卸载或重新安装。新版管理服务确认版本后，更新 PowerShell 会按记录调用 `/api/proxy/start` 恢复顶部代理；若恢复失败，EXE 更新仍保留，页面会显示代理停止状态供手工重试。
+- 替换由隐藏 PowerShell 进程完成：它等待旧进程和退出清理助手释放 EXE 文件锁，将旧文件保留为同级备份，替换后启动新版。支持身份接口的版本必须同时通过 `/api/application/identity` 返回的 EXE 路径和版本校验；仅当历史版本缺少该接口时，才允许以进程仍存活且 `/healthz` 可用作为有限兼容判定。启动或校验失败会自动恢复备份、确认旧 EXE 可用，并恢复更新前已启动的顶部代理。更新事务标记会让旧进程的退出清理助手跳过四项工具清理。
+- 更新完成后原浏览器页面会重新连接；管理 WebSocket 状态快照会重新读取顶部代理、llmtrim、RTK、snip、Gortex 的真实版本、运行、开机启动、PATH、Hook 和 MCP 状态。回退到早于本功能的历史 EXE 时，旧页面可显示的字段与旧版本自身实现为准。
 
 
-十六、Gortex 四平台接入补充
+十六、Gortex 七平台接入补充
 ---------------------------
 
 - Gortex 安装使用 GitHub Release 的 Windows x64 ZIP 和 `checksums.txt`，解压后只保留受管目录中的
   `gortex.exe`，并自动配置用户 PATH 与系统 PATH。安装不会自动启动 daemon，也不会自动注册 MCP。
-- 点击“注册 MCP”时，程序按实际检测到的 Codex、Claude Code、Cursor、GitHub Copilot CLI 配置写入
-  `gortex` MCP，同时将内嵌 `assets\gortex提示词.md` 的 UTF-8 正文由代码自动包裹受管标记后写入各平台工作流提示词，并配置生命周期 Hook；提示词源文件不含受管标记和版本号，可以只维护正文；归属账本记录本程序写入的文件，
-  “移除 MCP”只清理这些归属内容，不删除其他 MCP。Cursor 没有官方 Gortex 生命周期 Hook，因此采用
-  每个 track 项目下的 `.cursor\rules\gortex-workflow.mdc` 项目规则。
+- 点击“注册 MCP”时，程序按实际检测到的 Codex、Claude Code、Cursor、GitHub Copilot CLI、OpenCode、Google Antigravity、Gemini CLI 配置写入
+  `gortex` MCP，同时将内嵌 `assets\gortex提示词.md` 的 UTF-8 正文由代码自动包裹受管标记后写入各平台工作流提示词。生命周期 Hook
+  为 Codex、Claude Code、GitHub Copilot CLI、Google Antigravity 和 Gemini CLI 配置；Cursor 没有当前 Gortex 受管生命周期 Hook，因此采用每个 track 项目下的
+  `.cursor\rules\gortex-workflow.mdc` 项目规则；OpenCode 使用 Gortex 官方插件桥并自动写入 `plugin\gortex.js`。Antigravity 与 Gemini CLI 共用 `%USERPROFILE%\.gemini\settings.json`，使用 `SessionStart` 和 `AfterTool` 两个官方事件，重复注册只保留一组受管处理器。提示词源文件不含受管标记和版本号，
+  可以只维护正文；归属账本记录本程序写入的文件，“移除 MCP”只清理这些归属内容，不删除其他 MCP。
+- 平台检测优先使用对应可执行入口；没有可执行入口时，只把包含非 Gortex 用户内容的有效平台配置当作存在。空目录、空配置文件以及仅含本程序 `gortex` MCP 的残留配置不会触发新的注册，避免卸载平台后再次点击“注册 MCP”又把残留配置当成平台本身。
+- 项目级 MCP 与用户级 MCP 分开记账。已先 track 项目时，点击“注册 MCP”会为所有已检测到的平台写入该项目的官方配置，并补写 Cursor 项目规则；已先注册 MCP 时，之后每次
+  track 成功也会为新项目补写配置和 Cursor 项目规则。项目配置路径分别为 Codex=`<项目>\\.codex\\config.toml`、Claude Code=`<项目>\\.mcp.json`、
+  Cursor=`<项目>\\.cursor\\mcp.json`、GitHub Copilot CLI=`<项目>\\.github\\mcp.json`、OpenCode=`<项目>\\opencode.json`、
+  Google Antigravity=`<项目>\\.agents\\mcp_config.json`、Gemini CLI=`<项目>\\.gemini\\settings.json`。只有官方明确支持服务器级
+  `cwd` 的 Codex、OpenCode、Google Antigravity 和 Gemini CLI 写入项目绝对路径；Claude Code、Cursor、Copilot CLI 不写未经确认的通用 `cwd`。
+- “移除 MCP”会清理所有受管用户级和项目级 `gortex` MCP，并关闭项目级自动补写状态；之后再次注册会重新生成。单独 `untrack` 只清理该项目的项目级
+  MCP，保留用户级 MCP；配置中的其他 MCP 和被用户修改过的 `gortex` 条目会保留并显示警告。
+- OpenCode 在 `%USERPROFILE%\.config\opencode\opencode.json` 的 `mcp` 节点注册 MCP，并在同目录 `AGENTS.md`
+  写入受管工作流提示词，同时在 `%USERPROFILE%\.config\opencode\plugin\gortex.js` 写入受管 Gortex 插件桥；Google Antigravity 在 `%USERPROFILE%\.gemini\config\mcp_config.json` 注册 MCP，
+  并按 Antigravity 自己的平台检测写入 `%USERPROFILE%\.gemini\GEMINI.md`。Gemini CLI 独立使用
+  `%USERPROFILE%\.gemini\settings.json` 注册 MCP，并独立判断是否写入同一个原生 `GEMINI.md` 工作流文件；两者的 MCP 配置、可用性、状态和归属记录不会互相推断。
+  旧版本错误写入 `%USERPROFILE%\.gemini\antigravity\mcp_config.json` 的内容，仅在归属账本确认由本程序写入且指纹未被用户改写时清理，其他内容保留。
+  OpenCode 的 Hook 通过受管插件桥接自动写入；Antigravity 与 Gemini CLI 的 Hook 通过各自的 `gortex hook --agent ...` 处理器写入，页面会分别显示实际状态。
 - Codex Hook 需要在 Codex 的 `/hooks` 页面人工审核信任。Gortex 页面提供独立的“打开信任审核”入口；
   该信任流程与 Snip 的 Hook 记录分开处理。
 - “验证 doctor/status”会执行受管 `gortex.exe doctor --json` 和 `gortex.exe status`，页面分别展示
   MCP、Hook、索引、daemon 以及全部 tracked repositories 的诊断输出。
-- 页面点击 track 前会去除项目绝对路径首尾空格，再提交给后端；track 成功后会确保项目 `.gortex.yaml` 中 `watch.enabled: true`，缺失时写入 `debounce_ms: 5000`；
+- 页面点击 track 前会去除项目绝对路径首尾空格，再提交给后端；track 成功后会确保项目 `.gortex.yaml` 中 `watch.enabled: true`，缺失或不一致时写入 `debounce_ms: 100`；
   后台每 5 秒检查本地账本和同一 daemon 可见的外部 tracked 项目，发现 watcher 被关闭会自动恢复。

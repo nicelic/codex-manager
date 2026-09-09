@@ -54,6 +54,12 @@ func runCleanupHelper(args []string) {
 		return
 	}
 	waitForProcessExit(uint32(parentPID))
+	if applicationUpdatePendingForParent(uint32(parentPID)) {
+		if logger != nil {
+			logger.Print("检测到 code-Manager 更新事务，跳过旧实例退出清理")
+		}
+		return
+	}
 
 	// 若旧进程退出后已有新实例取得单实例锁，说明用户正在重启；让新实例继续负责状态恢复。
 	instance, err := acquireSingleInstance(instanceMutexName)

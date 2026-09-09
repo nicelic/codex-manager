@@ -24,8 +24,15 @@ let pendingLLMTrimTarget = null
 let llmtrimOperationToken = 0
 let confirmationAction = null
 let confirmationTrigger = null
+let applicationUpdatePollTimer = 0
 
 const online = ref(false)
+const applicationVersion = ref('')
+const applicationReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
+const selectedApplicationVersion = ref('')
+const applicationUpdateWorking = ref(false)
+const applicationUpdateRestarting = ref(false)
+const applicationUpdateNotice = ref('')
 const checking = ref(false)
 const loadingSettings = ref(true)
 const checkedAt = ref('尚未检查')
@@ -76,13 +83,24 @@ const selectedSnipVersion = ref('')
 const snipInstallWorking = ref(false)
 const snipDeleteWorking = ref(false)
 const snipTrustWorking = ref(false)
-const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], defaultProject: '', statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
+const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
 const gortexDiagnostics = reactive({ loading: false, doctorOk: false, doctorOutput: '', doctorError: '', statusOk: false, statusOutput: '', statusError: '' })
 const gortexProjectPath = ref('')
 const gortexReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
 const selectedGortexVersion = ref('')
 const gortexBusy = computed(() => gortex.working || gortex.installWorking || gortex.installing)
-const gortexVersionActionBlocked = computed(() => gortexBusy.value || gortex.running || gortex.anyProcessRunning)
+function gortexVersionKey(value) {
+  const text = String(value || '').trim().toLowerCase()
+  const match = text.match(/v?\d+(?:\.\d+){2}/)
+  return match ? match[0].replace(/^v/, '') : text
+}
+function gortexReleaseIsCurrent(tagName) {
+  const selectedKey = gortexVersionKey(tagName)
+  const currentKey = gortexVersionKey(gortex.version)
+  return Boolean(gortex.managedInstalled && selectedKey && currentKey && selectedKey === currentKey)
+}
+const gortexSelectedVersionIsCurrent = computed(() => gortexReleaseIsCurrent(selectedGortexVersion.value))
+const gortexVersionActionBlocked = computed(() => gortexBusy.value || gortex.running)
 const gortexUninstallBlocked = computed(() => gortex.loading || !gortex.statusKnown || gortexBusy.value || gortex.running)
 const upstreamH2Label = computed(() => `h2${proxy.connections.upstreamH2WebSocket ? '(ws)' : ''}_${proxy.connections.upstreamH2}`)
 const upstreamH3Label = computed(() => `h3${proxy.connections.upstreamH3WebSocket ? '(ws)' : ''}_${proxy.connections.upstreamH3}`)
@@ -97,7 +115,7 @@ const confirmationConfirmButton = ref(null)
 const confirmationExecuting = ref(false)
 const exitState = ref('idle')
 const exitWarnings = ref([])
-const pageInteractionLocked = computed(() => exitState.value !== 'idle')
+const pageInteractionLocked = computed(() => exitState.value !== 'idle' || applicationUpdateRestarting.value)
 const exitTitle = computed(() => {
   if (exitState.value === 'stopping') return '正在停止并退出'
   if (exitState.value === 'completed') return '已停止并退出'
@@ -202,6 +220,134 @@ async function checkHealth({ silent = false } = {}) {
     if (!silent) checking.value = false
     healthRequestRunning = false
   }
+}
+
+async function loadApplicationVersion() {
+  try {
+    const response = await fetch('/api/application/identity', { cache: 'no-store' })
+    if (!response.ok) return
+    const data = await response.json()
+    applicationVersion.value = typeof data.version === 'string' ? data.version.trim() : ''
+  } catch {
+    applicationVersion.value = ''
+  }
+}
+
+async function loadApplicationReleases({ more = false } = {}) {
+  if (applicationReleases.loading || applicationUpdateRestarting.value) return
+  const page = more ? applicationReleases.page + 1 : 1
+  applicationReleases.loading = true
+  applicationUpdateNotice.value = ''
+  try {
+    const response = await fetch(`/api/application/releases?page=${page}`, { cache: 'no-store' })
+    const responseText = await response.text()
+    let data = {}
+    try {
+      data = responseText ? JSON.parse(responseText) : {}
+    } catch {
+      throw new Error(responseText.trim() || '版本接口返回了无效响应')
+    }
+    if (!response.ok) throw new Error(data.message || responseText.trim() || '读取 code-Manager 版本失败')
+    const incoming = Array.isArray(data.releases) ? data.releases : []
+    applicationReleases.items = more ? [...applicationReleases.items, ...incoming] : incoming
+    applicationReleases.page = Number(data.page) || page
+    applicationReleases.hasMore = Boolean(data.has_more)
+    applicationReleases.loaded = true
+    if (!applicationReleases.items.some((item) => item.tag_name === selectedApplicationVersion.value && item.available)) {
+      const firstAvailable = applicationReleases.items.find((item) => item.available)
+      selectedApplicationVersion.value = firstAvailable ? firstAvailable.tag_name : ''
+    }
+  } catch (error) {
+    applicationUpdateNotice.value = error.message || '读取 code-Manager 版本失败'
+  } finally {
+    applicationReleases.loading = false
+  }
+}
+
+function handleApplicationVersionChange() {
+  if (selectedApplicationVersion.value === '__load_more__') {
+    selectedApplicationVersion.value = ''
+    loadApplicationReleases({ more: true })
+  }
+}
+
+function requestApplicationUpdate(event) {
+  if (applicationUpdateWorking.value || applicationUpdateRestarting.value || !selectedApplicationVersion.value || selectedApplicationVersion.value === '__load_more__') return
+  const isCurrent = selectedApplicationVersion.value === applicationVersion.value
+  openConfirmation({
+    title: isCurrent ? `重新安装 ${selectedApplicationVersion.value}？` : `安装 ${selectedApplicationVersion.value}？`,
+    description: `将下载并校验 code-Manager.exe，然后${proxy.running || proxy.state === 'connecting' ? '先停止顶部代理、完成替换后自动恢复代理' : '保持顶部代理停止'}。llmtrim、RTK、snip、Gortex 不会被停止、清理或重新安装。失败时会自动恢复当前 EXE。`,
+    confirmLabel: isCurrent ? '重新安装' : '开始安装',
+    onConfirm: installApplicationUpdate,
+    trigger: event?.currentTarget,
+  })
+}
+
+async function installApplicationUpdate() {
+  if (applicationUpdateWorking.value || !selectedApplicationVersion.value) return
+  const targetVersion = selectedApplicationVersion.value
+  const currentVersion = applicationVersion.value
+  applicationUpdateWorking.value = true
+  applicationUpdateNotice.value = ''
+  try {
+    const response = await fetch('/api/application/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag_name: targetVersion }),
+    })
+    const responseText = await response.text()
+    let data = {}
+    try {
+      data = responseText ? JSON.parse(responseText) : {}
+    } catch {
+      throw new Error(responseText.trim() || '更新接口返回了无效响应')
+    }
+    if (!response.ok || !data.accepted) throw new Error(data.message || responseText.trim() || '启动更新失败')
+    applicationUpdateNotice.value = data.message || '正在替换并重启 code-Manager。'
+    applicationUpdateRestarting.value = true
+    waitForApplicationUpdate(data.target_version || targetVersion, currentVersion)
+  } catch (error) {
+    applicationUpdateNotice.value = error.message || '启动更新失败'
+  } finally {
+    if (!applicationUpdateRestarting.value) applicationUpdateWorking.value = false
+  }
+}
+
+function waitForApplicationUpdate(targetVersion, currentVersion) {
+  window.clearTimeout(applicationUpdatePollTimer)
+  let attempts = 0
+  let disconnected = false
+  const poll = async () => {
+    attempts += 1
+    try {
+      const response = await fetch('/api/application/identity', { cache: 'no-store' })
+      if (!response.ok) throw new Error('新版服务尚未就绪')
+      const data = await response.json()
+      const version = typeof data.version === 'string' ? data.version.trim() : ''
+      if (version === targetVersion && (disconnected || targetVersion !== currentVersion)) {
+        window.location.reload()
+        return
+      }
+      if (disconnected && version === currentVersion && targetVersion !== currentVersion) {
+        applicationUpdateRestarting.value = false
+        applicationUpdateWorking.value = false
+        applicationUpdateNotice.value = `更新未完成，已恢复 ${currentVersion}。`
+        scheduleStatusPoll(0)
+        return
+      }
+    } catch {
+      disconnected = true
+    }
+    if (attempts >= 120) {
+      applicationUpdateRestarting.value = false
+      applicationUpdateWorking.value = false
+      applicationUpdateNotice.value = '等待新版启动超时；请检查 code-Manager 是否已恢复运行。'
+      scheduleStatusPoll(0)
+      return
+    }
+    applicationUpdatePollTimer = window.setTimeout(poll, 1000)
+  }
+  poll()
 }
 
 function applyProxyStatus(data, { silent = false } = {}) {
@@ -335,6 +481,15 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.copilotAvailable = Boolean(data.copilot_available)
   gortex.copilotConfigured = Boolean(data.copilot_configured)
   gortex.copilotComplete = Boolean(data.copilot_complete)
+  gortex.openCodeAvailable = Boolean(data.opencode_available)
+  gortex.openCodeConfigured = Boolean(data.opencode_configured)
+  gortex.openCodeComplete = Boolean(data.opencode_complete)
+  gortex.antigravityAvailable = Boolean(data.antigravity_available)
+  gortex.antigravityConfigured = Boolean(data.antigravity_configured)
+  gortex.antigravityComplete = Boolean(data.antigravity_complete)
+  gortex.geminiAvailable = Boolean(data.gemini_available)
+  gortex.geminiConfigured = Boolean(data.gemini_configured)
+  gortex.geminiComplete = Boolean(data.gemini_complete)
   gortex.codexPrompt = Boolean(data.codex_prompt)
   gortex.codexPromptComplete = Object.prototype.hasOwnProperty.call(data, 'codex_prompt_complete') ? Boolean(data.codex_prompt_complete) : gortex.codexPrompt
   gortex.claudePrompt = Boolean(data.claude_prompt)
@@ -343,12 +498,24 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.cursorPromptComplete = Object.prototype.hasOwnProperty.call(data, 'cursor_prompt_complete') ? Boolean(data.cursor_prompt_complete) : gortex.cursorPrompt
   gortex.copilotPrompt = Boolean(data.copilot_prompt)
   gortex.copilotPromptComplete = Object.prototype.hasOwnProperty.call(data, 'copilot_prompt_complete') ? Boolean(data.copilot_prompt_complete) : gortex.copilotPrompt
+  gortex.openCodePrompt = Boolean(data.opencode_prompt)
+  gortex.openCodePromptComplete = Object.prototype.hasOwnProperty.call(data, 'opencode_prompt_complete') ? Boolean(data.opencode_prompt_complete) : gortex.openCodePrompt
+  gortex.antigravityPrompt = Boolean(data.antigravity_prompt)
+  gortex.antigravityPromptComplete = Object.prototype.hasOwnProperty.call(data, 'antigravity_prompt_complete') ? Boolean(data.antigravity_prompt_complete) : gortex.antigravityPrompt
+  gortex.geminiPrompt = Boolean(data.gemini_prompt)
+  gortex.geminiPromptComplete = Object.prototype.hasOwnProperty.call(data, 'gemini_prompt_complete') ? Boolean(data.gemini_prompt_complete) : gortex.geminiPrompt
   gortex.codexHook = Boolean(data.codex_hook)
   gortex.codexHookComplete = Object.prototype.hasOwnProperty.call(data, 'codex_hook_complete') ? Boolean(data.codex_hook_complete) : gortex.codexHook
   gortex.claudeHook = Boolean(data.claude_hook)
   gortex.claudeHookComplete = Object.prototype.hasOwnProperty.call(data, 'claude_hook_complete') ? Boolean(data.claude_hook_complete) : gortex.claudeHook
   gortex.copilotHook = Boolean(data.copilot_hook)
   gortex.copilotHookComplete = Object.prototype.hasOwnProperty.call(data, 'copilot_hook_complete') ? Boolean(data.copilot_hook_complete) : gortex.copilotHook
+  gortex.openCodeHook = Boolean(data.opencode_hook)
+  gortex.openCodeHookComplete = Object.prototype.hasOwnProperty.call(data, 'opencode_hook_complete') ? Boolean(data.opencode_hook_complete) : gortex.openCodeHook
+  gortex.antigravityHook = Boolean(data.antigravity_hook)
+  gortex.antigravityHookComplete = Object.prototype.hasOwnProperty.call(data, 'antigravity_hook_complete') ? Boolean(data.antigravity_hook_complete) : gortex.antigravityHook
+  gortex.geminiHook = Boolean(data.gemini_hook)
+  gortex.geminiHookComplete = Object.prototype.hasOwnProperty.call(data, 'gemini_hook_complete') ? Boolean(data.gemini_hook_complete) : gortex.geminiHook
   gortex.userPath = Boolean(data.user_path)
   gortex.systemPath = Boolean(data.system_path)
   gortex.codexTrustStatus = data.codex_trust_status || 'not_applicable'
@@ -356,6 +523,8 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.codexTrustNotice = data.codex_trust_notice || ''
   gortex.codexTrustSteps = Array.isArray(data.codex_trust_steps) ? data.codex_trust_steps : []
   gortex.trackedProjects = Array.isArray(data.tracked_projects) ? data.tracked_projects : []
+  gortex.projectMCPEnabled = Boolean(data.project_mcp_enabled)
+  gortex.projectMCPProjects = Array.isArray(data.project_mcp_projects) ? data.project_mcp_projects : []
   gortex.defaultProject = data.default_project || ''
   gortex.loading = false
   if (!silent && data.message) gortex.notice = data.message
@@ -888,8 +1057,9 @@ async function controlGortex(action) {
 }
 
 async function installGortex() {
-  if (gortexVersionActionBlocked.value || gortex.loading || !gortex.statusKnown || gortex.managedInstalled || !selectedGortexVersion.value) {
+  if (gortexVersionActionBlocked.value || gortex.loading || !gortex.statusKnown || !selectedGortexVersion.value || gortexSelectedVersionIsCurrent.value) {
     if (!selectedGortexVersion.value) gortex.notice = '请先加载并选择一个可用的 Gortex 版本。'
+    else if (gortexSelectedVersionIsCurrent.value) gortex.notice = '所选版本与当前受管版本一致，无需重复安装。'
     return
   }
   gortex.installWorking = true
@@ -910,11 +1080,12 @@ async function installGortex() {
 }
 
 function requestInstallGortex(event) {
-  if (gortexVersionActionBlocked.value || gortex.loading || !gortex.statusKnown || gortex.managedInstalled) return
+  if (gortexVersionActionBlocked.value || gortex.loading || !gortex.statusKnown || gortexSelectedVersionIsCurrent.value) return
+  const actionLabel = gortex.managedInstalled ? '升级' : '安装'
   openConfirmation({
-    title: '下载并安装 Gortex Release ZIP？',
-    description: `将从官方发布源下载 Gortex ${selectedGortexVersion.value || '所选版本'} 的 Windows x64 ZIP，校验后解压到 code-Manager.exe 同级的 Gortex 目录。不会执行 gortex install，也不会自动启动 daemon。`,
-    confirmLabel: '开始安装',
+    title: `下载并${actionLabel} Gortex Release ZIP？`,
+    description: `将先强制停止所有路径下的 gortex.exe（包括外部启动的 daemon/MCP），确认全部退出后再从官方发布源下载 Gortex ${selectedGortexVersion.value || '所选版本'} 的 Windows x64 ZIP。只有新 exe 下载、校验并解压成功后才会替换当前文件；不会执行 gortex install，也不会自动启动 daemon。`,
+    confirmLabel: `开始${actionLabel}`,
     onConfirm: installGortex,
     trigger: event?.currentTarget,
   })
@@ -1081,7 +1252,7 @@ async function untrackGortexProject(pathValue) {
 }
 
 function requestUninstallGortex(event) {
-  if (gortexUninstallBlocked.value || (!gortex.managedInstalled && !gortex.managedRootExists && !gortex.trackedProjects.length && !gortex.codexConfigured && !gortex.claudeConfigured && !gortex.cursorConfigured && !gortex.copilotConfigured)) return
+  if (gortexUninstallBlocked.value || (!gortex.managedInstalled && !gortex.managedRootExists && !gortex.trackedProjects.length && !gortex.projectMCPEnabled && !gortex.projectMCPProjects.length && !gortex.codexConfigured && !gortex.claudeConfigured && !gortex.cursorConfigured && !gortex.copilotConfigured && !gortex.openCodeConfigured && !gortex.antigravityConfigured && !gortex.geminiConfigured)) return
   openConfirmation({
     title: '确定卸载 Gortex 吗？',
     description: '将停止 daemon、取消已记录项目的 track、移除名为 gortex 的 MCP 配置，清理当前受管路径下仍在运行的 Gortex 进程，并删除 code-Manager.exe 同级受管 Gortex 目录。即使 Codex 的 gortex mcp 仍在运行，也会在卸载时结束它；其他 MCP、项目文件和用户目录中的非受管文件会保留。',
@@ -1814,6 +1985,7 @@ async function restartProxyForConnectionSetting(settingLabel) {
 
 onMounted(() => {
   checkHealth()
+  loadApplicationVersion()
   loadSettings()
   document.addEventListener('visibilitychange', handleVisibilityChange)
   startManagementEvents()
@@ -1823,6 +1995,7 @@ onBeforeUnmount(() => {
   stopManagementEvents()
   window.clearTimeout(statusPollTimer)
   window.clearTimeout(commandStatusPollTimer)
+  window.clearTimeout(applicationUpdatePollTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
@@ -1834,7 +2007,10 @@ onBeforeUnmount(() => {
         <div class="logo">CM</div>
         <div>
           <p class="eyebrow">LOCAL GATEWAY</p>
-          <h1>code-Manager</h1>
+          <h1 class="application-title">
+            <span>code-Manager</span>
+            <span v-if="applicationVersion" class="application-version">{{ applicationVersion }}</span>
+          </h1>
         </div>
       </div>
 
@@ -1866,6 +2042,20 @@ onBeforeUnmount(() => {
 
       <div class="info-grid">
         <div><span>HTTP/WS API 地址</span><code>http://{{ proxy.listenAddress || activeAddress }}/v1</code></div>
+        <div class="application-update-row">
+          <span>版本更新</span>
+          <div class="application-update-controls">
+            <code>当前版本 {{ applicationVersion || '读取中' }}</code>
+            <select aria-label="选择 code-Manager 远端版本" v-model="selectedApplicationVersion" :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading" @change="handleApplicationVersionChange">
+              <option value="">{{ applicationReleases.loaded ? '请选择远端版本' : '点击右侧加载版本' }}</option>
+              <option v-for="release in applicationReleases.items" :key="release.tag_name" :value="release.tag_name" :disabled="!release.available">{{ release.tag_name }}{{ release.prerelease ? '（预发布）' : '' }}{{ !release.available ? `（${release.unavailable_reason || '不可安装'}）` : '' }}</option>
+              <option v-if="applicationReleases.hasMore && applicationReleases.loaded" value="__load_more__">加载更多…</option>
+            </select>
+            <button type="button" :class="{ 'is-loading': applicationReleases.loading }" :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading" @click="loadApplicationReleases()">{{ applicationReleases.loading ? '加载中…' : (applicationReleases.loaded ? '刷新' : '加载') }}</button>
+            <button type="button" class="install-button" :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading || !selectedApplicationVersion || selectedApplicationVersion === '__load_more__'" @click="requestApplicationUpdate">{{ applicationUpdateWorking ? '安装中…' : (selectedApplicationVersion === applicationVersion ? '重新安装' : '安装') }}</button>
+          </div>
+        </div>
+        <p v-if="applicationUpdateNotice" class="notice application-update-notice">{{ applicationUpdateNotice }}</p>
         <div><span>基线连接</span><code>H2/H3 多流 · 每连接最多 500 个活动流</code></div>
         <div class="connection-status"><span>连接状态</span><code><span>网页管理：{{ managementProtocol }}</span><span>本地监听：http1.1_{{ proxy.connections.localHTTP1 }}&nbsp;&nbsp;ws_{{ proxy.connections.localWebSocket }}</span><span>上游：{{ upstreamH2Label }}&nbsp;&nbsp;{{ upstreamH3Label }}&nbsp;&nbsp;ws_{{ proxy.connections.upstreamWebSocket }}&nbsp;&nbsp;流_{{ proxy.connections.upstreamStreams }}</span></code></div>
         <div><span>健康检查</span><code>/healthz</code></div>
@@ -2060,15 +2250,15 @@ onBeforeUnmount(() => {
             <select id="gortex-version" v-model="selectedGortexVersion" :disabled="gortexReleases.loading || gortexVersionActionBlocked" @change="handleGortexVersionChange">
               <option value="">{{ gortexReleases.loaded ? '请选择版本' : '点击加载版本' }}</option>
               <option v-for="release in gortexReleases.items" :key="release.tag_name" :value="release.tag_name" :disabled="!release.available">
-                {{ release.tag_name }}{{ release.prerelease ? '（预发布）' : '' }}{{ !release.available ? '（无 Windows x64 包）' : '' }}
+                {{ release.tag_name }}{{ gortexReleaseIsCurrent(release.tag_name) ? '（当前）' : '' }}{{ release.prerelease ? '（预发布）' : '' }}{{ !release.available ? '（无 Windows x64 包）' : '' }}
               </option>
               <option v-if="gortexReleases.hasMore && gortexReleases.loaded" value="__load_more__">加载更多…</option>
             </select>
             <button type="button" :class="{ 'is-loading': gortexReleases.loading }" :disabled="gortexReleases.loading || gortexVersionActionBlocked" @click="loadGortexReleases">
               {{ gortexReleases.loading ? '加载中…' : (gortexReleases.loaded ? '刷新版本' : '加载版本') }}
             </button>
-            <button type="button" class="install-button" :disabled="gortexVersionActionBlocked || gortex.loading || !gortex.statusKnown || gortex.managedInstalled || !selectedGortexVersion || selectedGortexVersion === '__load_more__'" @click="requestInstallGortex">
-              {{ gortex.installWorking ? '安装中…' : '安装 ZIP' }}
+            <button type="button" class="install-button" :disabled="gortexVersionActionBlocked || gortex.loading || !gortex.statusKnown || gortexSelectedVersionIsCurrent || !selectedGortexVersion || selectedGortexVersion === '__load_more__'" @click="requestInstallGortex">
+              {{ gortexSelectedVersionIsCurrent ? '已是当前版本' : (gortex.installWorking ? '安装中…' : (gortex.managedInstalled ? '升级 ZIP' : '安装 ZIP')) }}
             </button>
             <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="registerGortex">注册 MCP</button>
             <button type="button" :disabled="gortexBusy || !gortex.integrationPresent" @click="removeGortex">移除 MCP</button>
@@ -2086,8 +2276,15 @@ onBeforeUnmount(() => {
           <p class="daemon-meta">PATH 用户 {{ gortex.userPath ? '已配置' : '未配置' }} · 系统 {{ gortex.systemPath ? '已配置' : '未配置' }}</p>
            <p class="daemon-meta">Codex {{ gortex.codexAvailable ? (gortex.codexConfigured ? (gortex.codexComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.codexPrompt, gortex.codexPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.codexHook, gortex.codexHookComplete) }}</p>
            <p class="daemon-meta">Claude Code {{ gortex.claudeAvailable ? (gortex.claudeConfigured ? (gortex.claudeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.claudePrompt, gortex.claudePromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.claudeHook, gortex.claudeHookComplete) }}</p>
-           <p class="daemon-meta">Cursor {{ gortex.cursorAvailable ? (gortex.cursorConfigured ? (gortex.cursorComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 项目规则 {{ gortexArtifactLabel(gortex.cursorPrompt, gortex.cursorPromptComplete) }} · GitHub Copilot CLI {{ gortex.copilotAvailable ? (gortex.copilotConfigured ? (gortex.copilotComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 提示词 {{ gortexArtifactLabel(gortex.copilotPrompt, gortex.copilotPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.copilotHook, gortex.copilotHookComplete) }}</p>
+          <div class="gortex-platform-list">
+            <p class="daemon-meta">Cursor {{ gortex.cursorAvailable ? (gortex.cursorConfigured ? (gortex.cursorComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 项目规则 {{ gortexArtifactLabel(gortex.cursorPrompt, gortex.cursorPromptComplete) }}</p>
+            <p class="daemon-meta">GitHub Copilot CLI {{ gortex.copilotAvailable ? (gortex.copilotConfigured ? (gortex.copilotComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 提示词 {{ gortexArtifactLabel(gortex.copilotPrompt, gortex.copilotPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.copilotHook, gortex.copilotHookComplete) }}</p>
+            <p class="daemon-meta">OpenCode {{ gortex.openCodeAvailable ? (gortex.openCodeConfigured ? (gortex.openCodeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.openCodePrompt, gortex.openCodePromptComplete) }} · Hook {{ gortex.openCodeAvailable ? (gortex.openCodeHook ? (gortex.openCodeHookComplete ? '插件已注册' : '插件配置残缺') : '插件未注册') : '未检测到' }}</p>
+            <p class="daemon-meta">Google Antigravity {{ gortex.antigravityAvailable ? (gortex.antigravityConfigured ? (gortex.antigravityComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.antigravityPrompt, gortex.antigravityPromptComplete) }} · Hook {{ gortex.antigravityAvailable ? (gortex.antigravityHook ? (gortex.antigravityHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
+            <p class="daemon-meta">Gemini CLI {{ gortex.geminiAvailable ? (gortex.geminiConfigured ? (gortex.geminiComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.geminiPrompt, gortex.geminiPromptComplete) }} · Hook {{ gortex.geminiAvailable ? (gortex.geminiHook ? (gortex.geminiHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
+          </div>
           <p v-if="gortex.codexTrustRequired || gortex.codexTrustStatus === 'trusted'" class="daemon-meta">Codex Hook 信任：{{ gortex.codexTrustStatus === 'trusted' ? '已信任' : '需要在 /hooks 中审核' }} <button v-if="gortex.codexTrustRequired" type="button" :disabled="gortexBusy" @click="trustGortexCodex">打开信任审核</button></p>
+          <p class="daemon-meta">项目级 MCP {{ gortex.projectMCPEnabled ? '已启用' : '未启用' }} · 已绑定 {{ gortex.projectMCPProjects.length }} 个项目</p>
         </div>
         <div class="llmtrim-install-control">
           <label for="gortex-project-path">
@@ -2229,7 +2426,7 @@ onBeforeUnmount(() => {
       </div>
     </section>
   </div>
-  <div v-if="pageInteractionLocked" class="application-exit-overlay" aria-live="assertive">
+  <div v-if="exitState !== 'idle'" class="application-exit-overlay" aria-live="assertive">
     <section class="application-exit-dialog" :class="`state-${exitState}`" role="alertdialog" aria-modal="true" aria-labelledby="application-exit-title" aria-describedby="application-exit-description">
       <span class="application-exit-mark" aria-hidden="true"></span>
       <h2 id="application-exit-title">{{ exitTitle }}</h2>
@@ -2237,6 +2434,13 @@ onBeforeUnmount(() => {
       <ul v-if="exitWarnings.length" class="application-exit-warnings">
         <li v-for="(warning, index) in exitWarnings" :key="`${index}-${warning}`">{{ warning }}</li>
       </ul>
+    </section>
+  </div>
+  <div v-if="applicationUpdateRestarting" class="application-exit-overlay" aria-live="assertive">
+    <section class="application-exit-dialog state-stopping" role="alertdialog" aria-modal="true" aria-labelledby="application-update-title" aria-describedby="application-update-description">
+      <span class="application-exit-mark" aria-hidden="true"></span>
+      <h2 id="application-update-title">正在安装并重启</h2>
+      <p id="application-update-description">{{ applicationUpdateNotice || '正在替换 code-Manager.exe；四项工具会保持当前状态。' }}</p>
     </section>
   </div>
 </template>

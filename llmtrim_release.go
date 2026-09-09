@@ -32,6 +32,7 @@ var sha256Pattern = regexp.MustCompile(`(?i)[a-f0-9]{64}`)
 type llmtrimReleaseAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
+	Digest             string `json:"digest"`
 }
 
 type githubRelease struct {

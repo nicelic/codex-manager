@@ -326,6 +326,7 @@ type logStatusResponse struct {
 
 type applicationIdentityResponse struct {
 	ExecutablePath string `json:"executable_path"`
+	Version        string `json:"version"`
 }
 
 type applicationExitResponse struct {
@@ -364,6 +365,7 @@ type application struct {
 	localURL              string
 	gateway               *gateway
 	startupMode           bool
+	updateExit            atomic.Bool
 	shutdownOnce          sync.Once
 	shutdownResourcesOnce sync.Once
 	shutdownResult        applicationShutdownResult
@@ -373,6 +375,25 @@ type application struct {
 //
 //go:embed web/dist
 var frontendFS embed.FS
+
+//go:embed vision.md
+var visionMetadata string
+
+func applicationVersionFromVision(content string) (string, error) {
+	key, version, found := strings.Cut(strings.TrimSpace(content), ":")
+	if !found || strings.TrimSpace(key) != "vision" {
+		return "", errors.New("vision.md 内容必须为 vision: <版本>")
+	}
+	version = strings.TrimSpace(version)
+	if version == "" || strings.ContainsAny(version, "\r\n") {
+		return "", errors.New("vision.md 中缺少有效版本号")
+	}
+	return version, nil
+}
+
+func embeddedApplicationVersion() (string, error) {
+	return applicationVersionFromVision(visionMetadata)
+}
 
 //go:embed assets/tray.ico
 var trayIcon []byte
@@ -516,6 +537,8 @@ func main() {
 	mux.HandleFunc("/api/gortex/untrack", g.gortexUntrack)
 	mux.HandleFunc("/api/gortex/uninstall", g.gortexUninstall)
 	mux.HandleFunc("/api/application/identity", g.applicationIdentity)
+	mux.HandleFunc("/api/application/releases", g.applicationReleases)
+	mux.HandleFunc("/api/application/update", g.applicationUpdate)
 	mux.HandleFunc("/api/application/exit", g.applicationExit)
 	mux.HandleFunc("/v1/", g.managementForward)
 	proxyMux := http.NewServeMux()
@@ -660,6 +683,10 @@ func (app *application) onTrayExit() {
 }
 
 func (app *application) shutdown() {
+	if app.updateExit.Load() {
+		app.shutdownForUpdate()
+		return
+	}
 	app.shutdownOnce.Do(func() {
 		app.shutdownManagedResources()
 		if app.gateway != nil {
@@ -672,6 +699,31 @@ func (app *application) shutdown() {
 		defer serverCancel()
 		if err := app.server.Shutdown(serverContext); err != nil {
 			log.Printf("graceful shutdown failed: %v", err)
+		}
+	})
+}
+
+// beginUpdateExit stops only code-Manager itself. Managed tools stay alive so
+// the replacement EXE can query their existing state after it starts.
+func (app *application) beginUpdateExit() {
+	app.updateExit.Store(true)
+	app.shutdownForUpdate()
+	systray.Quit()
+}
+
+func (app *application) shutdownForUpdate() {
+	app.updateExit.Store(true)
+	app.shutdownOnce.Do(func() {
+		if app.gateway != nil {
+			app.gateway.closeManagementWebSocketSessions()
+		}
+		if app.server == nil {
+			return
+		}
+		serverContext, serverCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer serverCancel()
+		if err := app.server.Shutdown(serverContext); err != nil {
+			log.Printf("update shutdown failed: %v", err)
 		}
 	})
 }
@@ -2840,7 +2892,13 @@ func (g *gateway) applicationIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "无法规范化 code-Manager.exe 路径", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, applicationIdentityResponse{ExecutablePath: executable})
+	version, err := embeddedApplicationVersion()
+	if err != nil {
+		log.Printf("读取内置 vision.md 失败: %v", err)
+		http.Error(w, "无法读取内置版本信息", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, applicationIdentityResponse{ExecutablePath: executable, Version: version})
 }
 
 func (g *gateway) stopProxy(ctx context.Context) error {
