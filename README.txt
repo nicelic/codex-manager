@@ -2561,9 +2561,9 @@ GitHub 仓库：`nicelic/codex-manager`。
 - 本地构建使用项目根目录的 `build.bat`，入口是 Windows CMD；脚本内部固定调用 `npm.cmd install --no-audit`、`npm.cmd run build` 和 `go build`。
 - 不使用 PowerShell 的 `npm` 别名，不使用 `npm` 替代 `npm.cmd`。
 - Git 操作使用 Git for Windows 命令行，例如 `git status`、`git add`、`git commit`、`git push` 和 `git tag`。
-- GitHub Release 使用 GitHub 网页的 Releases 页面手工操作：选择已有标签、填写同名 Release 标题、上传固定名称的 EXE，再点击发布。
-- 本项目不使用、也不保留自动创建 GitHub Release 或自动上传附件的脚本。`build.bat` 只负责本地构建，不能联网发布、不能创建标签、不能执行 `git push`、不能调用 GitHub API，也不能读取或保存 GitHub 凭据。
-- 如果以后新增本地准备脚本，它只能做版本格式检查、构建、文件存在性检查和 SHA-256 计算；禁止包含 GitHub Token、API Key、密码、Cookie、远端上传接口、`git push`、`gh release` 或等价发布逻辑。脚本默认不得写入隐私信息、凭据文件或带密钥的日志。
+- GitHub Release 只能使用 GitHub API 发布，不使用网页手工发布或 `gh release` 作为发布入口：先通过 Releases API 创建或读取与标签同名的 Release，再通过 Uploads API 上传固定名称的 EXE，最后通过 Releases API 校验标签、标题、附件名称和 SHA-256 digest。
+- `build.bat` 只负责本地构建；Git 提交、分支推送、标签创建和标签推送继续使用 Git for Windows 命令行。Release 创建、附件上传和发布状态核对必须走 GitHub API。API Token 只能从环境变量或安全凭据存储读取，不得写入脚本、配置、日志或 README。
+- 如果以后新增本地发布脚本，只能调用 GitHub API 完成 Release 创建、附件上传和结果核对；脚本可以做版本格式检查、构建、文件存在性检查和 SHA-256 计算，但不得硬编码 GitHub Token、API Key、密码、Cookie 或其它凭据。脚本不得把凭据写入文件或日志，也不得通过网页自动化、`gh release` 或其它非 API 发布入口发布。
 
 ### 3. 发布前隐私和文件检查
 
@@ -2639,27 +2639,37 @@ git push origin v0.1.1
 - 使用 `git rev-parse v0.1.1`、`git rev-parse HEAD` 和 `git ls-remote --tags origin v0.1.1` 只读核对指向。
 - 只有用户明确确认后，才可以讨论移动标签、删除标签或替换 Release；默认保留远端现状。
 
-### 7. 在 GitHub 网页创建 Release
+### 7. 使用 GitHub API 创建 Release
 
-1. 打开仓库的 Releases 页面，点击 `Draft a new release`。
-2. 选择已经推送的标签 `v0.1.1`；如果页面要求创建新标签，名称仍必须是 `v0.1.1`。
-3. Release 标题填写 `v0.1.1`，不要添加项目名或 EXE 名称。
-4. 发布说明只写本次版本的必要信息，例如“v0.1.1 release. Windows executable included.”；不要粘贴 API Key、日志、绝对路径或机器信息。
-5. 上传本地文件 `releases\code-Manager\code-Manager.exe`。上传后页面中的附件名称必须仍是 `code-Manager.exe`。
-6. 在点击 `Publish release` 前，人工复核标签、标题、附件名称、附件大小和说明内容；确认无误后再发布。
-7. 发布完成后只读核对 Release 页面：标题为 `v0.1.1`，标签为 `v0.1.1`，附件为 `code-Manager.exe`。不要因为页面自动显示 Source code 压缩包而改动它们。
-8. GitHub Release API 必须为 `code-Manager.exe` 返回有效的 `sha256:<64 位十六进制>` 附件 digest。应用内安装会先校验该摘要；缺少或格式无效时版本仍可显示，但会标记为不可安装。发布后应在 Releases API 或应用内“加载版本”中确认该摘要可用。
+1. 确认 `vision.md`、Git 标签和目标提交一致，并确认标签 `v0.1.1` 已推送到 `origin`。
+2. 使用 GitHub Releases API 查询 `GET /repos/nicelic/codex-manager/releases/tags/v0.1.1`。如果同名 Release 不存在，使用 `POST /repos/nicelic/codex-manager/releases` 创建：
+
+```json
+{
+  "tag_name": "v0.1.1",
+  "target_commitish": "main",
+  "name": "v0.1.1",
+  "body": "v0.1.1 release. Windows executable included.",
+  "draft": false,
+  "prerelease": false
+}
+```
+
+3. 使用创建或查询结果中的 `upload_url`，去掉模板尾部 `{?name,label}`，通过 GitHub Uploads API 上传 `releases\\code-Manager\\code-Manager.exe`。请求使用 `name=code-Manager.exe`、`Content-Type: application/octet-stream` 和二进制文件体；如果附件已经存在，先停止并读取现有附件信息，不得直接覆盖或删除。
+4. Release 标题必须与标签完全一致，发布说明只写本次版本的必要信息，不得粘贴 API Key、日志、绝对路径或机器信息。Release 的创建、发布状态和附件上传都必须由 GitHub API 完成，不依赖网页上的发布按钮。
+5. 发布完成后使用 `GET /repos/nicelic/codex-manager/releases/tags/v0.1.1` 和返回的附件信息只读核对：标题为 `v0.1.1`，标签为 `v0.1.1`，附件名称为 `code-Manager.exe`，且 Release 不是草稿或预发布版本。
+6. GitHub Release API 必须为 `code-Manager.exe` 返回有效的 `sha256:<64 位十六进制>` 附件 digest，并与本地 `Get-FileHash` 得到的 SHA-256 一致。应用内安装会先校验该摘要；缺少或格式无效时版本仍可显示，但会标记为不可安装。
 
 ### 8. 后续版本流程
 
-以后发布 `v0.1.2` 等版本时，严格按以下顺序执行：
+以后发布 `v0.1.3` 等版本时，严格按以下顺序执行：
 
-1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.2`。
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.3`。
 2. 检查隐私文件和工作区改动。
 3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
 4. 人工确认后提交并推送源码和 `vision.md`。
-5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.2` 并推送。
-6. 在 GitHub 网页创建标题同为 `v0.1.2` 的 Release，上传仍名为 `code-Manager.exe` 的附件。
+5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.3` 并推送。
+6. 通过 GitHub API 创建标题同为 `v0.1.3` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
 7. 发布完成后核对 `vision.md` 中的版本值、标签、Release 标题和附件名称四者一致；任何一项不一致都先停止，不要擅自覆盖远端对象。
 
 ### 9. 应用内版本安装与回退

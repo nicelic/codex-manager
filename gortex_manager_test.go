@@ -817,3 +817,97 @@ func TestGortexMCPRemovalClearsLedgerWhenCodexEntryIsMissing(t *testing.T) {
 		t.Fatalf("stale Codex platform ownership survived: %#v", ownership.Platforms)
 	}
 }
+
+func TestAntigravityMCPInjectsActiveProjectCWD(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	preserveGortexOwnershipForTest(t)
+
+	projectDir := t.TempDir()
+	if err := writeGortexProjectRegistry(gortexProjectRegistry{Projects: []string{projectDir}}); err != nil {
+		t.Fatal(err)
+	}
+
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	if _, err := updateJSONMCPConfigOwned("antigravity", executable, false); err != nil {
+		t.Fatalf("register Antigravity MCP: %v", err)
+	}
+
+	path := gortexConfigPath("antigravity")
+	root, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers not found in %s", path)
+	}
+	entry, ok := servers[gortexMCPName].(map[string]any)
+	if !ok {
+		t.Fatalf("%s entry not found", gortexMCPName)
+	}
+
+	cwd, ok := entry["cwd"].(string)
+	if !ok || !strings.EqualFold(filepath.Clean(cwd), filepath.Clean(projectDir)) {
+		t.Fatalf("Antigravity MCP cwd = %q, want %q", cwd, projectDir)
+	}
+
+	env, ok := entry["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("Antigravity MCP env not a map: %#v", entry["env"])
+	}
+	if ws, ok := env["ANTIGRAVITY_WORKSPACE"].(string); !ok || !strings.EqualFold(filepath.Clean(ws), filepath.Clean(projectDir)) {
+		t.Fatalf("Antigravity MCP ANTIGRAVITY_WORKSPACE = %q, want %q", ws, projectDir)
+	}
+
+	if present, complete := queryJSONMCPState("antigravity", executable); !present || !complete {
+		t.Fatalf("Antigravity MCP status present=%v complete=%v, want true,true", present, complete)
+	}
+}
+
+func TestCursorMCPInjectsActiveProjectCWDAndWorkspace(t *testing.T) {
+	profile := t.TempDir()
+	t.Setenv("USERPROFILE", profile)
+	preserveGortexOwnershipForTest(t)
+
+	projectDir := t.TempDir()
+	if err := writeGortexProjectRegistry(gortexProjectRegistry{Projects: []string{projectDir}}); err != nil {
+		t.Fatal(err)
+	}
+
+	executable := filepath.Join(profile, "Gortex", "bin", gortexExecutableName)
+	if _, err := updateJSONMCPConfigOwned("cursor", executable, false); err != nil {
+		t.Fatalf("register Cursor MCP: %v", err)
+	}
+
+	path := gortexConfigPath("cursor")
+	root, err := readGortexJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers not found in %s", path)
+	}
+	entry, ok := servers[gortexMCPName].(map[string]any)
+	if !ok {
+		t.Fatalf("%s entry not found", gortexMCPName)
+	}
+
+	cwd, ok := entry["cwd"].(string)
+	if !ok || !strings.EqualFold(filepath.Clean(cwd), filepath.Clean(projectDir)) {
+		t.Fatalf("Cursor MCP cwd = %q, want %q", cwd, projectDir)
+	}
+
+	env, ok := entry["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("Cursor MCP env not a map: %#v", entry["env"])
+	}
+	if ws, ok := env["CURSOR_WORKSPACE"].(string); !ok || !strings.EqualFold(filepath.Clean(ws), filepath.Clean(projectDir)) {
+		t.Fatalf("Cursor MCP CURSOR_WORKSPACE = %q, want %q", ws, projectDir)
+	}
+
+	if present, complete := queryJSONMCPState("cursor", executable); !present || !complete {
+		t.Fatalf("Cursor MCP status present=%v complete=%v, want true,true", present, complete)
+	}
+}
