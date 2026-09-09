@@ -413,6 +413,10 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "gortex-bridge" {
+		runGortexBridge(os.Args[2:])
+		return
+	}
 	configPath := defaultConfigPath()
 	startupMode := false
 	for _, arg := range os.Args[1:] {

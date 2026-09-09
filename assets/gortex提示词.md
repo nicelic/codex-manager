@@ -29,6 +29,7 @@ Gortex 是对其 track 仓库进行代码定位、源码阅读、关系分析、
 daemon 不可达时，不要假装图分析完成；用户明确要求诊断时才可使用 gortex version、gortex doctor --json、gortex status、gortex daemon status、gortex daemon logs。不要因为 daemon 故障自动 start、track、reindex、untrack。
 
 目标不在 tracked 范围时，明确报告未被索引；只读任务可在用户允许下使用本地文件检查。已属于 tracked Git family 但 checkout route 尚未就绪时，不要重复 track，应检查 reconciliation/route 并等待或按用户要求诊断。
+- **宿主启动目录与目标仓库区分铁律**：若 Gortex 错误信息包含宿主自身程序安装目录（如包含 `\Programs\antigravity`、`\Microsoft VS Code` 等 IDE 自身安装路径），此为宿主启动环境工作区未对齐的伪报错，绝不代表用户目标仓库未被索引！**严禁**因此将目标仓库误判为未 track 并退回原生工具；只要目标仓库在已 track 列表中，必须继续通过带仓库前缀的路径（如 `read_file(path="<项目>/...")`）调用 Gortex 工具执行。
 
 2. 任务开始和 localize
 
@@ -39,7 +40,7 @@ workspace(operation="active_project")
 workspace(operation="repos")
 workspace(operation="index")
 capabilities()
-*注：在 55 扁平工具模式下，使用 get_active_project 确认当前项目，若非目标项目立即调用 set_active_project(project="<目标项目>") 切换；使用 graph_stats 与 index_health 确认图谱与索引健康度。*
+*注：在 55 扁平工具模式下，使用 graph_stats 与 index_health 确认图谱与索引健康度；跨项目操作直接使用带项目前缀的路径（如 read_file(path="<项目>/path/to/file")）；若需调用 get_active_project/set_active_project 等高阶工具，可先通过 tools_search(query="project") 动态激活。*
 
 新任务按目标选择首调用，不要把所有任务都强制用 explore.task：
 
@@ -117,16 +118,12 @@ view={kind:"commit", value:"<full-lowercase-object-id>"}
    - 模式 B（主项目持久切换/工作区整体迁移）：当用户明确指示将整个会话的工作重心整体切换至新项目时，先调用 get_active_project() 查看，再调用 set_active_project(project="<目标项目>") 进行热切换。若提示 project not found（未注册命名工程），则无需强切，直接在后续操作中使用 <目标项目>/ 前缀限定即可。
 
 2. 55 Core 扁平工具调用（Antigravity 等默认模式）：
-   - 跨项目单次只读穿透探测（推荐）：
-     query_project(project="<目标项目名称>", query="<问题或符号>")
-   - 跨项目直接精读源码（带前缀或绝对路径）：
+   - 跨项目直接精读源码（推荐首选，带项目前缀）：
      read_file(path="<目标项目名称>/path/to/file")
-   - 检查当前激活的工作区与项目：
-     get_active_project()
-   - 切换当前会话活跃项目（整体迁移时使用）：
-     set_active_project(project="<目标项目名称>")
-   - 列出所有已 tracked 仓库与项目：
-     list_repos()
+   - 图谱与索引健康度：
+     graph_stats() / index_health()
+   - 若需调用 get_active_project / set_active_project / query_project 等工具：
+     可先使用 tools_search(query="project") 动态激活。
 
 3. 21 Facade-v1 门面模式调用：
    - 跨项目只读探测：

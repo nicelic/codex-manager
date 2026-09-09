@@ -1,1 +1,1 @@
-{watch: {enabled: true, debounce_ms: 100}, search: {index_prose: true}}
+{watch: {enabled: true, debounce_ms: 300}, search: {index_prose: true}}

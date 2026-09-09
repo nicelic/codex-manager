@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -914,7 +915,29 @@ func gortexActiveProjectForAgent(agent, executable string) string {
 	return ""
 }
 
+func gortexBridgeExecutable(fallbackExecutable string) string {
+	if override := strings.TrimSpace(os.Getenv("CODE_MANAGER_EXECUTABLE")); override != "" {
+		return filepath.Clean(override)
+	}
+	if exe, err := currentCodeManagerExecutable(); err == nil && exe != "" {
+		return exe
+	}
+	return fallbackExecutable
+}
+
+func gortexAntigravityMCPEntry(executable string) map[string]any {
+	bridgeExe := gortexBridgeExecutable(executable)
+	return map[string]any{
+		"command": bridgeExe,
+		"args":    []string{"gortex-bridge", "--gortex", executable},
+		"env":     gortexMCPEnv(),
+	}
+}
+
 func gortexPlatformMCPEntry(agent, executable string) map[string]any {
+	if agent == "antigravity" {
+		return gortexAntigravityMCPEntry(executable)
+	}
 	return gortexMCPEntry(executable, agent == "copilot")
 }
 
@@ -1096,18 +1119,23 @@ func gortexMCPEntryLooksManaged(value any) bool {
 	}
 	command, _ := entry["command"].(string)
 	base := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.ReplaceAll(command, "/", `\`))), ".exe")
-	if base != "gortex" {
-		return false
-	}
 	args, ok := entry["args"].([]any)
-	if !ok || len(args) == 0 {
-		if stringArgs, stringOK := entry["args"].([]string); stringOK && len(stringArgs) > 0 {
-			return stringArgs[0] == "mcp"
-		}
-		return false
+	var first string
+	if ok && len(args) > 0 {
+		first, _ = args[0].(string)
+	} else if stringArgs, stringOK := entry["args"].([]string); stringOK && len(stringArgs) > 0 {
+		first = stringArgs[0]
 	}
-	first, _ := args[0].(string)
-	return first == "mcp"
+	if first == "gortex-bridge" {
+		return true
+	}
+	if base == "gortex" && first == "mcp" {
+		return true
+	}
+	if (strings.Contains(base, "code-manager") || strings.Contains(base, "llmtrim")) && (first == "gortex-bridge" || first == "mcp") {
+		return true
+	}
+	return false
 }
 
 func gortexMCPEntryComplete(value any, executable string, copilot bool) bool {
@@ -2532,3 +2560,170 @@ func (g *gateway) stopGortex(ctx context.Context) error {
 	}
 	return nil
 }
+
+func isAmbiguousDirectory(p string) bool {
+	clean := filepath.Clean(p)
+	if clean == "" || clean == "/" || clean == "." {
+		return true
+	}
+	if filepath.IsAbs(clean) && clean == filepath.Dir(clean) {
+		return true
+	}
+	return false
+}
+
+func isHostProgramDirectory(p string) bool {
+	lower := strings.ToLower(filepath.Clean(p))
+	return strings.Contains(lower, `\programs\antigravity`) ||
+		strings.Contains(lower, `/programs/antigravity`) ||
+		strings.Contains(lower, `\microsoft vs code`) ||
+		strings.Contains(lower, `/microsoft vs code`)
+}
+
+func resolveBridgeTargetCWD(gortexExe string) string {
+	// 1. 优先检查显式环境变量
+	for _, key := range []string{
+		"ANTIGRAVITY_WORKSPACE",
+		"WORKSPACE",
+		"WORKSPACE_DIR",
+		"PROJECT_DIR",
+	} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" && directoryExists(val) {
+			clean := filepath.Clean(val)
+			if !isAmbiguousDirectory(clean) && !isHostProgramDirectory(clean) {
+				return clean
+			}
+		}
+	}
+
+	// 2. 检查当前启动目录（若有效且非宿主程序安装目录）
+	if cwd, err := os.Getwd(); err == nil && cwd != "" && directoryExists(cwd) {
+		clean := filepath.Clean(cwd)
+		if !isAmbiguousDirectory(clean) && !isHostProgramDirectory(clean) {
+			return clean
+		}
+	}
+
+	// 3. 从 Daemon 获取当前已 track 的项目
+	if gortexExe != "" {
+		tracked := gortexDaemonTrackedProjects(gortexExe)
+		for _, p := range tracked {
+			clean := filepath.Clean(p)
+			if directoryExists(clean) && !isAmbiguousDirectory(clean) && !isHostProgramDirectory(clean) {
+				return clean
+			}
+		}
+	}
+
+	// 4. 从本地注册的 tracked 列表获取
+	if local, err := gortexTrackedProjects(); err == nil {
+		for _, p := range local {
+			clean := filepath.Clean(p)
+			if directoryExists(clean) && !isAmbiguousDirectory(clean) && !isHostProgramDirectory(clean) {
+				return clean
+			}
+		}
+	}
+
+	// 5. 兜底回退到用户主目录
+	if home, err := os.UserHomeDir(); err == nil && home != "" && directoryExists(home) {
+		return filepath.Clean(home)
+	}
+	return ""
+}
+
+func gortexManagedEnvForExecutable(gortexExe string) []string {
+	root := ""
+	if gortexExe != "" {
+		dir := filepath.Dir(filepath.Clean(gortexExe))
+		if strings.EqualFold(filepath.Base(dir), "bin") {
+			root = filepath.Dir(dir)
+		} else {
+			root = dir
+		}
+	}
+	if root == "" {
+		root = gortexInstallRoot()
+	}
+	if root == "" {
+		return os.Environ()
+	}
+	values := map[string]string{
+		"XDG_CONFIG_HOME":            filepath.Join(root, "config"),
+		"XDG_DATA_HOME":              filepath.Join(root, "data"),
+		"XDG_CACHE_HOME":             filepath.Join(root, "cache"),
+		"GORTEX_DAEMON_SOCKET":       filepath.Join(root, "run", "daemon.sock"),
+		"GORTEX_DAEMON_PIDFILE":      filepath.Join(root, "run", "daemon.pid"),
+		"GORTEX_DAEMON_LOGFILE":      filepath.Join(root, "run", "daemon.log"),
+		"GORTEX_DAEMON_STATEFILE":    filepath.Join(root, "run", "daemon.state.json"),
+		"GORTEX_RECONCILE_INTERVAL":  "1h",
+		"GORTEX_DAEMON_IDLE_TIMEOUT": "0",
+	}
+	env := os.Environ()
+	for key, value := range values {
+		env = setEnvValue(env, key, value)
+	}
+	return env
+}
+
+func runGortexBridge(args []string) {
+	var gortexExe string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--gortex" && i+1 < len(args) {
+			gortexExe = args[i+1]
+			i++
+		}
+	}
+	if gortexExe == "" {
+		gortexExe = os.Getenv("GORTEX_EXECUTABLE")
+	}
+	if gortexExe == "" {
+		gortexExe = gortexManagedExecutablePath()
+	}
+	if gortexExe == "" {
+		if found, err := exec.LookPath(gortexExecutableName); err == nil {
+			gortexExe = found
+		}
+	}
+	if gortexExe == "" || !fileExists(gortexExe) {
+		fmt.Fprintf(os.Stderr, "[gortex-bridge] 未找到有效的 Gortex 可执行文件: %s\n", gortexExe)
+		os.Exit(1)
+	}
+
+	targetCWD := resolveBridgeTargetCWD(gortexExe)
+
+	cmd := exec.Command(gortexExe, "mcp")
+	if targetCWD != "" {
+		cmd.Dir = targetCWD
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	env := gortexManagedEnvForExecutable(gortexExe)
+	if targetCWD != "" {
+		env = setEnvValue(env, "ANTIGRAVITY_WORKSPACE", targetCWD)
+	}
+	cmd.Env = env
+	hideGortexCommandWindow(cmd)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		for sig := range sigChan {
+			if cmd.Process != nil {
+				_ = cmd.Process.Signal(sig)
+			}
+		}
+	}()
+
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "[gortex-bridge] Gortex 进程退出: %v\n", err)
+		os.Exit(1)
+	}
+}
+

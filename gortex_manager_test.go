@@ -896,3 +896,41 @@ func TestCursorMCPGenericConfig(t *testing.T) {
 		t.Fatalf("Cursor MCP status present=%v complete=%v, want true,true", present, complete)
 	}
 }
+
+func TestAntigravityBridgeEntryAndResolution(t *testing.T) {
+	tempDir := t.TempDir()
+	exePath := filepath.Join(tempDir, "gortex.exe")
+	if err := os.WriteFile(exePath, []byte("stub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := gortexAntigravityMCPEntry(exePath)
+	if entry["command"] == "" {
+		t.Fatal("Antigravity bridge command is empty")
+	}
+	args, ok := entry["args"].([]string)
+	if !ok || len(args) < 3 || args[0] != "gortex-bridge" || args[1] != "--gortex" || args[2] != exePath {
+		t.Fatalf("Antigravity bridge args unexpected: %#v", entry["args"])
+	}
+
+	if !gortexMCPEntryLooksManaged(entry) {
+		t.Fatal("gortexMCPEntryLooksManaged rejected Antigravity bridge entry")
+	}
+
+	// 验证环境避开 IDE 安装目录
+	fakeAppDir := filepath.Join(tempDir, "AppData", "Local", "Programs", "antigravity")
+	if !isHostProgramDirectory(fakeAppDir) {
+		t.Fatalf("isHostProgramDirectory failed to detect %q", fakeAppDir)
+	}
+
+	// 验证优先解析合法的 ANTIGRAVITY_WORKSPACE
+	projectDir := filepath.Join(tempDir, "my-repo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTIGRAVITY_WORKSPACE", projectDir)
+	if got := resolveBridgeTargetCWD(exePath); got != filepath.Clean(projectDir) {
+		t.Fatalf("resolveBridgeTargetCWD = %q, want %q", got, filepath.Clean(projectDir))
+	}
+}
+
