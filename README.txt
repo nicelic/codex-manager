@@ -2569,7 +2569,7 @@ GitHub 仓库：`nicelic/codex-manager`。
 
 发布前必须确认以下内容不会进入 Git 提交或 Release 附件：
 
-- `config\config.yaml`、`config\code-Manager.log`、任何 `*.log`、`.env`、`.env.*`；这些文件可能包含 API Key、绝对路径或机器信息。
+- `config\config.yaml`、`config\code-Manager.log`、任何 `*.log`、`.env`、`.env.*`、本地发布脚本 `publish_release.ps1`；这些文件可能包含 API Key、绝对路径或属于本地专属运维脚本。
 - `frontend\node_modules`、`web\dist`、`releases`、图标 PNG/ICO、`code-Manager-icon.syso` 和本机 EXE；这些是生成物或本地文件。
 - Gortex、llmtrim、RTK、snip 的运行目录、缓存、状态账本、用户配置、Token、证书和日志。
 - 任何临时压缩包、调试转储、浏览器导出文件和包含个人信息的截图。
