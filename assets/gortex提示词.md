@@ -1,13 +1,13 @@
 Gortex 使用规范
 
-> 本规范面向使用 Gortex MCP、Gortex CLI 和 Agent host adapter（Google Antigravity、Claude Code、Codex、Cursor 等）的代码 Agent。以 Gortex 0.64.1 运行时源码为权威依据。
+> 本规范面向使用 Gortex MCP、Gortex CLI 和 Agent host adapter（Google Antigravity、Claude Code、Codex、Cursor 等）的代码 Agent。以 Gortex 运行时源码为权威依据。
 
 1. 最高原则和使用边界
 
 Gortex 是对其 track 仓库进行代码定位、源码阅读、关系分析、数据流追踪、影响评估、编辑、重构、验证、审查、项目管理和持久化记忆的权威工具。
 
 - 对 indexed repository，优先使用当前 host 提供的 Gortex 原生 MCP handle。
-- **Antigravity 宿主约束**：在 Google Antigravity 中，Gortex 通常作为 Lazy MCP 挂载。**严禁**因为惰性调用的包装摩擦而退回使用 Antigravity 原生的 `find_by_name`、`grep_search`、`view_file`、PowerShell 或 shell 替代 Gortex 的索引搜索、符号搜索、关系、影响、编辑、重构、guard 或 contract。凡已 track 的仓库，必须第一优先级通过 Gortex MCP 句柄执行。
+- **Antigravity 宿主约束**：在 Google Antigravity 中，Gortex 通常作为 Lazy MCP 挂载。**严禁**因为惰性调用的包装摩擦或单次检索未直接命中而退回使用 Antigravity 原生的 `find_by_name`、`grep_search`、`view_file`、PowerShell 或 shell 替代 Gortex 的索引搜索、符号搜索、关系、影响、编辑、重构、guard 或 contract。凡已 track 的仓库，必须第一优先级通过 Gortex MCP 句柄执行。
 - 不要凭记忆发明 tool、operation、参数、字段、preset、命令或关系。
 - 不要伪造 Gortex 没有返回的文件、symbol、关系、view、索引状态、测试结果或安全结论。
 - 摘要、搜索结果和关系图只能缩小范围，不能替代关键实现体阅读；行为关键代码不要压缩 body。
@@ -28,8 +28,7 @@ Gortex 是对其 track 仓库进行代码定位、源码阅读、关系分析、
 
 daemon 不可达时，不要假装图分析完成；用户明确要求诊断时才可使用 gortex version、gortex doctor --json、gortex status、gortex daemon status、gortex daemon logs。不要因为 daemon 故障自动 start、track、reindex、untrack。
 
-目标不在 tracked 范围时，明确报告未被索引；只读任务可在用户允许下使用本地文件检查。已属于 tracked Git family 但 checkout route 尚未就绪时，不要重复 track，应检查 reconciliation/route 并等待或按用户要求诊断。
-- **宿主启动目录与目标仓库区分铁律**：若 Gortex 错误信息包含宿主自身程序安装目录（如包含 `\Programs\antigravity`、`\Microsoft VS Code` 等 IDE 自身安装路径），此为宿主启动环境工作区未对齐的伪报错，绝不代表用户目标仓库未被索引！**严禁**因此将目标仓库误判为未 track 并退回原生工具；只要目标仓库在已 track 列表中，必须继续通过带仓库前缀的路径（如 `read_file(path="<项目>/...")`）调用 Gortex 工具执行。
+- **多项目图谱一致性铁律**：Gortex 守护进程在后台统一维护所有已 track 仓库的完整全局图谱。严禁因 `list_repos` 仅列出单一仓库、`get_active_project` 返回其他工程或单次检索结果为 0，就主观断定目标工程未被索引！**严禁擅自退回宿主原生工具**。若 Gortex 错误信息包含宿主自身程序安装目录等 IDE 环境路径，此为工作区未对齐的伪报错，绝不代表目标未索引，必须通过第 3.2 节的双穿透机制在 Gortex 内精准执行。
 
 2. 任务开始和 localize
 
@@ -40,7 +39,7 @@ workspace(operation="active_project")
 workspace(operation="repos")
 workspace(operation="index")
 capabilities()
-*注：在 55 扁平工具模式下，使用 graph_stats 与 index_health 确认图谱与索引健康度；跨项目操作直接使用带项目前缀的路径（如 read_file(path="<项目>/path/to/file")）；若需调用 get_active_project/set_active_project 等高阶工具，可先通过 tools_search(query="project") 动态激活。*
+*注：在 55 扁平工具模式下，使用 graph_stats 与 index_health 确认图谱与索引健康度；跨项目操作直接使用带项目前缀的路径（如 read_file(path="<目标项目>/path/to/file")）；若需调用 get_active_project / set_active_project 等高阶工具，可先通过 tools_search(query="project") 动态激活。*
 
 新任务按目标选择首调用，不要把所有任务都强制用 explore.task：
 
@@ -108,39 +107,29 @@ view={kind:"commit", value:"<full-lowercase-object-id>"}
 - 只有 exact 且 coordinator-backed 的可写 worktree 才支持 mutation。
 - 不要把 fallback、immutable view 或 explain/preview 结果写成已写入。
 
-3.2 多项目感知与动态工作区热切换机制（核心规范）
+3.2 多项目自适应与动态感知机制（核心合一规范）
 
-在单守护进程（Daemon）多项目索引架构下（后台 Gortex Daemon 同时完整索引多个被 track 的项目仓库），MCP 客户端采用单一长连接，进程不重启。全局配置保持纯净通用，绝不硬编码任何单一项目的全局 cwd 或特定工作区。
+在单守护进程多仓库架构下，后台 Daemon 同时完整索引所有已 track 项目。MCP 客户端通常为宿主创建的单一常驻长连接，启动时可能被环境固化了初始绑定（`bound: true`）。为彻底解决项目切换问题，Agent 必须遵循以下合一感知与穿透规则：
 
-1. 原则与双模感知：
-   - 绝不依赖全局 cwd，保持全局配置通用无污染。
-   - 模式 A（跨项目临时参考/只读分析）：在当前主项目分析修改过程中，若仅需临时到另一个已 track 的副项目获取参考实现、数据流或技术结论，严禁切换当前会话活跃项目！必须保持主会话锚定，使用 query_project(project="<副项目>", query="...") 探测符号，配合带仓库前缀的 read_file(path="<副项目>/...") 精读源码。取证完毕后，主会话零污染，直接在主项目中继续分析、编辑和验证，杜绝状态震荡与误写。
-   - 模式 B（主项目持久切换/工作区整体迁移）：当用户明确指示将整个会话的工作重心整体切换至新项目时，先调用 get_active_project() 查看，再调用 set_active_project(project="<目标项目>") 进行热切换。若提示 project not found（未注册命名工程），则无需强切，直接在后续操作中使用 <目标项目>/ 前缀限定即可。
+1. **自动目标对齐（零口令感知，无需显式切换）**：
+   - **独立项目提问场景**：每次对话，Agent 必须直接从宿主上下文（Active Workspace 根路径）自动提取当前项目名作为主目标。用户在新项目中发起提问时，绝不需要额外说明“切换项目”，Agent 自动以该工程为核心展开分析。
+   - **跨项目交叉分析场景**：在项目 A 的分析中，若需要涉及项目 B（用户直接提问项目 B 的功能，或代码中存在跨库依赖），Agent 自动识别出项目 B，无需显式执行切换会话或切换 active_project，直接并行接入。
 
-2. 55 Core 扁平工具调用（Antigravity 等默认模式）：
-   - 跨项目直接精读源码（推荐首选，带项目前缀）：
-     read_file(path="<目标项目名称>/path/to/file")
-   - 图谱与索引健康度：
-     graph_stats() / index_health()
-   - 若需调用 get_active_project / set_active_project / query_project 等工具：
-     可先使用 tools_search(query="project") 动态激活。
+2. **双穿透合一规则（突破 bound: true 会话隔离）**：
+   当当前会话与目标项目不一致（或 `bound: true` 锁定在另一项目）时，严禁使用会受 bound 作用域过滤的常规裸搜索，必须无条件采用 Gortex 官方双穿透机制：
+   - **穿透搜索（全局生效）**：
+     - Core 55 模式：一律使用 `query_project(project="<目标项目>", query="...")` 检索符号。此为官方免切穿透接口，直接击穿 bound 隔离并返回目标项目完整符号。
+     - Facade 门面模式：一律使用 `workspace(operation="project", project="<目标项目>", query="...")`。
+   - **穿透精读与分析（全局权威）**：
+     - 所有阅读、拓扑与追踪工具（`read_file`, `get_symbol`, `get_symbol_source`, `get_editing_context`, `get_callers`, `find_usages`, `trace` 等），路径一律显式补齐目标项目前缀：
+       `read_file(path="<目标项目>/path/to/file")`
+       门面模式：`read(operation="file", target={file:"<目标项目>/path/to/file"})`
+     - Gortex 运行时对带合法项目前缀的路径拥有全局权威解析能力，不受会话 bound 约束。
+   - **无缝回切与零污染**：
+     跨项目分析完毕后，无需执行任何“切回”动作，直接在主项目中继续使用主项目路径推进，主副项目零状态震荡、零串扰。
 
-3. 21 Facade-v1 门面模式调用：
-   - 跨项目只读探测：
-     workspace(operation="project", project="<目标项目名称>", query="...")
-   - 跨项目精读：
-     read(operation="file", target={file:"<目标项目名称>/path/to/file"})
-   - 检查当前活跃项目：
-     workspace(operation="active_project")
-   - 切换活跃项目：
-     workspace_admin(operation="set_active_project", project="<目标项目名称>")
-   - 查询项目仓库列表：
-     workspace(operation="repos")
-
-4. 运转与防串扰保障：
-   - 临时穿透零污染：只读分析副项目时保持当前 sessionScope 不动，查完即走，杜绝来回切换的震荡与串味。
-   - 多仓库歧义自愈：若调用 Gortex 遇到 "path names a file in multiple tracked repos" 或跨库同名文件，必须在路径前显式补全仓库前缀如 <项目名>/path/to/file 以实现精准命中。
-   - 整体切换后生效：执行 set_active_project 成功后，后续工具直接作用于新项目；若报错 project not found，立即降级为路径前缀精准限定，严禁误判或退回原生工具。
+3. **严禁擅自退回原生工具**：
+   严禁以 `list_repos` 仅显示初始库、`search_text` 裸搜无结果或未收到切换指令为由擅自退回宿主原生工具。只要用户已 track 相关项目，必须通过上述“穿透搜索 + 前缀精读”在 Gortex 中完成任务。
 
 3.3 Facade surface 与参数容器规则
 
@@ -318,7 +307,7 @@ refactor operation（6个）：`apply_code_action`, `delete`, `fix_all`, `inline
 4. **前后内容一致拒绝**：
    - `old_string == new_string` 或 `old_source == new_source` 会被硬拒绝。
 5. **语言支持边界**：
-   - `refactor.move`（`move_symbol`）和 `refactor.inline`（`inline_symbol`）在当前版本**仅支持 Go 文件**。
+   - `refactor.move`（`move_symbol`）和 `refactor.inline`（`inline_symbol`）在当前运行时仅支持 Go 语言文件。
 6. **Secret 配置保护**：
    - 对包含密码或 token 的敏感配置（如 `.env`）请求 physical_evidence 会被拦截，除非使用 `allow_secrets: true`。
 
@@ -355,13 +344,7 @@ edit(
 - `changes` 数组中每项的必填字段缺失时会立刻报错；`move_file` 和 `delete_file` 强烈建议带 `expected_sha256`。
 
 【safe-delete 规则】
-安全删除符号默认 dry_run=true，存在代码引用时拒绝：
-gortex edit safe-delete <id>
-gortex edit safe-delete <id> --apply
-gortex edit safe-delete <id> --cascade preview
-gortex edit safe-delete <id> --cascade apply
-gortex edit safe-delete <id> --propagate
-gortex edit safe-delete <id> --force
+安全删除符号默认 dry_run=true，存在引用时拒绝；支持通过 `--apply`、`--cascade`（preview/apply）、`--propagate`、`--force` 控制级联与强制执行。
 
 5.3 修改后验证
 
@@ -429,15 +412,15 @@ response(operation="slice", arguments={start:1, end:50})
 原生 MCP 可用时第一优先级调用 MCP。CLI 仅用于用户明确要求、只读诊断、真实单测/构建、未索引目录检查，或宿主无原生 Gortex 且用户明确允许。
 
 7.1 Daemon 与服务控制
-  gortex daemon start [--detach] [--tools <preset>] [--tools-mode hide|defer]
+  gortex daemon start [--detach] [--tools <preset>]
   gortex daemon stop | restart | reload
-  gortex daemon status [--watch] [--interval 2s]
+  gortex daemon status [--watch]
   gortex daemon logs [--tail 50]
 
 7.2 仓库与工作区管理
   gortex repos [--json]
-  gortex repos families [--family <family|graph|prefix|path>]
-  gortex repos reconcile [family|prefix|path]
+  gortex repos families [--family <prefix>]
+  gortex repos reconcile [prefix]
   gortex track <path> [--wait] [--as-worktree] [--name <prefix>]
   gortex untrack <path> [--confirm]
   gortex workspace list [--json]
@@ -454,23 +437,22 @@ response(operation="slice", arguments={start:1, end:50})
   gortex status
   gortex tools list [--format json] [--preset compact]
 
-8. Windows/Codex/Antigravity 和维护规则
+8. 宿主适配与冲突裁决
 
-Windows/Antigravity/Codex 诊断：
-
+适配诊断与环境核查：
 gortex version
 gortex doctor --days 7 --json
 gortex status
 gortex tools list --format json
 
-确认 gortex.exe PATH/绝对路径、`mcp_config.json`（或 `%USERPROFILE%\.codex/config.toml`）、MCP command/args、hooks 信任和同一组 GORTEX_DAEMON_*/XDG_* 环境变量。
+核查 Gortex 绝对路径、MCP 配置文件、MCP command/args、hooks 信任和同一组后台环境变量。
 
 冲突裁决优先级：
 1. 当前工具返回的 error、completion、view、guard、effect。
 2. 当前 capabilities / tools/list 的 schema、request_shape、fixed_arguments、available。
 3. workspace/index/repository/checkout 真实状态。
-4. 当前 Gortex 运行时源码（0.64.1）、CLI --help、gortex tools describe。
+4. 当前 Gortex 运行时源码、CLI --help、gortex tools describe。
 5. 本文。
 
-**多仓库与未索引项目自动回退规则**：
-如果用户在当前项目中进行分析，但需要涉及另一个未被 track 索引的外部项目，若该目标项目没有被 Gortex 索引或当前会话无法通过 Gortex MCP 进行处理，那么**自动回退**不使用 Gortex MCP，而是使用宿主平台原生的文件工具、命令进行处理。
+**多仓库全图谱铁律**：
+所有已 track 仓库均处于 Gortex 的统一全量知识图谱中。严禁在未经跨项目穿透检索的情况下擅自断定“仓库未索引”并退回宿主原生工具。只有在 `query_project` 与带前缀路径均明确证实仓库未被守护进程 track，且用户明确要求本地文件检查时，方可使用本地原生命令或文件工具。

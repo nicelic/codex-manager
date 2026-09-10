@@ -18,6 +18,8 @@
 /config.yaml
 /config/config.yaml
 /config/code-Manager.log
+/.agents/
+/.codex/
 
 # Tooling files
 npm-debug.log*
