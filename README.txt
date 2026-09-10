@@ -2662,14 +2662,14 @@ git push origin v0.1.1
 
 ### 8. 后续版本流程
 
-以后发布 `v0.1.8` 等版本时，严格按以下顺序执行：
+以后发布 `v0.1.9` 等版本时，严格按以下顺序执行：
 
-1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.8`。
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.9`。
 2. 检查隐私文件和工作区改动。
 3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
 4. 人工确认后提交并推送源码和 `vision.md`。
-5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.8` 并推送。
-6. 通过 GitHub API 创建标题同为 `v0.1.8` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
+5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.9` 并推送。
+6. 通过 GitHub API 创建标题同为 `v0.1.9` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
 7. 发布完成后核对 `vision.md` 中的版本值、标签、Release 标题和附件名称四者一致；任何一项不一致都先停止，不要擅自覆盖远端对象。
 
 ### 9. 应用内版本安装与回退
@@ -2714,4 +2714,5 @@ git push origin v0.1.1
 - v0.1.6 增强：针对 Google Antigravity 原生不支持 cwd 且子进程继承安装目录导致 Gortex 0.64.1 报告 repository not tracked 的死锁问题，由 code-Manager 在连接调度层接管启动跳板（gortex-bridge），在拉起原版 Gortex 二进制前动态探测并设置合法工作目录，实现 Antigravity 与原版 Gortex 0.64.1 的无缝兼容；严格解耦 Cursor 平台并维持其原生直连，全面保障 7 大平台的独立性与单测验证；同步校准 Gortex 提示词，明确安装目录报错防降级规则与 55 Core 工具使用规范。
 - v0.1.7 增强：校准 Gortex 提示词规范，确立多项目自适应与动态感知机制（核心合一规范），规范自动目标对齐与穿透搜索/精读规则，明确多仓库全图谱铁律，严禁未经穿透检索擅自断定未索引并退回原生工具；统一去除提示词 UTF-8 BOM 确保标准编码。
 - v0.1.8 增强：提示词适配 v0.64.2 源码（深入对齐 Gortex 0.64.2 运行时规范，全面完善 recall/remember 记忆系统、session 5大订阅通道与协同 Agent 状态机、review/pr/response 高阶工具契约，确立通用响应塑形 output 规范与多级冲突裁决优先级）；提示词适配桌面客户端自动切换 track 项目与多项目自适应穿透机制；强化多仓库全图谱最终铁律。
+- v0.1.9 增强：gortex 提示词微调（精炼修改/重构契约与标准化模板，明确 dry_run 与 physical_evidence 互斥规则及语法门禁；精简 overlay、recall/remember 记忆系统、session 事件通道与 review/pr/response 操作指引）。
 

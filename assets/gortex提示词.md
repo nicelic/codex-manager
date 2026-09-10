@@ -6,120 +6,130 @@ Gortex 使用规范
 
 Gortex 是对其 track 仓库进行代码定位、源码阅读、关系分析、数据流追踪、影响评估、编辑、重构、验证、审查、项目管理和持久化记忆的权威工具。
 
-- **优先原生 MCP 句柄与 Antigravity 宿主约束**：凡已 track 仓库，100% 优先通过 Gortex 原生 MCP 句柄执行。**严禁**因惰性调用的包装摩擦或单次未命中退回 Antigravity 原生 `find_by_name`、`grep_search`、`view_file`、PowerShell 或 shell。严禁擅自调用 CLI 或启停/重启 daemon；若 MCP 通道不可达，直接报告 Gortex MCP integration failure 并停止操作。
-- **0.64.2 全局技能只读豁免**：`read_file`（或 `read.file`）默认受仓库根目录限制，但在 0.64.2 运行时中，特别放行对全局预装技能（Curated Skills）的只读读取。Agent 可直接读取 `~/.agents/skills/*/SKILL.md`、`~/.config/opencode/skills/*/SKILL.md`、`~/.copilot/skills/*/SKILL.md`、`~/.claude/skills/*/SKILL.md`，不会触发越界拦截。
-- **严禁凭记忆捏造**：严禁发明 tool、operation、参数、字段、命令或关系。严禁伪造未返回的 symbol、关系、view、索引状态或安全结论。
-- **关键实现体完整阅读与 Token 瘦身**：摘要和搜索结果不能替代关键实现阅读；行为关键代码不要压缩 body。数据库迁移、并发/锁、权限安全、文件写入、网络调用、状态机必须读完整源码。非核心长代码巡检时，可在 `read_file`、`get_symbol_source`、`get_editing_context` 中启用 `compress_bodies: true`（函数体存根化，削减 60%~70% Token，支持 `keep="f1,f2"` 保留指定函数）。
+- **优先原生 MCP 句柄与 Antigravity 宿主约束**：凡已 track 仓库，优先通过 Gortex 原生 MCP 句柄执行，避免退回宿主原生 `find_by_name`、`grep_search`、`view_file`、PowerShell 或 shell。若 MCP 不可达，报告 Gortex MCP integration failure。
+- **0.64.2 全局技能只读豁免**：`read_file` 放行全局技能只读（`~/.agents/skills/*/SKILL.md`、`~/.config/opencode/skills/*/SKILL.md`、`~/.copilot/skills/*/SKILL.md`、`~/.claude/skills/*/SKILL.md`）。
+- **严禁凭记忆捏造**：严禁伪造未返回的 symbol、关系、view、索引状态或安全结论。
+- **关键实现体完整阅读与 Token 瘦身**：摘要和搜索结果不能替代关键实现阅读；行为关键代码读完整源码。长代码巡检时，可在 `read_file`、`get_symbol_source`、`get_editing_context` 中使用 `compress_bodies: true`（存根化削减 60%~70% Token，支持 `keep="f1,f2"` 保留指定函数）。
 - **遵守写契约**：所有写操作遵守当前 schema、effect、fixed_arguments、guard、view、overlay 和 partial failure 结果。
 
 1.1 协议名与双模感知（Core 扁平离散 vs Facade-v1 门面）
 
-根据 MCP 连接预设不同，Gortex 暴露给当前会话的工具形态存在两种模式，**必须以当前 session inventory 为准自适应路由**：
-1. **Core 扁平离散工具模式（Antigravity 默认预设）**：当前会话直接暴露 `read_file`, `get_symbol_source`, `get_callers`, `search_symbols`, `edit_file`, `batch_edit`, `query_project`, `distill_session` 等离散工具。参数扁平传入，严格遵守入参 schema（详见第 3 节对照表）。
-2. **Facade-v1 紧凑门面模式（21 个顶级工具）**：当前会话暴露 `read`, `explore`, `search`, `relations`, `trace`, `edit`, `change`, `refactor`, `workspace` 等 21 个门面。严格使用门面语法并遵守 `operation` 与 `target` 单一选择器规范。
+根据 MCP 连接预设不同，Gortex 暴露两种工具形态，以当前 session inventory 自适应路由：
+1. **Core 扁平离散工具模式（Antigravity 默认预设）**：直接暴露 `explore`, `smart_context`, `get_repo_outline`, `read_file`, `get_symbol_source`, `get_callers`, `search_symbols`, `search_text`, `edit_file`, `batch_edit`, `query_project` 等工具。参数扁平传入。
+   - **热核心集（Hot Eager Tools）**：常用基础工具开局立即可见可用。
+   - **延迟目录（Deferred Catalog）**：部分冷工具（如 `search_ast`, `winnow_symbols` 等）托管于冷目录，若当前环境提示工具未暴露，通过 `tools_search(query="...")` 唤醒发现，或选用热集等价工具（如用 `analyze(kind="...")`）。
+2. **Facade-v1 紧凑门面模式（21 个顶级工具）**：暴露 `read`, `explore`, `search`, `relations`, `trace`, `edit`, `change`, `refactor`, `workspace` 等门面，使用 `operation` 与 `target` 单一选择器规范。
 
-- **多项目图谱一致性铁律**：Gortex 守护进程统一维护所有已 track 仓库的全局知识图谱。严禁因 `list_repos` 仅列出当前工作区、`get_active_project` 返回其他工程或单次检索为 0 就断定目标未被索引。必须通过第 3.4 节的自适应无缝切换机制在 Gortex 内精准执行。
+- **多项目图谱一致性铁律**：Gortex 统一维护所有已 track 仓库的全局知识图谱。必须通过第 3.4 节机制在 Gortex 内精准执行。
 
-2. 任务开启与定位流转（Localize Workflow）
+2. 任务开启与探索流转（Explore & Discovery Workflow）
 
-新任务按目标选择首调用，不要把所有任务都强制使用 `explore.task`：
-- 已知具体文件且只需读取/审查：`read(operation="file", target={file:"<path>"}, options={new_user_task:true})`，或扁平模式 `read_file(path="<path>")`。
-- 需要定位文件、符号或关键证据：`explore(operation="localize", task="<完整问题>", options={new_user_task:true})`，或扁平模式 `explore(task="<完整问题>")`。
-- 需要诊断、多步实现或修复：`explore(operation="task", task="<完整任务、错误和约束>", options={new_user_task:true})`。
-- 恢复历史会话决策上下文：扁平模式 `distill_session()`（门面：`recall(operation="distill")`）；查阅既有规约：`surface_memories(task="...")`（门面：`recall(operation="surface", arguments={task:"..."})`）。
-- `new_user_task=true` 仅用于新请求第一次调用，分页、重试或后续精读严禁携带。
+- **优先使用 explore 系列工具**：
+  1. **代码定位与任务探索**：**优先使用 `explore(task="<完整问题>")`**（门面：`explore(operation="localize"|"task", task="...")`）。一键汇聚排查目标附近的符号、关键源码与调用链，内置 `completion` 状态机（`answer_ready`, `localized`, `needs_exact_read`, `needs_refinement` 等）辅助高效收敛。
+  2. **智能上下文装配**：**优先使用 `smart_context(task="<任务>")`**（门面：`explore(operation="context", task="...")`）。装配任务最小完备上下文、关联拓扑与编辑规划。支持 `fidelity="graded"` 生成分级上下文清单，支持 `token_budget` 控制上下文开销，支持 `entry_point` 指定起始符号/文件。
+  3. **架构大纲速览**：**优先使用 `get_repo_outline()`**（门面：`explore(operation="outline")`）。快速获取项目全局与核心模块骨架。
 
-可用 explore operation（9个）：`closure`, `context`, `localize`, `outline`, `plan`, `prefetch`, `suggest`, `task`, `wakeup`。
+2.1 `explore` 9 大子命令（operations）深度指南
+根据 `internal/mcp/facade_registry.go` 源码，9 个子命令精确职责与参数：
+1. **`localize`（终结性定位）**：门面 `explore(operation="localize", task="...")`；扁平模式 `explore(task="...", path="...", token_budget=1600)`。专用于找代码位置与证据，强约束 terminality 状态机。
+2. **`task`（诊断与任务分析）**：门面 `explore(operation="task", task="...")`；扁平模式 `explore(task="...")`。故障诊断与多步因果分析，持续汇聚证据链。
+3. **`context`（智能上下文装配）**：门面 `explore(operation="context", task="...")`；扁平模式 `smart_context(task="...", entry_point="...", fidelity="graded", token_budget=8000)`。装配最小完备工作集，生成编辑建议。
+4. **`outline`（工程骨架）**：门面 `explore(operation="outline")`；扁平模式 `get_repo_outline(repo="...")`。提取顶层包、模块分层大纲。
+5. **`closure`（图依赖闭包）**：门面 `explore(operation="closure")`；扁平模式 `context_closure(ids="...")`。计算符号传递依赖闭包与相关邻接点。
+6. **`plan`（变更规划推演）**：门面 `explore(operation="plan")`；扁平模式 `plan_turn(task="...")`。改动规划推演与多步实施步骤生成。
+7. **`suggest`（查询词建议）**：门面 `explore(operation="suggest")`；扁平模式 `suggest_queries(query="...")`。将模糊自然语言映射为图谱高频规范词。
+8. **`prefetch`（上下文预取）**：门面 `explore(operation="prefetch")`；扁平模式 `prefetch_context(task="...")`。后台预热邻居节点缓存。
+9. **`wakeup`（图谱唤醒）**：门面 `explore(operation="wakeup")`；扁平模式 `gortex_wakeup()`。心跳自检与重新连接图谱。
 
-2.1 localize 形状与参数限制
-门面模式 task 必须在顶层：`explore(operation="localize", task="<完整问题>", options={"new_user_task":true})`。
-- **严禁**写成 `explore(operation="localize", options={task:"..."})`（报错 `explore.localize requires task`）。
-- **严禁**在 `explore(operation="task")` 传 `localize: true`（报错 `explore.task does not accept localize=true`）。
-- 扁平模式直接调用 `explore(task="<完整问题>")`，可选传入 `path` 约束子目录、`token_budget` 控制上下文开销。
-
-2.2 completion 状态流转
-localize 返回终结状态字段：`answer_ready`（证据充足直接回答）、`localized`（定位完成展开修改/测试）、`needs_exact_read`（仅精读指定精确对象，若候选错误可用 read.file 命名跳出）、`needs_refinement`（按 allowed_symbols 缩小范围）、`needs_recovery`（有限恢复，上限2次）；以及 `refinement_in_flight`, `exact_read_in_flight`, `recovery_in_flight`。附带 `required_action`、`instruction`、`allowed_symbols`、`allowed_operations`、`exact_symbol`。completion 只约束定位收敛，不代表代码已修改或测试已通过。
+2.2 检索、阅读与图谱协同
+各工具正交协同，开发者与模型按需自由组合：
+- **`search_text(query="...", regexp=false, path="...", repo="...")`**：Trigram 索引加速的全文/正则搜索。支持快速定位特征代码、字面量、日志报错与配置。**每条命中均附带 enclosing `symbol_id` 与 `symbol_name`**，可方便提取符号直接衔接图谱工具。
+- **`search_symbols(query="...", kind="...", path="...")`**：按名称/驼峰快速查找函数、类、接口等 AST 定义。
+- **`find_files(query="...", glob="*.*")`**：按路径前缀或 Glob 通配查找工程物理文件。
+- **`get_callers` / `get_call_chain` / `find_usages` / `find_implementations`**：沿 AST 拓扑追踪上下游调用链、实现与引用点。
+- **`read_file` / `get_symbol_source`**：阅读文件或具体函数实现源码，支持按需审视多文件上下文。巡检长文件建议配合 `offset/limit` 或 `compress_bodies`。
 
 3. 双模调用对照字典与参数防错规范
 
-3.1 双模核心对照表（彻底纠正入参字段名）
+3.1 双模核心对照表（基于 Gortex 0.64.2 源码事实）
 
-在 Antigravity 默认的 Core 扁平离散模式下，各个工具开启严格属性校验（`additionalProperties: false`）。**严禁将 Facade 门面容器混入扁平调用**！特别注意：**所有符号与图谱工具（`get_symbol`, `get_symbol_source`, `get_callers`, `find_usages`, `find_implementations`, `get_dependencies`, `get_dependents`, `get_call_chain`）扁平入参属性名必须为 `id`，严禁传 `symbol`**！
+Core 扁平离散模式下严格属性校验（`additionalProperties: false`）。**符号与图谱工具扁平入参属性名为 `id`**。若遇冷目录工具，调用 `tools_search` 唤醒或选用热核心等价工具。
 
-| 功能场景 | Core 扁平工具 (Mode A) | Facade-v1 门面 (Mode B) | 防错要点 |
+| 功能场景 | Core 扁平工具 (Mode A) | Facade-v1 门面 (Mode B) | 说明 |
 | :--- | :--- | :--- | :--- |
-| **全局任务定位** | `explore(task="...")` | `explore(operation="localize"|"task", task="...")` | 顶层单任务入口 |
-| **上下文智能分析** | `smart_context(task="...")` | `explore(operation="context", task="...")` | 支持 fidelity="graded" |
-| **大纲结构** | `get_repo_outline()` | `explore(operation="outline")` | 工程全局骨架 |
-| **一站式架构快照** | `get_architecture()` | `analyze(operation="architecture")` | 语言配比/社区/入口/分层 |
-| **符号搜索** | `search_symbols(query="...", kind="...")` | `search(operation="symbols", query="...")` | 固定 assist=off |
-| **文本全文搜索** | `search_text(query="...", regexp=false)` | `search(operation="text", query="...")` | 支持正则与路径过滤 |
-| **查找文件** | `find_files(query="...", glob="*.*")` | `search(operation="files", query="...")` | 通配查找文件 |
-| **AST 语法搜索** | `search_ast(pattern="...", detector="...")` | `search(operation="ast", query="...")` | 预制 detector 反模式审计 |
-| **非代码资产搜索** | `search_artifacts(query="...", kind="...")` | `search(operation="artifacts", query="...")` | 搜 schema/api/infra/doc |
-| **多轴约束过滤** | `winnow_symbols(text_match="...", kind="...")` | `search(operation="winnow", query="...")` | 门面 query 映射 text_match |
-| **读取文件** | `read_file(path="...", offset=1, limit=100)` | `read(operation="file", target={file:"..."})` | 放行全局 skill 绝对路径 |
-| **读取非代码资产** | `get_artifact(id="..." \| path="...")` | `read(operation="artifact", target={artifact:"..."})` | 读取完整设计规范与文档 |
-| **读取符号元数据** | `get_symbol(id="<id>")` | `read(operation="source", target={symbol:"<id>"})` | 传规范 Node ID |
-| **读取符号源码** | `get_symbol_source(id="<id>", context_lines=3)` | `read(operation="source", target={symbol:"<id>"})` | 完整函数/结构体实现 |
-| **批量读取符号** | `batch_symbols(symbols=["id1", "id2"])` | `read(operation="symbols", target={symbols:[...]})` | 批量获取源码 |
-| **文件符号概览** | `get_file_summary(file="<path>")` | `read(operation="summary", target={file:"<path>"})` | 单文件摘要 |
-| **编辑前拓扑必调** | `get_editing_context(file="<path>")` | `read(operation="editing_context", target={file:"..."})`| 修改前必读依赖关系 |
-| **反向调用者** | `get_callers(id="<id>", depth=2)` | `relations(operation="callers", target={symbol:"<id>"})`| 查引用调用者 |
-| **符号引用点** | `find_usages(id="<id>", context="call")` | `relations(operation="usages", target={symbol:"<id>"})` | 支持 group_by="file" |
-| **接口实现查找** | `find_implementations(id="<id>")` | `relations(operation="implementations", target={symbol:"..."})` | 查接口实现 |
-| **前向依赖** | `get_dependencies(id="<id>")` | `relations(operation="dependencies", target={symbol:"<id>"})` | 依赖项列表 |
-| **反向被依赖** | `get_dependents(id="<id>")` | `relations(operation="dependents", target={symbol:"<id>"})` | 评估爆炸半径 |
-| **深度调用链** | `get_call_chain(id="<id>", depth=4)` | `trace(operation="call_chain", target={symbol:"<id>"})` | 递归调用路径 |
-| **修改文件(预览)** | `edit_file(path="...", old_string="...", new_string="...", dry_run=true)` | `edit(operation="file", target={file:"..."}, dry_run=true)` | dry_run=true 禁带凭证 |
-| **修改文件(写入)** | `edit_file(path="...", old_string="...", new_string="...", dry_run=false)`| `edit(operation="file", target={file:"..."}, dry_run=false)`| 支持 base_sha 校验 |
-| **修改符号(预览)** | `edit_symbol(id="...", old_source="...", new_source="...", dry_run=true)` | `edit(operation="symbol", target={symbol:"..."}, dry_run=true)` | 精确修改 AST 节点 |
-| **修改符号(写入)** | `edit_symbol(id="...", old_source="...", new_source="...", dry_run=false)`| `edit(operation="symbol", target={symbol:"..."}, dry_run=false)`| 支持 base_sha 校验 |
-| **写入全文件** | `write_file(path="...", content="...")` | `edit(operation="write", target={file:"..."}, content="...")` | 全量覆盖写入 |
-| **批量事务编辑** | `batch_edit(edits=[...], dry_run=true)` | `edit(operation="batch", changes=[...], dry_run=true)` | 扁平入参名为 edits |
-| **安全重命名** | `rename_symbol(id="...", new_name="...", dry_run=true)` | `refactor(operation="rename", target={symbol:"..."}, dry_run=true)`| 全图引用联动重构 |
-| **安全删除符号** | `safe_delete_symbol(id="...", dry_run=true)` | `refactor(operation="delete", target={symbol:"..."}, dry_run=true)`| 支持 propagate=true |
-| **守护规则检查** | `check_guards(ids="id1,id2")` | `change(operation="guards", target={symbols:[...]})` | 逗号分隔 ids 字符串 |
-| **单测波及定位** | `get_test_targets(ids="id1,id2")` | `change(operation="tests", target={symbols:[...]})` | 逗号分隔 ids 字符串 |
-| **签名契约校验** | `verify_change(changes='[{"symbol_id":"...","new_signature":"..."}]')` | `change(operation="verify", source={changes:[...]})` | changes 数组/字符串 |
-| **变更契约评估** | `change_contract(workspace_edit="..." \| diff="...")` | `change(operation="contract", source={...})` | 预测风险与停止条件 |
-| **LSP 编辑模拟** | `preview_edit(workspace_edit="...")` | `change(operation="preview", source={workspace_edit:"..."})` | 专用于 WorkspaceEdit |
-| **修改状态对账** | `mutation_status(receipt="..." \| mutation_id="...")` | `change(operation="receipt")` | 超时后核实真实落盘状态 |
-| **链式编辑模拟** | `simulate_chain(steps="[...]", keep=false)` | `change(operation="simulate")` | 变更链路沙箱模拟 |
-| **检测未提交改动**| `detect_changes()` | `change(operation="detect")` | 工作区脏变动检测 |
-| **Diff 上下文** | `diff_context(scope="unstaged")` | `review(operation="diff_context", source={scope:"unstaged"})`| review 域变更上下文 |
-| **代码综合审查** | `review(scope="unstaged")` | `review(operation="run", source={scope:"unstaged"})` | 图增强代码审查 |
-| **存储架构记忆** | `store_memory(kind="invariant", title="...", body="...")` | `remember(operation="memory", arguments={...})` | 持久化规约记忆 |
-| **添加代码笔记** | `save_note(file="...", body="...", tags=[...])` | `remember(operation="note", arguments={...})` | 局部决策笔记 |
-| **召回规约记忆** | `surface_memories(task="...")` | `recall(operation="surface", arguments={task:"..."})` | 召回任务相关记忆 |
-| **提炼会话摘要** | `distill_session()` | `recall(operation="distill")` | 恢复历史决策与摘要 |
-| **按文件查笔记** | `query_notes(file="..." \| symbol_id="...")` | `recall(operation="notes", arguments={...})` | 查看符号/文件决策历史 |
-| **项目免切穿透查询**| `query_project(project="...", query="...")` | `workspace(operation="project", project="...", query="...")` | 官方跨库穿透检索 |
-| **切换活跃项目** | `set_active_project(project="...")` | `workspace_admin(operation="set_active_project", arguments={...})`| 动态热切换主项目 |
-| **当前活跃工程** | `get_active_project()` | `workspace(operation="active_project")` | 获取 bound 与活跃工程 |
-| **已索引仓库列表**| `list_repos()` | `workspace(operation="repos")` | 查看已 track 仓库 |
-| **工作区元数据** | `workspace_info()` | `workspace(operation="info")` | 工作区路径与图谱全景 |
-| **知识图谱统计** | `graph_stats()` | `workspace(operation="graph")` | 节点、边与容量统计 |
-| **索引健康检查** | `index_health()` | `workspace(operation="index")` | 检查索引与守护进程健康度 |
+| **全局任务定位** | `explore(task="...")` | `explore(operation="localize"\|"task", task="...")` | [热核心] 优先使用，单任务入口 |
+| **智能上下文装配** | `smart_context(task="...")` | `explore(operation="context", task="...")` | [热核心] 优先使用，装配上下文与编辑计划 |
+| **工程骨架大纲** | `get_repo_outline()` | `explore(operation="outline")` | [热核心] 优先使用，模块架构大纲 |
+| **架构统一分析** | `analyze(kind="architecture")` | `analyze(operation="architecture")` | [热核心] 系统分层与架构全景 |
+| **符号精确搜索** | `search_symbols(query="...", kind="...")` | `search(operation="symbols", query="...")` | [热核心] 固定 assist=off |
+| **文本全文搜索** | `search_text(query="...", regexp=false)` | `search(operation="text", query="...")` | [热核心] Trigram加速，命中带symbol_id |
+| **查找文件** | `find_files(query="...", glob="*.*")` | `search(operation="files", query="...")` | [热核心] 文件通配查找 |
+| **AST 语法反模式** | `analyze(kind="sast"\|"hygiene")` | `search(operation="ast", query="...")` | [热核心] 静态安全与规范审计 |
+| **多轴约束过滤** | `winnow_symbols(text_match="...")` | `search(operation="winnow", query="...")` | [冷目录] 结合BM25与图属性精确过滤 |
+| **读取非代码资产** | `get_artifact(id="..."\|path="...")` | `read(operation="artifact", target={artifact:"..."})` | [冷目录] 读取设计规范/文档 |
+| **读取文件** | `read_file(path="...", offset=1, limit=100)` | `read(operation="file", target={file:"..."})` | [热核心] 支持 offset/limit/compress_bodies |
+| **读取符号元数据/源码**| `get_symbol(id="<id>")` / `get_symbol_source(id="<id>")` | `read(operation="source", target={symbol:"<id>"})` | [热核心] 传规范 Node ID，读取定义/源码 |
+| **批量读取符号源码**| `batch_symbols(symbols=["id1","id2"])` | `read(operation="symbols", target={symbols:[...]})` | [冷目录] 批量获取源码 |
+| **单文件符号概览** | `get_file_summary(file="<path>")` | `read(operation="summary", target={file:"<path>"})` | [热核心] 文件符号摘要 |
+| **编辑前拓扑分析** | `get_editing_context(file="<path>")` | `read(operation="editing_context", target={file:"..."})`| [热核心] 修改前获取依赖拓扑 |
+| **反向调用者** | `get_callers(id="<id>", depth=2)` | `relations(operation="callers", target={symbol:"<id>"})`| [热核心] 查引用调用者 |
+| **符号引用点** | `find_usages(id="<id>", context="call")` | `relations(operation="usages", target={symbol:"<id>"})` | [热核心] 语法级引用定位 |
+| **接口实现查找** | `find_implementations(id="<id>")` | `relations(operation="implementations", target={symbol:"..."})` | [热核心] 查找接口实现 |
+| **类/接口继承层次** | `get_class_hierarchy(id="<id>")` | `relations(operation="hierarchy", target={symbol:"<id>"})` | [冷目录] 继承体系展开 |
+| **方法重写查找** | `find_overrides(id="<id>")` | `relations(operation="overrides", target={symbol:"<id>"})` | [热核心] 查虚函数/方法重写 |
+| **声明跳转** | `find_declaration(id="<id>")` | `relations(operation="declaration", target={symbol:"<id>"})` | [冷目录] 引用点定位声明 |
+| **前向/反向依赖** | `get_dependencies(id="<id>")` / `get_dependents(id="<id>")` | `relations(operation="dependencies"\|"dependents", target={symbol:"<id>"})` | [热核心] 依赖拓扑/评估爆炸半径 |
+| **深度调用链路** | `get_call_chain(id="<id>", depth=4)` | `trace(operation="call_chain", target={symbol:"<id>"})` | [热核心] 递归调用路径追踪 |
+| **控制流分析** | `get_cfg(id="<id>")` | `trace(operation="cfg", target={symbol:"<id>"})` | [冷目录] 控制流图分析 |
+| **节点最短路径** | `trace_path(target="...", to="...")` | `trace(operation="path", target={...}, to={...})` | [冷目录] 拓扑最短关联路径 |
+| **修改文件** | `edit_file(path="...", old_string="...", new_string="...", dry_run=true\|false)` | `edit(operation="file", target={file:"..."}, dry_run=true\|false)` | [热核心] 预览 dry_run=true 禁带凭据 |
+| **精确修改符号** | `edit_symbol(id="...", old_source="...", new_source="...", dry_run=true\|false)` | `edit(operation="symbol", target={symbol:"..."}, dry_run=true\|false)` | [热核心] 精确修改 AST 节点 |
+| **覆盖写入文件** | `write_file(path="...", content="...")` | `edit(operation="write", target={file:"..."}, content="...")` | [热核心] 全量覆盖写入 |
+| **事务型批量修改** | `batch_edit(edits=[...], dry_run=true)` | `edit(operation="batch", changes=[...], dry_run=true)` | [热核心] 扁平入参名为 edits |
+| **符号安全重命名** | `rename_symbol(id="...", new_name="...", dry_run=true)` | `refactor(operation="rename", target={symbol:"..."}, dry_run=true)`| [热核心] 全图引用联动重构 |
+| **安全删除符号** | `safe_delete_symbol(id="...", dry_run=true)` | `refactor(operation="delete", target={symbol:"<id>"}, dry_run=true)`| [冷目录] 亦可通过 analyze(impact) 辅助 |
+| **符号物理移动** | `move_symbol(id="...", destination="...", dry_run=true)` | `refactor(operation="move", target={symbol:"..."}, dry_run=true)` | [热核心] 跨文件移动符号(Go) |
+| **内联符号** | `inline_symbol(id="...", dry_run=true)` | `refactor(operation="inline", target={symbol:"..."}, dry_run=true)` | [热核心] 内联展开符号(Go) |
+| **守护规则检查** | `check_guards(ids="id1,id2")` | `change(operation="guards", target={symbols:[...]})` | [热核心] 逗号分隔 ids 字符串 |
+| **受波及单测定位** | `get_test_targets(ids="id1,id2")` | `change(operation="tests", target={symbols:[...]})` | [热核心] 逗号分隔 ids 字符串 |
+| **函数签名契约校验**| `verify_change(changes='[{"symbol_id":"...","new_signature":"..."}]')` | `change(operation="verify", source={changes:[...]})` | [热核心] 变更破坏性校验 |
+| **变更影响评估** | `explain_change_impact(id="<id>")` / `analyze(kind="impact")` | `change(operation="impact", target={symbol:"<id>"})` | [热核心] 评估爆炸半径 |
+| **变更风险契约** | `change_contract(diff="..."\|workspace_edit="...")` | `change(operation="contract", source={...})` | [冷目录] 预测风险与停止条件 |
+| **LSP 编辑模拟** | `preview_edit(workspace_edit="...")` | `change(operation="preview", source={workspace_edit:"..."})` | [热核心] 专用于 WorkspaceEdit |
+| **链式编辑沙箱模拟**| `simulate_chain(steps="[...]", keep=false)` | `change(operation="simulate")` | [热核心] 变更链路沙箱推演 |
+| **检测未提交改动** | `detect_changes()` | `change(operation="detect")` | [热核心] 工作区脏改动检测 |
+| **Diff 上下文提取**| `diff_context(scope="unstaged")` | `review(operation="diff_context", source={scope:"unstaged"})`| [热核心] review 变更上下文 |
+| **图增强代码审查** | `review(scope="unstaged")` | `review(operation="run", source={scope:"unstaged"})` | [热核心] 综合审查引擎 |
+| **持久化规约记忆** | `store_memory(kind="invariant", title="...", body="...")` | `remember(operation="memory", arguments={...})` | [热核心] 记录跨会话不变量 |
+| **保存代码决策笔记**| `save_note(file="...", body="...", tags=[...])` | `remember(operation="note", arguments={...})` | [热核心] 局部决策标记 |
+| **召回规约记忆** | `surface_memories(task="...")` | `recall(operation="surface", arguments={task:"..."})` | [热核心] 召回历史记忆 |
+| **提炼会话摘要** | `distill_session()` | `recall(operation="distill")` | [热核心] 提炼关键上下文 |
+| **跨项目穿透检索** | `query_project(project="...", query="...")` | `workspace(operation="project", project="...", query="...")` | [热核心] 跨库穿透免切检索 |
+| **热切换活跃工程** | `set_active_project(project="...")` | `workspace_admin(operation="set_active_project", arguments={...})`| [热核心] 动态重定向主工程 |
+| **当前活跃工程** | `get_active_project()` | `workspace(operation="active_project")` | [热核心] 查询当前绑定工程 |
+| **已索引仓库列表** | `list_repos()` | `workspace(operation="repos")` | [热核心] 查询已 track 仓库 |
+| **全局图谱统计** | `graph_stats()` | `workspace(operation="graph")` | [热核心] 节点边与容量统计 |
+| **守护进程健康检查**| `index_health()` | `workspace(operation="index")` | [热核心] 索引健康度诊断 |
+| **发现延迟目录工具**| `tools_search(query="...")` | `capabilities(operation="legacy_search")` | [热核心] 动态激活冷目录工具 |
 
-3.2 参数容器与 arguments 陷阱（极其重要）
+3.2 参数容器与 arguments 规范
 
-- **冷门面**（`publish_review`, `pr`, `recall`, `remember`, `workspace`, `workspace_admin`, `overlay`, `response`）及 `session` 在 InputSchema 中显式声明了 `arguments` 属性，其操作参数必须封装在 `arguments: {...}` 中。
-- **热门面**（`explore`, `search`, `read`, `relations`, `trace`, `analyze`, `ask`, `change`, `review`, `edit`, `refactor`）未声明 arguments 属性！**严禁**在外层包裹 `arguments: {...}`，否则触发硬报错：`arguments is an unexpected top-level key ... arguments is the JSON-RPC envelope, not a parameter`。参数必须直接放顶层或对应容器（`target` / `options` / `guard` / `source` / `context`）。
+- **冷门面**（`publish_review`, `pr`, `recall`, `remember`, `workspace`, `workspace_admin`, `overlay`, `response`, `session`）声明了 `arguments` 属性，参数封装在 `arguments: {...}` 中。
+- **热门面**（`explore`, `search`, `read`, `relations`, `trace`, `analyze`, `ask`, `change`, `review`, `edit`, `refactor`）未声明 arguments 属性，**严禁**包裹外层 `arguments`，参数放顶层或对应容器（`target` / `options` / `guard` / `source` / `context`）。
 
 3.3 固定参数（fixed_arguments）全景
 
-以下参数由运行时强制固化，调用者传参也会被系统安全覆盖：
-- `search.symbols`: 固定 `assist=off`（保证本地确定性搜索）。
-- `analyze.co_change`: 固定 `refresh=false`（读取预热缓存，不启动异步 git 挖掘）。
-- `change.contract`: 固定 `ack=false`（保持只读咨询状态；持久化确认必须走 `remember.risk_ack`）。
-- `change.simulate`: 固定 `keep=false`（只读模拟，不持久化到 overlay）。
-- `edit.wiki`: 固定 `enhance=false`（禁止本地写边界私自调用大模型）。
-- `edit.apply_overlay`: 固定 `to_disk=true`（合并 overlay 并真实写入磁盘）。
-- `recall.surface`: 固定 `mark_accessed=false`（纯读模式，不污染频次访问计数器）。
-- `overlay.simulate`: 固定 `keep=true`（模拟并持久化为 overlay 虚拟图层）。
-- `overlay.merge`: 固定 `to_disk=false`（仅合并到 overlay 会话缓冲，不写磁盘）。
-- `remember.risk_ack`: 固定 `ack=true`（确认已知破坏性改动）。
+以下参数由运行时强制固化：
+- `search.symbols`: 固定 `assist=off`。
+- `analyze.co_change`: 固定 `refresh=false`。
+- `change.contract`: 固定 `ack=false`。
+- `change.simulate`: 固定 `keep=false`。
+- `edit.wiki`: 固定 `enhance=false`。
+- `edit.apply_overlay`: 固定 `to_disk=true`。
+- `recall.surface`: 固定 `mark_accessed=false`。
+- `overlay.simulate`: 固定 `keep=true`。
+- `overlay.merge`: 固定 `to_disk=false`。
+- `remember.risk_ack`: 固定 `ack=true`。
 - `workspace_admin.{blame,coverage,sql_rebuild,temporal_verify}`: 固定 `kind=<name>`。
 
 3.4 多项目自适应与无感无缝切换机制（核心合一规范）
@@ -154,103 +164,73 @@ localize 返回终结状态字段：`answer_ready`（证据充足直接回答）
 
 4. 检索、阅读与拓扑分析
 
-4.1 search 7 大操作与高级约束过滤
+4.1 search 7 大操作与高级过滤
 可用操作：`artifacts`, `ast`, `completion`, `files`, `symbols`, `text`, `winnow`。
-- `symbols`, `text`, `completion` 必须提供非空 `query`，否则报错 `search.<op> requires query`。
-- `ast` 的 `query` 自动映射至 `pattern`。
-- **`winnow`（多轴结构化约束检索）**：结合 BM25 文本与图属性精确筛选候选集。支持字段：`text_match`（门面传 `query`）、`kind`（function, method, struct）、`language`、`path_prefix`、`community`、`min_fan_in`、`min_fan_out`、`min_churn`、`is_test`、`limit`（默认 20）。
+- `symbols`, `text`, `completion` 必须提供非空 `query`。
+- `ast`：通过语法模式或检测器检索（支持 `pattern`, `detector`, `language`）。
+- `artifacts`：搜设计文档、架构规范、OpenAPI 模式等非代码资产（支持 `query`, `kind`）。
+- `winnow`：多轴结构化检索，结合 BM25 文本与图属性筛选（支持 `text_match`、`kind`、`language`、`path_prefix`、`min_fan_in`、`limit` 等）。
 
-4.2 read 7 大操作与单一选择器规则
+4.2 read 7 大操作与单一选择器
 可用操作：`artifact`, `editing_context`, `file`, `history`, `source`, `summary`, `symbols`。
-- **Target 选择器单一性铁律**：`target` 必须为对象且**有且仅能有一个键**（`file`, `symbol`, `symbols`, `query`, `artifact`, `repo` 选 1 个）。传空 `{}`、多键 `{file:"...", symbol:"..."}` 均报错 `target must contain exactly one selector`；传未知键报错 `unknown target selector`；单数 `symbol` 传数组报错；批量查询必须用 `symbols: [...]`。
+- **选择器单一性**：`target` 必须为对象且有且仅能有一个键（`file`, `symbol`, `symbols`, `query`, `artifact`, `repo` 选 1 个）。
 - `read.file` 支持 `options={offset:1, limit:100}` 或 `context={start_line:1, end_line:100}`。
-- 在 `git_ref` 或 `commit` 虚拟视图下，严禁请求 `physical_evidence: true`。
+- `read.source`：精读符号实现体，可指定 `context_lines` 扩展外围行数。
 
 4.3 relations (11个) 与 trace (7个)
-- **relations（11个）**：`callers`, `cluster`, `declaration`, `dependencies`, `dependents`, `hierarchy`, `implementations`, `import_path`, `overrides`, `references`, `usages`。调用：`relations(operation="callers", target={symbol:"..."})`。
-- **trace（7个）**：`call_chain`, `cfg`, `flow`, `graph`, `path`, `taint`, `walk`。调用：`trace(operation="call_chain", target={symbol:"..."})`。`flow`, `path`, `taint` 必须同时提供源 `target` 与目标 `to`，遵守单一选择器规范。
+- **relations（11个）**：`callers`（调用者）, `cluster`（连通社区）, `declaration`（声明定位）, `dependencies`（前向依赖）, `dependents`（反向依赖）, `hierarchy`（类继承树）, `implementations`（接口实现）, `import_path`（导入路径）, `overrides`（虚方法重写）, `references`（引用完整性）, `usages`（代码使用点）。
+- **trace（7个）**：`call_chain`（调用链路追踪）, `cfg`（控制流图）, `flow`（端到端数据流向）, `graph`（通用图谱查询）, `path`（节点最短路径）, `taint`（污点传播分析）, `walk`（图漫游拓扑步进）。
 
-4.4 analyze 只读统一分析与核心 Kind 全景
+4.4 analyze 只读统一分析核心 Kind 全景
 `analyze` 内置 78 种分析 kind，核心速查：
-- **架构拓扑**：`architecture`（分层与依赖边界）、`cycles`（循环依赖）、`components`/`clusters`（连通分量与聚合簇）。
-- **质量债务**：`dead_code`（死代码）、`untested`（未测符号）、`coverage_gaps`（覆盖盲区）、`hotspots`（高频热点）、`clones`（重复代码）、`churn`（修改抖动）、`todos`（待办标记）。
-- **并发与语言**：`race_writes`（多协程竞态）、`channel_ops`/`unclosed_channels`/`goroutine_spawns`（Go协程/管道泄漏）、`cgo_users`（Cgo边界调用）。
-- **安全合规**：`sast`/`hygiene`（安全隐患与代码坏味道）、`unsafe_patterns`（高危 API）、`routes`（已注册路由）。
-- **变动类强制阻断**：`blame`, `coverage`, `sql_rebuild`, `temporal_verify` 会持久化图或调外部模型，在 `analyze` 下会被硬拦截，必须通过 `workspace_admin(operation="<kind>")` 执行。
+- **拓扑结构**：`architecture`（分层依赖边界）, `cycles`（循环依赖诊断）, `would_create_cycle`（成环预测）, `components`/`clusters`（连通分量与社区发现，算法支持 leiden/louvain）, `suggest_boundaries`（模块边界重构建议）, `hotspots`（复杂度与修改热点）。
+- **质量与健康**：`dead_code`（死代码检测）, `untested`（未测符号统计）, `coverage_gaps`（未覆盖盲区）, `clones`（重复代码比对）, `churn`（代码抖动率）, `todos`（待办事项汇总）, `doc_staleness`（文档过时分析）。
+- **并发与语言**：`race_writes`（并发写竞态）, `channel_ops`/`unclosed_channels`（Go通道泄漏）, `goroutine_spawns`（协程衍生追踪）, `cgo_users`（Cgo边界审计）, `error_surface`（错误暴露面）。
+- **安全与框架**：`sast`（静态安全漏洞，支持 cwe 过滤）, `hygiene`（代码坏味道）, `unsafe_patterns`（高危 API 模式）, `routes`（已注册 HTTP/RPC 路由）, `models`（数据表实体模型）。
+- **变动管控**：`blame`, `coverage`, `sql_rebuild`, `temporal_verify` 需通过 `workspace_admin` 授权执行。
 
 5. 修改、重构与验证
 
 5.1 修改前评估：change 19 大操作
-可用操作：`api_impact`, `code_actions`, `compare_branches`, `compare_overlay`, `contract`, `detect`, `diagnostics`, `edit_plan`, `guards`, `impact`, `overlay_branches`, `overlay_state`, `pattern`, `preview`, `ranges`, `receipt`, `simulate`, `tests`, `verify`。
-- 修改前建议通过 `change(operation="impact", target={symbol:"<id>"})`（扁平模式 `explain_change_impact`）评估爆炸半径。
-- 修改函数签名或公共接口前，必须通过 `change(operation="verify", source={changes:[{symbol_id:"<id>", new_signature:"<sig>"}]})`（扁平模式 `verify_change`）校验破坏性。
-- `remember(operation="risk_ack")` 仅在存在待确认的变动符号时调用。
+可用操作：`api_impact`（公共接口影响）, `code_actions`（快速修复动作）, `compare_branches`（分支比对）, `compare_overlay`（图层比对）, `contract`（变更契约评估）, `detect`（未提交改动检测）, `diagnostics`（LSP 诊断信息）, `edit_plan`（编辑计划生成）, `guards`（防护规则检查）, `impact`（爆炸半径评估）, `overlay_branches`（图层分支列表）, `overlay_state`（图层状态列表）, `pattern`（模式建议）, `preview`（LSP 效果预览）, `ranges`（范围对应符号）, `receipt`（修改落盘回执）, `simulate`（链式沙箱模拟）, `tests`（单测目标定位）, `verify`（签名破坏性校验）。
 
-5.2 edit (10个) 与 refactor (6个) 两阶段修改铁律
-可用 edit 操作：`apply_overlay`, `batch`, `docs`, `export_graph`, `file`, `scaffold`, `skill`, `symbol`, `wiki`, `write`。
-可用 refactor 操作：`apply_code_action`, `delete`, `fix_all`, `inline`, `move`, `rename`。
+5.2 edit (10个) 与 refactor (6个) 代码修改
+可用 edit 操作：`apply_overlay`（图层写入磁盘）, `batch`（原子事务批量修改）, `docs`（文档自动生成）, `export_graph`（图谱导出）, `file`（单文件编辑）, `scaffold`（代码脚手架生成）, `skill`（技能生成生成器）, `symbol`（AST 符号源码修改）, `wiki`（项目维基生成）, `write`（全文件覆盖写入）。
+可用 refactor 操作：`apply_code_action`（应用修复动作）, `delete`（安全删除符号）, `fix_all`（全文件批量修复）, `inline`（内联符号）, `move`（移动符号）, `rename`（全图安全重命名）。
 
-【两阶段修改与参数冲突核心防线】
-1. **`dry_run: true` 与 `physical_evidence: true` 严格互斥！** 源码断言：`physical_evidence requires a real write; dry_run leaves no disk bytes to attest`。预览必须 `dry_run: true`（禁带 `physical_evidence`）；正式写入必须 `dry_run: false` 才可开启 `physical_evidence: true`。
-2. **0.64.2 语法门禁（Parse Gate）与防并发脏写**：默认开启语法校验，若改动导致新增 Tree-sitter 语法错误将被硬拦截；写入草稿片段必须显式传入 `allow_parse_errors: true`。传入 `base_sha` 可校验磁盘版本，防范并发幽灵覆盖。
-3. **`expected_occurrences` 仅用于文件编辑**：仅在 `edit_file` 生效，数量不符拒绝写入；`edit_symbol` 基于 AST 节点，不接受此字段。
-4. **前后内容相同拒绝**：`old_string == new_string` 或 `old_source == new_source` 会被硬拒绝。
-5. **语言支持边界**：`refactor.move`（`move_symbol`）和 `refactor.inline`（`inline_symbol`）目前仅支持 Go 源码。
-6. **0.64.2 edit.skill (generate_skill) 安全硬约束**：`skill_name` 必须为单路径组件（严格限制 `[a-zA-Z0-9-_.]`），严禁包含路径分隔符、`..` 或卷名；Frontmatter 标量自动转义 `\r`, `\n`, `\t`。
-
-【标准化调用代码模板】
-- **普通文本/文件修改**：
-  - 预览：`edit_file(path="<file>", old_string="<old>", new_string="<new>", dry_run=true, expected_occurrences=1)`
-    *门面：`edit(operation="file", target={file:"<file>"}, match="<old>", replacement="<new>", dry_run=true, guard={expected_occurrences:1})`*
-  - 写入：`edit_file(path="<file>", old_string="<old>", new_string="<new>", dry_run=false, physical_evidence=true)`
-    *门面：`edit(operation="file", target={file:"<file>"}, match="<old>", replacement="<new>", dry_run=false, options={physical_evidence:true})`*
-- **精准符号修改**：
-  - 预览：`edit_symbol(id="<id>", old_source="<old>", new_source="<new>", dry_run=true)`
-  - 写入：`edit_symbol(id="<id>", old_source="<old>", new_source="<new>", dry_run=false, physical_evidence=true)`
-- **事务型批量修改（原子提交）**：
-  `batch_edit(dry_run=true, edits=[{"op":"edit_file","path":"<f1>","old_string":"<o>","new_string":"<n>"},{"op":"edit_symbol","id":"<id>","old_source":"<o>","new_source":"<n>"},{"op":"move_file","source":"<s>","destination":"<d>","expected_sha256":"<sha>"},{"op":"delete_file","path":"<p>","expected_sha256":"<sha>"}])`
-  *门面：`edit(operation="batch", dry_run=true, changes=[...])`。单快照执行，任一失败整体回滚。*
-- **安全符号重命名与删除**：
-  - 重命名预览：`rename_symbol(id="<id>", new_name="<new_name>", dry_run=true)`
-  - 安全删除：`safe_delete_symbol(id="<id>", dry_run=true, propagate=true)`（门面：`refactor(operation="delete", target={symbol:"<id>"}, dry_run=true)`）
+【核心契约与模板】
+1. **`dry_run: true` 与 `physical_evidence: true` 互斥**：预览必须 `dry_run: true`（禁带 `physical_evidence`）；正式写入 `dry_run: false` 可开启 `physical_evidence: true`。
+2. **语法门禁**：默认语法校验，写入草稿片段可传 `allow_parse_errors: true`；传 `base_sha` 防并发脏写。
+3. **标准化调用模板**：
+   - 文件修改：预览 `edit_file(path="<f>", old_string="<o>", new_string="<n>", dry_run=true, expected_occurrences=1)`；写入改 `dry_run=false, physical_evidence=true`。
+   - 符号修改：预览 `edit_symbol(id="<id>", old_source="<o>", new_source="<n>", dry_run=true)`；写入改 `dry_run=false, physical_evidence=true`。
+   - 批量事务：`batch_edit(dry_run=true, edits=[{"op":"edit_file","path":"<f>","old_string":"<o>","new_string":"<n>"},{"op":"edit_symbol","id":"<id>","old_source":"<o>","new_source":"<n>"}])`。
+   - 重命名与删除：`rename_symbol(id="<id>", new_name="<name>", dry_run=true)`；`safe_delete_symbol(id="<id>", dry_run=true, propagate=true)`。
 
 5.3 修改后闭环验证
-代码修改后必须执行闭环校验链路：
-1. `detect_changes()`（门面：`change(operation="detect")`）：获取未提交变动符号集合。
-2. `get_test_targets(ids="id1,id2")`（门面：`change(operation="tests", target={symbols:[...]})`）：定位受波及单测目标列表（不代表测试已运行）。
-3. `check_guards(ids="id1,id2")`（门面：`change(operation="guards", target={symbols:[...]})`）：评估防护规则与越界依赖。
-4. **真实测试执行**：在宿主环境实际运行测试构建命令（`go test`, `npm test`, `pytest` 等），捕获真实输出并汇报。
+1. `detect_changes()`：获取变动符号集合。
+2. `get_test_targets(ids="id1,id2")`：定位受波及单测。
+3. `check_guards(ids="id1,id2")`：评估防护规则。
+4. **真实测试执行**：在宿主环境运行构建与测试命令（`go test`, `npm test` 等）。
 
 6. 状态机、隔离层与持久化记忆
 
-6.1 overlay（10个）虚拟图层控制
-操作列表：`delete`, `drop`, `drop_branch`, `fork`, `keepalive`, `merge`, `push`, `register`, `simulate`, `switch`。
-- 注册与推送：`overlay(operation="register")`；`overlay(operation="push", arguments={branch:"main"})`。
-- 内存合并与续期：`overlay(operation="merge", arguments={branch:"main"})`（固定 `to_disk=false`）；`overlay(operation="keepalive")`。
-- 图层持久化落盘：必须调用 `edit(operation="apply_overlay")`（固定 `to_disk=true`）。
+6.1 overlay（10个）虚拟图层
+操作：`register`（注册图层）, `push`（推送到分支）, `merge`（合并至会话内存，固定 to_disk=false）, `keepalive`（租期续签）, `switch`（切换图层分支）, `drop`（丢弃当前变动）, `drop_branch`（删除指定分支）, `fork`（派生新分支）, `delete`（销毁图层会话）, `simulate`（图层沙箱模拟并持久化，固定 keep=true）。
+- 落盘调用 `edit(operation="apply_overlay")`（固定 `to_disk=true`）。
 
 6.2 recall (8个) 与 remember (8个) 记忆系统
-- **recall（只读检索）**：`distill`, `memories`, `notebook_find`, `notebook_list`, `notebook_show`, `notes`, `onboarding`, `surface`。
-  - 恢复会话记忆与决策摘要：`distill_session()`（门面：`recall(operation="distill")`）。
-  - 召回架构决策记忆：`surface_memories(task="...")`（门面：`recall(operation="surface", arguments={task:"..."})`，固定 `mark_accessed=false`）。
-  - 按文件/符号查笔记：`query_notes(file="..." \| symbol_id="...")`（门面：`recall(operation="notes", arguments={file:"..."})`）。
-  - 查询跨会话持久规约：`query_memories(query="...")`（门面：`recall(operation="memories", arguments={...})`）。
-- **remember（本地持久化写入）**：`edit_memory`, `memory`, `note`, `notebook`, `notebook_used`, `rename_memory`, `risk_ack`, `suppress_finding`。
-  - 持久化关键不变量：`store_memory(kind="invariant", title="...", body="...")`（门面：`remember(operation="memory", arguments={kind:"...", title:"...", body:"..."})`）。
-  - 记录代码决策笔记：`save_note(file="...", body="...", tags=["decision"])`；确认契约风险：`remember(operation="risk_ack")`（固定 `ack=true`）。
+- **recall**：`distill_session()`（提炼会话摘要）；`surface_memories(task="...")`（召回关键规约，固定 mark_accessed=false）；`query_notes(file="..." | symbol_id="...")`（查代码笔记）；`query_memories(query="...")`（查持久规约）；`notebook_find` / `notebook_list` / `notebook_show`（笔记本检索）；`check_onboarding_performed`（新手入职导引状态）。
+- **remember**：`store_memory(kind="invariant", title="...", body="...")`（存关键架构不变量）；`save_note(file="...", body="...", tags=[...])`（记录决策笔记）；`remember(operation="risk_ack")`（确认破坏性变动，固定 ack=true）；`edit_memory` / `rename_memory`（编辑规约）；`suppress_finding`（抑制已知告警）；`notebook_save` / `notebook_used`（笔记本持久化）。
 
 6.3 session（8个）会话控制与事件订阅
-操作列表：`agents`, `cursor`, `planning_mode`, `proxy_disable`, `proxy_enable`, `subscribe`, `unsubscribe`, `workflow`。
-- 控制协同 Agent 状态机：`session(operation="agents", arguments={action:"list|register|heartbeat|lock|unlock|unregister"})`。
-- 开启/关闭规划模式：`session(operation="planning_mode", arguments={enabled:true})`。
-- 订阅后台事件通知：`session(operation="subscribe", channel="<channel>", arguments={min_severity:1})`。
-- **合法 Channel 仅限 5 个**：`daemon_health`, `diagnostics`, `graph_invalidated`, `stale_refs`, `workspace_readiness`。
+操作：`agents`（多Agent协调，action: list|register|heartbeat|lock|unlock|unregister）, `cursor`（虚拟导航游标）, `planning_mode`（规划模式开关，arguments: {enabled:true}）, `proxy_enable` / `proxy_disable`（图代理开关）, `subscribe` / `unsubscribe`（后台事件订阅，频道：`daemon_health`, `diagnostics`, `graph_invalidated`, `stale_refs`, `workspace_readiness`）, `workflow`（工作流管道调度）。
 
 6.4 review (7个), pr (6个), response (5个)
-- **review 审查**：`review(scope="unstaged")`（门面：`review(operation="run", source={scope:"unstaged"})`）；审查 diff 上下文：`diff_context(scope="unstaged")`（门面：`review(operation="diff_context", source={diff:"..."})`）。
-- **pr 审查拉取**：`pr(operation="list")`，`pr(operation="impact", arguments={pr:123})`，`pr(operation="conflicts")`。
-- **publish_review 外部发布**：`publish_review(operation="post", arguments={pr:123, body:"...", confirm_public:false})`。
-- **response 缓冲区切片**：超大响应裁剪：`response(operation="slice", arguments={start:1, end:50})`；`response(operation="grep", arguments={pattern:"error"})`；`response(operation="export_context", arguments={task:"..."})`。
+- **review**：`review(scope="unstaged")`（审查未暂存改动）；`diff_context(scope="unstaged")`（审查 diff 拓扑上下文）；`review_pack`（打包审查套件）；`critique_review`（审查批判反思）；`pr_review_context`（PR 上下文）；`suggested_review_questions`（建议审查提问）；`sibling_diff_context`（同胞分支比对）。
+- **pr**：`list_prs`（PR 列表）；`get_pr_impact`（PR 影响半径）；`conflicts_prs`（冲突分析）；`suggest_reviewers`（审查人推荐）；`pr_risk`（风险评分）；`triage_prs`（PR 分流）。
+- **publish_review**：`post_review(pr=123, body="...")`。
+- **response**：超大响应裁剪 `response(operation="slice", arguments={start:1, end:50})`；`response(operation="grep", arguments={pattern:"..."})`；`response(operation="export_context")`。
 
 7. 通用响应控制与冲突裁决
 
