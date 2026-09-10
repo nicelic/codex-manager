@@ -1588,27 +1588,37 @@ func (t *h3H2Transport) maintainSessions(ctx context.Context) {
 	toClose := make([]*upstreamSession, 0)
 	for hostPort, sessions := range t.sessions {
 		kept := sessions[:0]
-		removed := false
 		needsReplacement := false
+		hasLiveBaseline := false
 		for _, session := range sessions {
 			if !sessionAvailable(session) {
 				if session != nil {
 					toClose = append(toClose, session)
 				}
-				removed = true
 				continue
 			}
 			expired := t.sessionExpired(session, now)
 			if expired && session.activeStreams == 0 {
 				toClose = append(toClose, session)
-				removed = true
+				continue
+			}
+			if expired {
+				kept = append(kept, session)
+				needsReplacement = true
+				checks = append(checks, struct {
+					hostPort string
+					session  *upstreamSession
+				}{hostPort: hostPort, session: session})
+				continue
+			}
+			// 当已有健康的未满流基准连接时，多余的零流且无WS承载物理连接予以自动缩容
+			if hasLiveBaseline && session.activeStreams == 0 && session.activeWebSocketCarriers == 0 {
+				toClose = append(toClose, session)
 				continue
 			}
 			kept = append(kept, session)
-			if expired {
-				// Keep active streams alive while establishing a replacement before
-				// the next request needs capacity.
-				needsReplacement = true
+			if session.activeStreams < t.maxStreams {
+				hasLiveBaseline = true
 			}
 			checks = append(checks, struct {
 				hostPort string
@@ -1621,7 +1631,7 @@ func (t *h3H2Transport) maintainSessions(ctx context.Context) {
 			continue
 		}
 		t.sessions[hostPort] = kept
-		if removed || needsReplacement {
+		if needsReplacement {
 			t.startDialLocked(hostPort)
 		}
 	}
@@ -1697,7 +1707,7 @@ func (t *h3H2Transport) sessionFor(ctx context.Context, hostPort string) (*upstr
 
 func (t *h3H2Transport) acquireSessionLocked(hostPort string, allowOverLimit bool) *upstreamSession {
 	now := t.currentTime()
-	sessions := t.sessions[hostPort]
+	key, sessions := t.sessionsForHostPortLocked(hostPort)
 	kept := sessions[:0]
 	var selected *upstreamSession
 	for _, session := range sessions {
@@ -1718,14 +1728,21 @@ func (t *h3H2Transport) acquireSessionLocked(hostPort string, allowOverLimit boo
 		if expired {
 			continue
 		}
-		if (allowOverLimit || session.activeStreams < t.maxStreams) && (selected == nil || session.activeStreams < selected.activeStreams) {
-			selected = session
+		if allowOverLimit {
+			if selected == nil || session.activeStreams < selected.activeStreams {
+				selected = session
+			}
+		} else if session.activeStreams < t.maxStreams {
+			// 优先多路复用聚合：只要已有基准物理连接未满 500 流，优先在该连接上聚合，避免将流分散到备用连接
+			if selected == nil {
+				selected = session
+			}
 		}
 	}
 	if len(kept) == 0 {
-		delete(t.sessions, hostPort)
+		delete(t.sessions, key)
 	} else {
-		t.sessions[hostPort] = kept
+		t.sessions[key] = kept
 	}
 	if selected != nil {
 		selected.activeStreams++
@@ -1776,13 +1793,20 @@ func (t *h3H2Transport) retainWebSocketCarrier(session *upstreamSession) func() 
 }
 
 func (t *h3H2Transport) startDialLocked(hostPort string) *upstreamDial {
+	key, _ := t.sessionsForHostPortLocked(hostPort)
+	if key == "" {
+		key = canonicalHostPort(hostPort)
+	}
+	if dialing := t.dialing[key]; dialing != nil {
+		return dialing
+	}
 	if dialing := t.dialing[hostPort]; dialing != nil {
 		return dialing
 	}
 	dialContext, cancel := context.WithCancel(context.Background())
 	dialing := &upstreamDial{done: make(chan struct{}), cancel: cancel}
-	t.dialing[hostPort] = dialing
-	go t.raceSessions(dialContext, hostPort, dialing)
+	t.dialing[key] = dialing
+	go t.raceSessions(dialContext, key, dialing)
 	return dialing
 }
 
@@ -1910,11 +1934,15 @@ func (t *h3H2Transport) raceSessions(dialContext context.Context, hostPort strin
 
 func (t *h3H2Transport) finishDial(hostPort string, dialing *upstreamDial, session *upstreamSession, dialErr error) {
 	t.mu.Lock()
+	key, _ := t.sessionsForHostPortLocked(hostPort)
+	if key == "" {
+		key = canonicalHostPort(hostPort)
+	}
 	if !t.closed && session != nil && dialErr == nil {
 		if session.createdAt.IsZero() {
 			session.createdAt = t.currentTime()
 		}
-		t.sessions[hostPort] = append(t.sessions[hostPort], session)
+		t.sessions[key] = append(t.sessions[key], session)
 	} else if session != nil {
 		session.Close()
 		session = nil
@@ -1924,6 +1952,9 @@ func (t *h3H2Transport) finishDial(hostPort string, dialing *upstreamDial, sessi
 	}
 	if t.dialing[hostPort] == dialing {
 		delete(t.dialing, hostPort)
+	}
+	if canonical := canonicalHostPort(hostPort); canonical != hostPort && t.dialing[canonical] == dialing {
+		delete(t.dialing, canonical)
 	}
 	dialing.session = session
 	dialing.err = dialErr
@@ -1940,6 +1971,22 @@ func upstreamHostPort(hostPort string) (string, string) {
 		return strings.TrimSuffix(strings.TrimPrefix(hostPort, "["), "]"), "443"
 	}
 	return hostPort, "443"
+}
+
+func canonicalHostPort(rawHostPort string) string {
+	host, port := upstreamHostPort(rawHostPort)
+	return net.JoinHostPort(host, port)
+}
+
+func (t *h3H2Transport) sessionsForHostPortLocked(hostPort string) (string, []*upstreamSession) {
+	if sessions, ok := t.sessions[hostPort]; ok {
+		return hostPort, sessions
+	}
+	canonical := canonicalHostPort(hostPort)
+	if sessions, ok := t.sessions[canonical]; ok {
+		return canonical, sessions
+	}
+	return canonical, nil
 }
 
 func closeLosingSessions(winner *upstreamHandshakeResult, h2Results, h3Results <-chan upstreamHandshakeResult, h2Result, h3Result *upstreamHandshakeResult) {
@@ -1971,7 +2018,10 @@ func (t *h3H2Transport) removeSession(hostPort string, session *upstreamSession)
 }
 
 func (t *h3H2Transport) removeSessionLocked(hostPort string, target *upstreamSession) bool {
-	sessions := t.sessions[hostPort]
+	key, sessions := t.sessionsForHostPortLocked(hostPort)
+	if len(sessions) == 0 {
+		return false
+	}
 	for index, session := range sessions {
 		if session != target {
 			continue
@@ -1980,9 +2030,9 @@ func (t *h3H2Transport) removeSessionLocked(hostPort string, target *upstreamSes
 		sessions[len(sessions)-1] = nil
 		sessions = sessions[:len(sessions)-1]
 		if len(sessions) == 0 {
-			delete(t.sessions, hostPort)
+			delete(t.sessions, key)
 		} else {
-			t.sessions[hostPort] = sessions
+			t.sessions[key] = sessions
 		}
 		return true
 	}
@@ -2023,14 +2073,25 @@ func (t *h3H2Transport) Close() error {
 
 func (t *h3H2Transport) CloseIdleConnections() {
 	t.mu.Lock()
+	toClose := make([]*upstreamSession, 0)
 	for hostPort, sessions := range t.sessions {
 		kept := sessions[:0]
+		hasBaseline := false
 		for _, session := range sessions {
-			if sessionAvailable(session) {
-				kept = append(kept, session)
+			if !sessionAvailable(session) {
+				if session != nil {
+					toClose = append(toClose, session)
+				}
 				continue
 			}
-			go session.Close()
+			if hasBaseline && session.activeStreams == 0 && session.activeWebSocketCarriers == 0 {
+				toClose = append(toClose, session)
+				continue
+			}
+			kept = append(kept, session)
+			if session.activeStreams < t.maxStreams {
+				hasBaseline = true
+			}
 		}
 		if len(kept) == 0 {
 			delete(t.sessions, hostPort)
@@ -2039,6 +2100,9 @@ func (t *h3H2Transport) CloseIdleConnections() {
 		}
 	}
 	t.mu.Unlock()
+	for _, session := range toClose {
+		session.Close()
+	}
 	if closer, ok := t.fallback.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()
 	}

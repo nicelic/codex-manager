@@ -454,6 +454,81 @@ func TestPrewarmUpstreamWithRetryRetriesFiveTimes(t *testing.T) {
 	}
 }
 
+func TestH3H2TransportKeepsSingleConnectionUnderStreamLimit(t *testing.T) {
+	transport := newTestTransport()
+	transport.maxStreams = 500
+	transport.lookupIP = func(context.Context, string) (net.IP, error) { return net.ParseIP("203.0.113.30"), nil }
+	var dials atomic.Int32
+	transport.dialH2 = func(context.Context, string, string) (*upstreamSession, error) {
+		dials.Add(1)
+		return fakeUpstreamSession(upstreamProtocolH2, nil), nil
+	}
+	transport.dialH3 = func(context.Context, string, string) (*upstreamSession, error) {
+		return nil, errors.New("H3 unavailable")
+	}
+
+	err := transport.Prewarm(context.Background(), "https://api.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dials.Load() != 1 {
+		t.Fatalf("expected 1 dial during prewarm, got %d", dials.Load())
+	}
+
+	first, firstRelease, err := transport.sessionFor(context.Background(), "api.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstRelease()
+
+	second, secondRelease, err := transport.sessionFor(context.Background(), "api.example.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondRelease()
+
+	third, thirdRelease, err := transport.sessionFor(context.Background(), "api.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer thirdRelease()
+
+	if first != second || second != third {
+		t.Fatalf("sessions are different under stream limit: first=%p second=%p third=%p", first, second, third)
+	}
+
+	status := transport.connectionStatusSnapshot()
+	if status.h2Connections != 1 {
+		t.Fatalf("expected exactly 1 H2 connection, got %d", status.h2Connections)
+	}
+	if status.activeStreams != 3 {
+		t.Fatalf("expected 3 active streams, got %d", status.activeStreams)
+	}
+	_ = transport.Close()
+}
+
+func TestH3H2TransportPrunesRedundantIdleConnectionsOnMaintain(t *testing.T) {
+	transport := newTestTransport()
+	transport.maxStreams = 500
+	sessionActive := fakeUpstreamSession(upstreamProtocolH2, nil)
+	sessionActive.activeStreams = 2
+	sessionIdle := fakeUpstreamSession(upstreamProtocolH2, nil)
+	sessionIdle.activeStreams = 0
+
+	transport.sessions["api.example.test:443"] = []*upstreamSession{sessionActive, sessionIdle}
+	transport.maintainSessions(context.Background())
+
+	transport.mu.Lock()
+	sessions := transport.sessions["api.example.test:443"]
+	count := len(sessions)
+	transport.mu.Unlock()
+
+	if count != 1 || sessions[0] != sessionActive {
+		t.Fatalf("redundant idle session was not pruned: count=%d", count)
+	}
+	_ = transport.Close()
+}
+
 func newTestTransport() *h3H2Transport {
 	transport := newH3H2Transport()
 	transport.keepAliveInterval = time.Hour

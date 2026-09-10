@@ -1860,8 +1860,9 @@ HTTP/1.1 状态轮询；当前网页会据此显示管理通道为 `ws` 或 `htt
   启动时也会清理遗留文件。
 - 43117 代理失败、CA 缺失/无效、目标 URL 无效、上游连接失败时返回 502。
 - 直连上游时由 `h3H2Transport` 负责地址解析、并发建立 H3/H2 连接和协议选择；H2 先完成后
-  给 H3 600 ms 宽限。启动代理会先完成预热握手，随后按 500 个活动流分配或扩容物理连接；响应关闭
-  时释放流名额，20 秒保活，10 分钟待排空轮换。请求只在选定连接上发送一次；配置了 `outbound_proxy`
+  给 H3 600 ms 宽限。启动代理会先完成预热握手，未满 500 活动流时优先在基线物理连接上多路复用聚合；
+  仅在满 500 流时分配或扩容新物理连接。多余空闲物理连接在 20 秒保活维护周期自动缩容回收；响应关闭
+  时释放流名额，10 分钟待排空轮换。请求只在选定连接上发送一次；配置了 `outbound_proxy`
   时不启用直连竞速，继续使用 HTTP/SOCKS5 的 TCP Transport。
 
 12. GET /api/llmtrim/releases
@@ -2043,7 +2044,7 @@ API 转发：
 
 - gateway.health()：返回本地健康检查 JSON。
 - gateway.startProxy()：启动 HTTP `/v1/` 监听并等待上游 H2/H3 预握手。单轮失败等待 1 秒，最多尝试 5 轮；成功后启动保活任务，失败后关闭本次专用监听并返回上游不可用。
-- h3H2Transport：按上游地址维护多条 H2/H3 物理连接；每条限制 500 个活动流，响应体关闭时释放名额，达到限制时扩容，扩容失败时临时超额复用。
+- h3H2Transport：按上游地址维护 H2/H3 物理连接；未满 500 流时优先单物理连接多路复用聚合，达到限制时扩容，扩容失败时临时超额复用；响应体关闭时释放名额，20 秒保活维护时自动缩容冗余空闲连接。
 - gateway.stopProxy()：禁止新请求、停止 HTTP 监听、取消握手/维护任务并关闭全部上游 H2/H3 会话；下一次启动必定重新握手。
 - gateway.forward()：鉴权、按 llmtrim 运行状态选择显式正向代理或基线路由、等待正在进行的预热、拼接上游 URL、转发和回写响应。
 - gateway.forwardWebSocket()：鉴权后的本地 Upgrade 分流；llmtrim 使用 CONNECT/TLS/H1 Upgrade，直连仅在开关开启时优先扩展 CONNECT；
@@ -2662,14 +2663,14 @@ git push origin v0.1.1
 
 ### 8. 后续版本流程
 
-以后发布 `v0.1.9` 等版本时，严格按以下顺序执行：
+以后发布 `v0.1.10` 等版本时，严格按以下顺序执行：
 
-1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.9`。
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.10`。
 2. 检查隐私文件和工作区改动。
 3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
 4. 人工确认后提交并推送源码和 `vision.md`。
-5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.9` 并推送。
-6. 通过 GitHub API 创建标题同为 `v0.1.9` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
+5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.10` 并推送。
+6. 通过 GitHub API 创建标题同为 `v0.1.10` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
 7. 发布完成后核对 `vision.md` 中的版本值、标签、Release 标题和附件名称四者一致；任何一项不一致都先停止，不要擅自覆盖远端对象。
 
 ### 9. 应用内版本安装与回退
@@ -2715,4 +2716,5 @@ git push origin v0.1.1
 - v0.1.7 增强：校准 Gortex 提示词规范，确立多项目自适应与动态感知机制（核心合一规范），规范自动目标对齐与穿透搜索/精读规则，明确多仓库全图谱铁律，严禁未经穿透检索擅自断定未索引并退回原生工具；统一去除提示词 UTF-8 BOM 确保标准编码。
 - v0.1.8 增强：提示词适配 v0.64.2 源码（深入对齐 Gortex 0.64.2 运行时规范，全面完善 recall/remember 记忆系统、session 5大订阅通道与协同 Agent 状态机、review/pr/response 高阶工具契约，确立通用响应塑形 output 规范与多级冲突裁决优先级）；提示词适配桌面客户端自动切换 track 项目与多项目自适应穿透机制；强化多仓库全图谱最终铁律。
 - v0.1.9 增强：gortex 提示词微调（精炼修改/重构契约与标准化模板，明确 dry_run 与 physical_evidence 互斥规则及语法门禁；精简 overlay、recall/remember 记忆系统、session 事件通道与 review/pr/response 操作指引）。
+- v0.1.10 增强：gortex 提示词更新（深入对齐 Gortex 0.64.3 规范，补齐与细化 session 16 大通道、overlay/recall/remember 细化参数、统一 output 控制与多分支工作树 View 治理）；优化上游物理连接多路复用聚合与冗余空闲连接自动维护回收机制。
 
