@@ -546,7 +546,6 @@ func applicationUpdatePendingForParent(parentPID uint32) bool {
 
 const codeManagerUpdateBatTemplate = `@echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul
 
 set "TARGET=%~1"
 set "STAGED=%~2"
@@ -554,83 +553,69 @@ set "PARENT_PID=%~3"
 set "STATE_PATH=%~4"
 set "RESUME_PROXY=%~5"
 set "RELEASE_DIR=%~dp1"
-set "LOG_FILE=%RELEASE_DIR%config\code-Manager-update.log"
-set "BACKUP=%RELEASE_DIR%.code-manager-backup.exe"
+set "LOG_FILE=%~dp1config\code-Manager-update.log"
+set "BACKUP=%~dp1.code-manager-backup.exe"
 
-if not exist "%RELEASE_DIR%config" mkdir "%RELEASE_DIR%config" >nul 2>&1
+if not exist "%~dp1config" mkdir "%~dp1config" >nul 2>&1
 echo [%date% %time%] Update batch started. Target="%TARGET%" Staged="%STAGED%" ParentPID=%PARENT_PID% >> "%LOG_FILE%"
 
-:: 1. 等待主进程退出（最多 15 秒）
-if not "%PARENT_PID%"=="" if not "%PARENT_PID%"=="0" (
-    for /l %%i in (1,1,15) do (
-        tasklist /fi "PID eq %PARENT_PID%" 2>nul | findstr /i "%PARENT_PID%" >nul
-        if errorlevel 1 goto :parent_done
-        timeout /t 1 /nobreak >nul
-    )
-)
-:parent_done
-echo [%date% %time%] Parent process confirmed stopped. >> "%LOG_FILE%"
+rem 1. Wait for parent process to exit
+ping -n 3 127.0.0.1 >nul
+echo [%date% %time%] Wait finished. >> "%LOG_FILE%"
 
-:: 2. 彻底终止四大工具的所有进程
-taskkill /F /IM gortex.exe /T 2>nul
-taskkill /F /IM rtk.exe /T 2>nul
-taskkill /F /IM snip.exe /T 2>nul
-taskkill /F /IM llmtrim.exe /T 2>nul
-taskkill /F /IM llmtrim-tray.exe /T 2>nul
+rem 2. Stop all tool processes
+taskkill /F /IM gortex.exe /T >nul 2>&1
+taskkill /F /IM rtk.exe /T >nul 2>&1
+taskkill /F /IM snip.exe /T >nul 2>&1
+taskkill /F /IM llmtrim.exe /T >nul 2>&1
+taskkill /F /IM llmtrim-tray.exe /T >nul 2>&1
 
-:: 3. 彻底终止 code-Manager.exe 所有同名进程（释放文件锁）
-taskkill /F /IM code-Manager.exe /T 2>nul
-timeout /t 1 /nobreak >nul
+rem 3. Stop code-Manager.exe processes to release file locks
+taskkill /F /IM code-Manager.exe /T >nul 2>&1
+ping -n 2 127.0.0.1 >nul
+echo [%date% %time%] Tool and panel processes stopped. >> "%LOG_FILE%"
 
-:: 4. 覆盖替换程序（保留备份，循环重试最多 30 秒）
-if not exist "%TARGET%" (
-    echo [%date% %time%] Target does not exist, proceeding to copy. >> "%LOG_FILE%"
-    goto :do_copy
-)
-
-set ORIGINAL_MOVED=0
+rem 4. Backup and replace executable
 for /l %%i in (1,1,30) do (
+    if not exist "%TARGET%" goto :do_copy
     move /y "%TARGET%" "%BACKUP%" >nul 2>&1
     if not errorlevel 1 (
-        set ORIGINAL_MOVED=1
-        echo [%date% %time%] Original EXE moved to backup. >> "%LOG_FILE%"
+        echo [%date% %time%] Original moved to backup. >> "%LOG_FILE%"
         goto :do_copy
     )
-    timeout /t 1 /nobreak >nul
+    ping -n 2 127.0.0.1 >nul
 )
 
 :do_copy
 for /l %%i in (1,1,30) do (
     copy /y "%STAGED%" "%TARGET%" >nul 2>&1
     if not errorlevel 1 (
-        echo [%date% %time%] Staged EXE copied to target successfully. >> "%LOG_FILE%"
+        echo [%date% %time%] Copy succeeded. >> "%LOG_FILE%"
         goto :replace_ok
     )
-    timeout /t 1 /nobreak >nul
+    ping -n 2 127.0.0.1 >nul
 )
 
-echo [%date% %time%] ERROR: Replace failed! Restoring backup... >> "%LOG_FILE%"
-if "!ORIGINAL_MOVED!"=="1" if exist "%BACKUP%" (
-    move /y "%BACKUP%" "%TARGET%" >nul 2>&1
-)
+echo [%date% %time%] ERROR: Copy failed! Restoring backup... >> "%LOG_FILE%"
+if exist "%BACKUP%" move /y "%BACKUP%" "%TARGET%" >nul 2>&1
 goto :start_and_cleanup
 
 :replace_ok
-del /f /q "%BACKUP%" 2>nul
-del /f /q "%STAGED%" 2>nul
-if not "%STATE_PATH%"=="" del /f /q "%STATE_PATH%" 2>nul
-echo [%date% %time%] Replace succeeded and temp files cleaned. >> "%LOG_FILE%"
+del /f /q "%BACKUP%" >nul 2>&1
+del /f /q "%STAGED%" >nul 2>&1
+if not "%STATE_PATH%"=="" del /f /q "%STATE_PATH%" >nul 2>&1
+echo [%date% %time%] Cleanup completed. >> "%LOG_FILE%"
 
 :start_and_cleanup
-:: 5. 按照名称启动目标 EXE
+rem 5. Start target executable
 echo [%date% %time%] Launching new target EXE... >> "%LOG_FILE%"
 cd /d "%RELEASE_DIR%"
 start "" "%TARGET%"
 echo [%date% %time%] New target EXE started. >> "%LOG_FILE%"
 
-:: 6. 若需要恢复代理，等待服务就绪后发起调用
+rem 6. Resume proxy if needed
 if "%RESUME_PROXY%"=="1" (
-    timeout /t 3 /nobreak >nul
+    ping -n 4 127.0.0.1 >nul
     curl -s -X POST http://127.0.0.1:7780/api/proxy/start >nul 2>&1
 )
 
@@ -641,7 +626,8 @@ echo [%date% %time%] Update batch finished, self-deleting... >> "%LOG_FILE%"
 func launchCodeManagerUpdateBat(state codeManagerUpdateState, statePath string) error {
 	releaseDir := filepath.Dir(state.Executable)
 	batPath := filepath.Join(releaseDir, fmt.Sprintf(".code-manager-update-%d.bat", time.Now().UnixNano()))
-	if err := os.WriteFile(batPath, []byte(codeManagerUpdateBatTemplate), 0o700); err != nil {
+	crlfContent := strings.ReplaceAll(strings.ReplaceAll(codeManagerUpdateBatTemplate, "\r\n", "\n"), "\n", "\r\n")
+	if err := os.WriteFile(batPath, []byte(crlfContent), 0o700); err != nil {
 		return fmt.Errorf("写入更新批处理脚本失败: %w", err)
 	}
 
