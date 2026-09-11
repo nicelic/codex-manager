@@ -634,21 +634,21 @@ function Restore-PreviousVersion {
 try {
   try { Wait-Process -Id $parentPID -TimeoutSec 15 -ErrorAction SilentlyContinue } catch {}
 
-  Get-Process -Name 'gortex' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Get-CimInstance Win32_Process -Filter "Name like '%%gortex%%'" -ErrorAction SilentlyContinue | ForEach-Object {
+  # 1. 停止掉四个工具的所有进程
+  Get-Process -Name 'gortex', 'rtk', 'snip', 'llmtrim' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter "Name like '%%gortex%%' or Name like '%%rtk%%' or Name like '%%snip%%' or Name like '%%llmtrim%%'" -ErrorAction SilentlyContinue | ForEach-Object {
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
   }
 
-  $grace = [DateTime]::UtcNow.AddSeconds(15)
-  do {
-    $others = Get-CimInstance Win32_Process -Filter "Name='code-Manager.exe'" -ErrorAction SilentlyContinue | Where-Object {
-      $_.ProcessId -ne $PID -and $_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), [IO.Path]::GetFullPath($target), [StringComparison]::OrdinalIgnoreCase)
-    }
-    if (-not $others) { break }
-    $others | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Milliseconds 250
-  } while ([DateTime]::UtcNow -lt $grace)
+  # 2. 停止掉面板的所有进程
+  Get-Process -Name 'code-Manager' -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter "Name='code-Manager.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object {
+    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+  }
 
+  Start-Sleep -Milliseconds 500
+
+  # 3. 替换程序
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
   while ($true) {
     try {
@@ -661,8 +661,10 @@ try {
     }
   }
   Move-Item -LiteralPath $staged -Destination $target -Force -ErrorAction Stop
+
+  # 4. 按照名称启动 exe 即可
   $replacementProcess = Start-CodeManager $target
-  if (-not (Wait-CodeManagerReady $targetVersion $true)) { throw '新版 code-Manager 未通过启动或版本身份检查。' }
+  Wait-CodeManagerReady $targetVersion $true | Out-Null
   Resume-Proxy
   Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue

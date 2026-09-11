@@ -477,7 +477,10 @@ func (t *winTray) initInstance() error {
 	}
 	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
 
-	return t.nid.add()
+	if err := t.nid.add(); err != nil {
+		log.Errorf("Unable to add notification icon: %v", err)
+	}
+	return nil
 }
 
 func (t *winTray) showTaskbarWindow() {
