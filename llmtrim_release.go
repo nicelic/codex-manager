@@ -42,6 +42,7 @@ type githubRelease struct {
 	PublishedAt time.Time             `json:"published_at"`
 	Prerelease  bool                  `json:"prerelease"`
 	Draft       bool                  `json:"draft"`
+	Body        string                `json:"body"`
 	Assets      []llmtrimReleaseAsset `json:"assets"`
 }
 

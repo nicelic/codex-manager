@@ -1503,6 +1503,7 @@ C:\EXEXX\edit\
 |-- retry.go                           自动重试配置规范化、按流重试、请求体重放和临时文件缓存
 |-- retry_test.go                      自动重试状态码、计数、重放、取消和缓存清理聚焦测试
 |-- startup_windows.go                 code-Manager 当前用户开机启动项读写
+|-- application_update_windows.go       code-Manager 自身版本检测、GitHub Release 获取、正文/资产 SHA-256 校验与自更新替换
 |-- llmtrim_release.go                 GitHub Release 分页、下载、SHA-256 校验和 ZIP 扁平安装
 |-- llmtrim_install.go                 llmtrim setup、Windows 配置校验和安装后启动
 |-- managed_tool_installations.go      受管工具安装目录索引；发布目录移动后的旧目录发现
@@ -2673,8 +2674,14 @@ git push origin v0.1.1
 
 ### 9. 应用内版本安装与回退
 
-- 首页“版本更新”按每页 5 个 Release 加载可选版本；只有正式附件名精确为 `code-Manager.exe`、且 GitHub API 返回有效 SHA-256 digest 的版本可安装。当前版本、重新安装和选择旧版本回退都使用同一流程，不按版本号大小阻断。
-- 安装请求只提交 Release tag；服务端重新读取该 tag 的 Release、选择精确附件、下载到当前 EXE 同级临时文件、验证 SHA-256 与 PE `MZ` 标识后才允许替换。开发目录（含 `go.mod`、`main.go` 或 `frontend` 等标记）拒绝覆盖，避免把远端 EXE 写入源码工作区。
+- 首页“版本更新”重构为直观的卡片化交互：
+  1. 默认展示当前版本与实时状态徽章（“已是最新版本”、“发现新版 vX.Y.Z”或“开发源码模式”）；
+  2. 发现新版时提供高亮的主按钮“升级到 vX.Y.Z”，一键执行直观升级；
+  3. 保留“历史版本 / 回退”折叠面板，展开后支持选择特定历史版本安装或回退，满足极客与故障降级需求；
+  4. 支持复用全局配置中的 `outbound_proxy`（出站代理，支持 HTTP/SOCKS5）请求 GitHub API，解决国内网络连接 GitHub Release 超时问题；
+  5. 附件校验强化：优先比对 GitHub Release asset digest（`sha256:...`），当未提供 digest 时自动 Fallback 从 Release 正文（Body）中正则匹配 SHA-256 校验和（支持 `code-Manager.exe: <hash>`、`<hash> *code-Manager.exe` 等多种发布格式），大幅降低发版时漏填或缺失 digest 导致无法更新的风险；
+  6. 开发环境安全保护：自动识别当前 EXE 是否位于开发源码目录（含 `go.mod`、`main.go` 等标记），在前端徽章和安装确认时明确提示并阻断自覆盖，保障源码工作区安全。
+- 安装请求只提交 Release tag；服务端重新读取该 tag 的 Release、选择精确附件、下载到当前 EXE 同级临时文件、验证 SHA-256 与 PE `MZ` 标识后才允许替换。
 - 若顶部代理正在运行或连接中，更新先完整停止代理并记录恢复意图；llmtrim、RTK、snip、Gortex 不会被停止、清理、卸载或重新安装。新版管理服务确认版本后，更新 PowerShell 会按记录调用 `/api/proxy/start` 恢复顶部代理；若恢复失败，EXE 更新仍保留，页面会显示代理停止状态供手工重试。
 - 替换由隐藏 PowerShell 进程完成：它等待旧进程和退出清理助手释放 EXE 文件锁，将旧文件保留为同级备份，替换后启动新版。支持身份接口的版本必须同时通过 `/api/application/identity` 返回的 EXE 路径和版本校验；仅当历史版本缺少该接口时，才允许以进程仍存活且 `/healthz` 可用作为有限兼容判定。启动或校验失败会自动恢复备份、确认旧 EXE 可用，并恢复更新前已启动的顶部代理。更新事务标记会让旧进程的退出清理助手跳过四项工具清理。
 - 更新完成后原浏览器页面会重新连接；管理 WebSocket 状态快照会重新读取顶部代理、llmtrim、RTK、snip、Gortex 的真实版本、运行、开机启动、PATH、Hook 和 MCP 状态。回退到早于本功能的历史 EXE 时，旧页面可显示的字段与旧版本自身实现为准。

@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/proxy"
 	"golang.org/x/sys/windows"
 )
 
@@ -48,10 +49,14 @@ type codeManagerReleaseOption struct {
 }
 
 type codeManagerReleaseListResponse struct {
-	Releases []codeManagerReleaseOption `json:"releases"`
-	Page     int                        `json:"page"`
-	PerPage  int                        `json:"per_page"`
-	HasMore  bool                       `json:"has_more"`
+	Releases       []codeManagerReleaseOption `json:"releases"`
+	Page           int                        `json:"page"`
+	PerPage        int                        `json:"per_page"`
+	HasMore        bool                       `json:"has_more"`
+	CurrentVersion string                     `json:"current_version"`
+	LatestVersion  string                     `json:"latest_version"`
+	HasUpdate      bool                       `json:"has_update"`
+	IsDevMode      bool                       `json:"is_dev_mode"`
 }
 
 type codeManagerUpdateRequest struct {
@@ -72,6 +77,77 @@ type codeManagerUpdateState struct {
 	Backup        string `json:"backup"`
 	ResumeProxy   bool   `json:"resume_proxy"`
 	CreatedAt     string `json:"created_at"`
+}
+
+func compareVersions(v1, v2 string) int {
+	clean1 := strings.TrimPrefix(strings.TrimSpace(v1), "v")
+	clean2 := strings.TrimPrefix(strings.TrimSpace(v2), "v")
+	parts1 := strings.Split(clean1, ".")
+	parts2 := strings.Split(clean2, ".")
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+	for i := 0; i < maxLen; i++ {
+		var n1, n2 int
+		if i < len(parts1) {
+			n1, _ = strconv.Atoi(parts1[i])
+		}
+		if i < len(parts2) {
+			n2, _ = strconv.Atoi(parts2[i])
+		}
+		if n1 != n2 {
+			return n1 - n2
+		}
+	}
+	return 0
+}
+
+func (g *gateway) codeManagerGitHubClient(timeout time.Duration) *http.Client {
+	outbound := strings.TrimSpace(g.currentConfig().OutboundProxy)
+	if outbound == "" {
+		return newGitHubDirectClient(timeout)
+	}
+	proxyURL, err := url.Parse(outbound)
+	if err != nil || proxyURL.Host == "" {
+		return newGitHubDirectClient(timeout)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if proxyURL.Scheme == "socks5" {
+		dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, nil, proxy.Direct)
+		if err == nil {
+			transport.Proxy = nil
+			transport.Dial = dialer.Dial
+			return &http.Client{Transport: transport, Timeout: timeout}
+		}
+	} else if proxyURL.Scheme == "http" || proxyURL.Scheme == "https" {
+		transport.Proxy = http.ProxyURL(proxyURL)
+		return &http.Client{Transport: transport, Timeout: timeout}
+	}
+	return newGitHubDirectClient(timeout)
+}
+
+func (g *gateway) codeManagerGitHubJSON(ctx context.Context, requestURL string, target any) error {
+	client := g.codeManagerGitHubClient(30 * time.Second)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "code-Manager-updater")
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+		return fmt.Errorf("GitHub returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+		return fmt.Errorf("decode GitHub response: %w", err)
+	}
+	return nil
 }
 
 func (g *gateway) applicationReleases(w http.ResponseWriter, r *http.Request) {
@@ -97,18 +173,39 @@ func (g *gateway) applicationReleases(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取 code-Manager 远端版本失败: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	currentVersion, _ := embeddedApplicationVersion()
+	isDevMode := false
+	if _, _, targetErr := applicationUpdateTarget(); targetErr != nil && strings.Contains(targetErr.Error(), "开发环境文件") {
+		isDevMode = true
+	}
+	var latestVersion string
+	hasUpdate := false
+	for _, opt := range releases {
+		if opt.Available {
+			if latestVersion == "" {
+				latestVersion = opt.TagName
+			}
+			if compareVersions(opt.TagName, currentVersion) > 0 {
+				hasUpdate = true
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, codeManagerReleaseListResponse{
-		Releases: releases,
-		Page:     page,
-		PerPage:  codeManagerReleasePageSize,
-		HasMore:  len(releases) == codeManagerReleasePageSize,
+		Releases:       releases,
+		Page:           page,
+		PerPage:        codeManagerReleasePageSize,
+		HasMore:        len(releases) == codeManagerReleasePageSize,
+		CurrentVersion: currentVersion,
+		LatestVersion:  latestVersion,
+		HasUpdate:      hasUpdate,
+		IsDevMode:      isDevMode,
 	})
 }
 
 func (g *gateway) fetchApplicationReleases(ctx context.Context, page int) ([]codeManagerReleaseOption, error) {
 	requestURL := fmt.Sprintf("%s?per_page=%d&page=%d", codeManagerGitHubReleasesURL, codeManagerReleasePageSize, page)
 	var releases []githubRelease
-	if err := g.githubJSON(ctx, requestURL, &releases); err != nil {
+	if err := g.codeManagerGitHubJSON(ctx, requestURL, &releases); err != nil {
 		return nil, err
 	}
 	options := make([]codeManagerReleaseOption, 0, len(releases))
@@ -126,7 +223,7 @@ func (g *gateway) fetchApplicationReleases(ctx context.Context, page int) ([]cod
 		asset, ok := codeManagerReleaseAsset(release)
 		if !ok {
 			option.UnavailableReason = "没有 code-Manager.exe 附件"
-		} else if _, err := codeManagerAssetSHA256(asset); err != nil {
+		} else if _, err := codeManagerAssetSHA256(release, asset); err != nil {
 			option.UnavailableReason = "附件缺少有效 SHA-256 摘要"
 		} else {
 			option.Available = true
@@ -145,12 +242,17 @@ func codeManagerReleaseAsset(release githubRelease) (llmtrimReleaseAsset, bool) 
 	return llmtrimReleaseAsset{}, false
 }
 
-func codeManagerAssetSHA256(asset llmtrimReleaseAsset) (string, error) {
-	match := codeManagerAssetDigestPattern.FindStringSubmatch(strings.TrimSpace(asset.Digest))
-	if len(match) != 2 {
-		return "", errors.New("GitHub Release 附件未提供 sha256 digest")
+func codeManagerAssetSHA256(release githubRelease, asset llmtrimReleaseAsset) (string, error) {
+	if match := codeManagerAssetDigestPattern.FindStringSubmatch(strings.TrimSpace(asset.Digest)); len(match) == 2 {
+		return strings.ToLower(match[1]), nil
 	}
-	return strings.ToLower(match[1]), nil
+	if release.Body != "" {
+		re := regexp.MustCompile(`(?i)(?:sha256|sha-256)[\s:=]+([a-f0-9]{64})`)
+		if match := re.FindStringSubmatch(release.Body); len(match) == 2 {
+			return strings.ToLower(match[1]), nil
+		}
+	}
+	return "", errors.New("GitHub Release 附件未提供 sha256 digest")
 }
 
 func (g *gateway) applicationUpdate(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +297,7 @@ func (g *gateway) applicationUpdate(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var release githubRelease
 	requestURL := fmt.Sprintf("%s/tags/%s", codeManagerGitHubReleasesURL, url.PathEscape(input.TagName))
-	if err := g.githubJSON(ctx, requestURL, &release); err != nil {
+	if err := g.codeManagerGitHubJSON(ctx, requestURL, &release); err != nil {
 		http.Error(w, "读取所选 code-Manager Release 失败: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -208,7 +310,7 @@ func (g *gateway) applicationUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "所选版本没有 code-Manager.exe 附件", http.StatusBadRequest)
 		return
 	}
-	expectedSHA256, err := codeManagerAssetSHA256(asset)
+	expectedSHA256, err := codeManagerAssetSHA256(release, asset)
 	if err != nil {
 		http.Error(w, "所选附件无法验证: "+err.Error(), http.StatusBadGateway)
 		return
@@ -326,7 +428,7 @@ func (g *gateway) downloadApplicationUpdate(ctx context.Context, downloadURL, re
 	}
 	request.Header.Set("Accept", "application/octet-stream")
 	request.Header.Set("User-Agent", "code-Manager-updater")
-	response, err := newGitHubDirectClient(5 * time.Minute).Do(request)
+	response, err := g.codeManagerGitHubClient(5 * time.Minute).Do(request)
 	if err != nil {
 		return "", err
 	}

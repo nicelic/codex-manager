@@ -27,15 +27,46 @@ func TestCodeManagerReleaseAssetRequiresExactName(t *testing.T) {
 
 func TestCodeManagerAssetSHA256(t *testing.T) {
 	want := strings.Repeat("a", 64)
-	got, err := codeManagerAssetSHA256(llmtrimReleaseAsset{Digest: "sha256:" + strings.ToUpper(want)})
+	got, err := codeManagerAssetSHA256(githubRelease{}, llmtrimReleaseAsset{Digest: "sha256:" + strings.ToUpper(want)})
 	if err != nil {
 		t.Fatalf("codeManagerAssetSHA256() error = %v", err)
 	}
 	if got != want {
 		t.Fatalf("codeManagerAssetSHA256() = %q, want %q", got, want)
 	}
-	if _, err := codeManagerAssetSHA256(llmtrimReleaseAsset{Digest: "sha256:short"}); err == nil {
+	if _, err := codeManagerAssetSHA256(githubRelease{}, llmtrimReleaseAsset{Digest: "sha256:short"}); err == nil {
 		t.Fatal("codeManagerAssetSHA256() accepted an invalid digest")
+	}
+
+	releaseWithBody := githubRelease{
+		Body: fmt.Sprintf("Release notes\r\nSHA-256: %s\r\ncode-Manager.exe", strings.ToUpper(want)),
+	}
+	assetNoDigest := llmtrimReleaseAsset{Name: codeManagerExecutableName}
+	gotFromBody, err := codeManagerAssetSHA256(releaseWithBody, assetNoDigest)
+	if err != nil {
+		t.Fatalf("codeManagerAssetSHA256() fallback from body error = %v", err)
+	}
+	if gotFromBody != want {
+		t.Fatalf("codeManagerAssetSHA256() fallback = %q, want %q", gotFromBody, want)
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		v1   string
+		v2   string
+		want int
+	}{
+		{"v0.1.20", "v0.1.20", 0},
+		{"v0.1.20", "v0.1.19", 1},
+		{"v0.1.19", "v0.1.20", -1},
+		{"v0.2.0", "v0.1.99", 1},
+		{"1.0.0", "v0.9.9", 1},
+	}
+	for _, tt := range tests {
+		if got := compareVersions(tt.v1, tt.v2); got != tt.want {
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.v1, tt.v2, got, tt.want)
+		}
 	}
 }
 

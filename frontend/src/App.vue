@@ -28,6 +28,11 @@ let applicationUpdatePollTimer = 0
 
 const online = ref(false)
 const applicationVersion = ref('')
+const applicationIsDevMode = ref(false)
+const applicationUpdateChecked = ref(false)
+const applicationHasUpdate = ref(false)
+const applicationLatestVersion = ref('')
+const applicationShowHistory = ref(false)
 const applicationReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
 const selectedApplicationVersion = ref('')
 const applicationUpdateWorking = ref(false)
@@ -229,16 +234,18 @@ async function loadApplicationVersion() {
     if (!response.ok) return
     const data = await response.json()
     applicationVersion.value = typeof data.version === 'string' ? data.version.trim() : ''
+    applicationIsDevMode.value = Boolean(data.is_dev_mode)
   } catch {
     applicationVersion.value = ''
+    applicationIsDevMode.value = false
   }
 }
 
-async function loadApplicationReleases({ more = false } = {}) {
+async function loadApplicationReleases({ more = false, silent = false } = {}) {
   if (applicationReleases.loading || applicationUpdateRestarting.value) return
   const page = more ? applicationReleases.page + 1 : 1
   applicationReleases.loading = true
-  applicationUpdateNotice.value = ''
+  if (!silent) applicationUpdateNotice.value = ''
   try {
     const response = await fetch(`/api/application/releases?page=${page}`, { cache: 'no-store' })
     const responseText = await response.text()
@@ -254,6 +261,16 @@ async function loadApplicationReleases({ more = false } = {}) {
     applicationReleases.page = Number(data.page) || page
     applicationReleases.hasMore = Boolean(data.has_more)
     applicationReleases.loaded = true
+    applicationUpdateChecked.value = true
+    if (typeof data.has_update === 'boolean') {
+      applicationHasUpdate.value = data.has_update
+    }
+    if (typeof data.latest_version === 'string' && data.latest_version.trim()) {
+      applicationLatestVersion.value = data.latest_version.trim()
+    }
+    if (typeof data.is_dev_mode === 'boolean') {
+      applicationIsDevMode.value = data.is_dev_mode
+    }
     if (!applicationReleases.items.some((item) => item.tag_name === selectedApplicationVersion.value && item.available)) {
       const firstAvailable = applicationReleases.items.find((item) => item.available)
       selectedApplicationVersion.value = firstAvailable ? firstAvailable.tag_name : ''
@@ -272,8 +289,19 @@ function handleApplicationVersionChange() {
   }
 }
 
+function requestApplicationUpdateLatest(event) {
+  const target = applicationLatestVersion.value || (applicationReleases.items.find((item) => item.available)?.tag_name)
+  if (!target) return
+  selectedApplicationVersion.value = target
+  requestApplicationUpdate(event)
+}
+
 function requestApplicationUpdate(event) {
   if (applicationUpdateWorking.value || applicationUpdateRestarting.value || !selectedApplicationVersion.value || selectedApplicationVersion.value === '__load_more__') return
+  if (applicationIsDevMode.value) {
+    applicationUpdateNotice.value = '当前处于开发源码目录，已锁定更新，避免覆盖开发中的产物与源码。'
+    return
+  }
   const isCurrent = selectedApplicationVersion.value === applicationVersion.value
   openConfirmation({
     title: isCurrent ? `重新安装 ${selectedApplicationVersion.value}？` : `安装 ${selectedApplicationVersion.value}？`,
@@ -2052,17 +2080,79 @@ onBeforeUnmount(() => {
 
       <div class="info-grid">
         <div><span>HTTP/WS API 地址</span><code>http://{{ proxy.listenAddress || activeAddress }}/v1</code></div>
-        <div class="application-update-row">
-          <span>版本更新</span>
-          <div class="application-update-controls">
-            <code>当前版本 {{ applicationVersion || '读取中' }}</code>
-            <select aria-label="选择 code-Manager 远端版本" v-model="selectedApplicationVersion" :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading" @change="handleApplicationVersionChange">
-              <option value="">{{ applicationReleases.loaded ? '请选择远端版本' : '点击右侧加载版本' }}</option>
-              <option v-for="release in applicationReleases.items" :key="release.tag_name" :value="release.tag_name" :disabled="!release.available">{{ release.tag_name }}{{ release.prerelease ? '（预发布）' : '' }}{{ !release.available ? `（${release.unavailable_reason || '不可安装'}）` : '' }}</option>
-              <option v-if="applicationReleases.hasMore && applicationReleases.loaded" value="__load_more__">加载更多…</option>
-            </select>
-            <button type="button" :class="{ 'is-loading': applicationReleases.loading }" :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading" @click="loadApplicationReleases()">{{ applicationReleases.loading ? '加载中…' : (applicationReleases.loaded ? '刷新' : '加载') }}</button>
-            <button type="button" class="install-button" :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading || !selectedApplicationVersion || selectedApplicationVersion === '__load_more__'" @click="requestApplicationUpdate">{{ applicationUpdateWorking ? '安装中…' : (selectedApplicationVersion === applicationVersion ? '重新安装' : '安装') }}</button>
+        <div class="application-update-card">
+          <div class="application-update-header">
+            <div class="application-update-meta">
+              <span class="update-title">版本更新</span>
+              <span class="current-version-tag">当前 {{ applicationVersion || '读取中' }}</span>
+              <span v-if="applicationIsDevMode" class="update-badge dev">开发源码模式</span>
+              <span v-else-if="applicationUpdateChecked && applicationHasUpdate" class="update-badge has-update">
+                发现新版 {{ applicationLatestVersion }}
+              </span>
+              <span v-else-if="applicationUpdateChecked && !applicationHasUpdate" class="update-badge latest">
+                已是最新版本
+              </span>
+            </div>
+            <div class="application-update-actions">
+              <button
+                v-if="!applicationIsDevMode && applicationUpdateChecked && applicationHasUpdate"
+                type="button"
+                class="update-primary-button"
+                :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading"
+                @click="requestApplicationUpdateLatest"
+              >
+                {{ applicationUpdateWorking ? '升级中…' : `升级到 ${applicationLatestVersion}` }}
+              </button>
+              <button
+                type="button"
+                class="update-check-button"
+                :class="{ 'is-loading': applicationReleases.loading }"
+                :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading"
+                @click="loadApplicationReleases()"
+              >
+                {{ applicationReleases.loading ? '检查中…' : (applicationUpdateChecked ? '重新检查' : '检查更新') }}
+              </button>
+              <button
+                type="button"
+                class="update-toggle-history-button"
+                :disabled="applicationUpdateWorking || applicationUpdateRestarting"
+                @click="applicationShowHistory = !applicationShowHistory"
+              >
+                {{ applicationShowHistory ? '收起版本列表' : '历史版本 / 回退' }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="applicationShowHistory" class="application-history-panel">
+            <div class="application-history-controls">
+              <span class="history-label">目标版本：</span>
+              <select
+                aria-label="选择 code-Manager 远端版本"
+                v-model="selectedApplicationVersion"
+                :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading"
+                @change="handleApplicationVersionChange"
+              >
+                <option value="">{{ applicationReleases.loaded ? '请选择目标版本' : '请先点击检查更新' }}</option>
+                <option
+                  v-for="release in applicationReleases.items"
+                  :key="release.tag_name"
+                  :value="release.tag_name"
+                  :disabled="!release.available"
+                >
+                  {{ release.tag_name }}{{ release.prerelease ? '（预发布）' : '' }}{{ !release.available ? `（${release.unavailable_reason || '不可安装'}）` : '' }}
+                </option>
+                <option v-if="applicationReleases.hasMore && applicationReleases.loaded" value="__load_more__">加载更多历史版本…</option>
+              </select>
+              <button
+                type="button"
+                class="install-button"
+                :disabled="applicationIsDevMode || applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading || !selectedApplicationVersion || selectedApplicationVersion === '__load_more__'"
+                @click="requestApplicationUpdate"
+              >
+                {{ applicationUpdateWorking ? '安装中…' : (selectedApplicationVersion === applicationVersion ? '重新安装' : '安装所选') }}
+              </button>
+            </div>
+            <p v-if="applicationIsDevMode" class="dev-mode-tip">开发源码模式下禁止自升级覆盖，避免破坏开发中文件与二进制。</p>
           </div>
         </div>
         <p v-if="applicationUpdateNotice" class="notice application-update-notice">{{ applicationUpdateNotice }}</p>

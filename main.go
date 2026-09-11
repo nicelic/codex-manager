@@ -327,6 +327,7 @@ type logStatusResponse struct {
 type applicationIdentityResponse struct {
 	ExecutablePath string `json:"executable_path"`
 	Version        string `json:"version"`
+	IsDevMode      bool   `json:"is_dev_mode"`
 }
 
 type applicationExitResponse struct {
@@ -2966,7 +2967,11 @@ func (g *gateway) applicationIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "无法读取内置版本信息", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, applicationIdentityResponse{ExecutablePath: executable, Version: version})
+	isDevMode := false
+	if _, _, targetErr := applicationUpdateTarget(); targetErr != nil && strings.Contains(targetErr.Error(), "开发环境文件") {
+		isDevMode = true
+	}
+	writeJSON(w, http.StatusOK, applicationIdentityResponse{ExecutablePath: executable, Version: version, IsDevMode: isDevMode})
 }
 
 func (g *gateway) stopProxy(ctx context.Context) error {
