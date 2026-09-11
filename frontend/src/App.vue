@@ -305,7 +305,7 @@ function requestApplicationUpdate(event) {
   const isCurrent = selectedApplicationVersion.value === applicationVersion.value
   openConfirmation({
     title: isCurrent ? `重新安装 ${selectedApplicationVersion.value}？` : `安装 ${selectedApplicationVersion.value}？`,
-    description: `将下载并校验 code-Manager.exe，然后${proxy.running || proxy.state === 'connecting' ? '先停止顶部代理、完成替换后自动恢复代理' : '保持顶部代理停止'}。llmtrim、RTK、snip、Gortex 不会被停止、清理或重新安装。失败时会自动恢复当前 EXE。`,
+    description: `将在更新前自动停止顶部代理及运行中的 RTK、snip、llmtrim，并停止 Gortex daemon 且清理相关进程以释放文件锁，然后下载并安全替换 code-Manager.exe。失败时会自动恢复当前 EXE。`,
     confirmLabel: isCurrent ? '重新安装' : '开始安装',
     onConfirm: installApplicationUpdate,
     trigger: event?.currentTarget,
@@ -319,6 +319,28 @@ async function installApplicationUpdate() {
   applicationUpdateWorking.value = true
   applicationUpdateNotice.value = ''
   try {
+    if (proxy.running || proxy.state === 'connecting') {
+      applicationUpdateNotice.value = '正在停止顶部代理…'
+      await controlProxy('stop')
+    }
+    if (rtk.running || rtk.desiredRunning) {
+      applicationUpdateNotice.value = '正在停止 RTK…'
+      await controlRTK()
+    }
+    if (snip.running || snip.desiredRunning || snip.cleanupRequired) {
+      applicationUpdateNotice.value = '正在停止 snip…'
+      await controlSnip()
+    }
+    if (llmtrim.running || llmtrim.trayRunning) {
+      applicationUpdateNotice.value = '正在停止 llmtrim…'
+      await controlLLMTrim('stop')
+    }
+    if (gortex.running || gortex.anyProcessRunning) {
+      applicationUpdateNotice.value = '正在停止 Gortex daemon…'
+      await controlGortex('stop')
+    }
+
+    applicationUpdateNotice.value = '正在请求下载并准备更新…'
     const response = await fetch('/api/application/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

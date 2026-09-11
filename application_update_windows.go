@@ -356,6 +356,10 @@ func (g *gateway) applicationUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	stopGortexContext, stopGortexCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	_ = g.stopGortex(stopGortexContext)
+	stopGortexCancel()
+
 	state := codeManagerUpdateState{
 		ParentPID:     os.Getpid(),
 		TargetVersion: release.TagName,
@@ -604,15 +608,17 @@ function Restore-PreviousVersion {
       Stop-Process -Id $replacementProcess.Id -Force -ErrorAction SilentlyContinue
       $replacementProcess.WaitForExit(10000) | Out-Null
     }
-    $deadline = [DateTime]::UtcNow.AddSeconds(60)
-    while ($true) {
-      try {
-        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force -ErrorAction Stop }
-        if ($originalMoved) { Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop }
-        break
-      } catch {
-        if ([DateTime]::UtcNow -ge $deadline) { return $false }
-        Start-Sleep -Milliseconds 250
+    if ($originalMoved) {
+      $deadline = [DateTime]::UtcNow.AddSeconds(60)
+      while ($true) {
+        try {
+          if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force -ErrorAction Stop }
+          Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
+          break
+        } catch {
+          if ([DateTime]::UtcNow -ge $deadline) { return $false }
+          Start-Sleep -Milliseconds 250
+        }
       }
     }
     if (-not (Test-Path -LiteralPath $target)) { return $false }
@@ -626,7 +632,23 @@ function Restore-PreviousVersion {
 }
 
 try {
-  try { Wait-Process -Id $parentPID -ErrorAction SilentlyContinue } catch {}
+  try { Wait-Process -Id $parentPID -TimeoutSec 15 -ErrorAction SilentlyContinue } catch {}
+
+  Get-Process -Name 'gortex' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter "Name like '%%gortex%%'" -ErrorAction SilentlyContinue | ForEach-Object {
+    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+
+  $grace = [DateTime]::UtcNow.AddSeconds(15)
+  do {
+    $others = Get-CimInstance Win32_Process -Filter "Name='code-Manager.exe'" -ErrorAction SilentlyContinue | Where-Object {
+      $_.ProcessId -ne $PID -and $_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), [IO.Path]::GetFullPath($target), [StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $others) { break }
+    $others | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $grace)
+
   $deadline = [DateTime]::UtcNow.AddSeconds(60)
   while ($true) {
     try {

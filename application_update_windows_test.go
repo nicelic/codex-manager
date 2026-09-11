@@ -106,6 +106,9 @@ func TestCodeManagerUpdatePowerShellScriptRestoresVerifiedPreviousVersion(t *tes
 		"-Uri 'http://127.0.0.1:7780/healthz'",
 		"Wait-CodeManagerReady $targetVersion $true",
 		"if (Restore-PreviousVersion) {",
+		"if ($originalMoved) {",
+		"Get-Process -Name 'gortex'",
+		"Name='code-Manager.exe'",
 	} {
 		if !strings.Contains(script, fragment) {
 			t.Fatalf("update script is missing %q", fragment)
