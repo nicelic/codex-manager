@@ -240,6 +240,13 @@ func writeGortexPromptDocument(installRoot string) error {
 	if err := validateEmbeddedRTKDocument(gortexPromptFileName, gortexPromptDocument); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(installRoot, 0o755); err != nil {
+		return err
+	}
+	targetPath := filepath.Join(installRoot, gortexPromptFileName)
+	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除旧版 Gortex 提示词失败: %w", err)
+	}
 	return writeEmbeddedRTKDocument(installRoot, gortexPromptFileName, gortexPromptDocument)
 }
 

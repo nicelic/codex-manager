@@ -1517,6 +1517,15 @@ func queryCodexMCPState(executable string) (present, complete bool) {
 }
 func gortexRegisterMCP(executable string) []string {
 	warnings := []string{}
+	installRoot := gortexInstallRoot()
+	if installRoot == "" && executable != "" {
+		installRoot = filepath.Dir(filepath.Dir(executable))
+	}
+	if installRoot != "" {
+		if err := writeGortexPromptDocument(installRoot); err != nil {
+			warnings = append(warnings, "释放受管 Gortex 提示词: "+err.Error())
+		}
+	}
 	available := gortexDetectedMCPAgents()
 	if available["codex"] {
 		if _, err := updateCodexMCPConfig(executable, false); err != nil {

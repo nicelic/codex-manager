@@ -124,15 +124,14 @@ retry_status_codes: "100-199,300-399,401-407,409-499,500-503,505-523,525-599"
   Authorization: Bearer <local_api_key>。
 - upstream_websocket_enabled：默认 true。只控制 llmtrim 未运行时的直连上游 WS 承载协商：开启时允许 H2/H3
   扩展 CONNECT 或已配置 HTTP/SOCKS5 出站代理上的 HTTP/1.1 Upgrade；关闭时不添加这些上游 WS 协商头，直接使用
-  普通上游流。它不改变本地 HTTP/WS 监听能力，也不启动或停止 llmtrim daemon。页面成功保存该开关后，若代理正处于
-  “运行中”或“上游连接中”，会先停止再启动代理，关闭本程序既有的基线上游连接池并按新值重新并发预热；代理已停止或
-  上游不可用时只保存配置，等待用户下次手动启动。
+  普通上游流。它不改变本地 HTTP/WS 监听能力，也不启动或停止 llmtrim daemon。代理处于“运行中”或“上游连接中”时，
+  管理页面将此开关锁定并置灰；代理停止后方可修改，修改后点击“启动代理”将按新值重新并发预热。
 - startup_enabled：是否注册当前用户的 Windows 开机启动项。开启后，用户登录 Windows 后程序会等待
   8 秒再初始化服务；只有 llmtrim 的状态文件要求恢复运行时，才尝试恢复 llmtrim 并启动代理。
 - background_start：仅当 startup_enabled 为 true 时有效。开启后，开机启动不会自动打开浏览器管理页面；
   手动双击 EXE 仍会正常打开页面。
-- retry_enabled：自动重试总开关，默认关闭。页面成功保存该开关后，若代理正处于“运行中”或“上游连接中”，同样会先停止
-  再启动代理，使本程序的基线上游连接按新配置重建；代理已停止或上游不可用时只保存配置。
+- retry_enabled：自动重试总开关，默认关闭。代理处于“运行中”或“上游连接中”时，管理页面将此开关及其重试参数输入框
+  锁定并置灰；代理停止后方可修改，修改后点击“启动代理”将使本程序按新配置启动。
 - retry_count：同一条上游请求流中连续相同状态码的额外重试上限，范围为 0-999；`0` 或留空表示不重试。
 - retry_interval_seconds：命中状态码后的固定等待秒数，只接受非负整数；`0` 或留空时使用 500ms 最低等待。
 - retry_status_codes：可重试状态码的单值或范围列表，使用英文 `,` 分隔、英文 `-` 表示范围；保存时删除所有空白、
@@ -159,11 +158,10 @@ http://127.0.0.1:7780/v1（或 config.yaml 中的 listen_address）
 - 监听地址：保存后写入 `config\config.yaml`；点击顶部“停止代理”彻底关闭当前 HTTP 监听和全部上游连接，再点击“启动代理”即可读取新地址并重新完成握手。管理页面始终保持在 127.0.0.1:7780。
 - API Key 会在本机配置页面中明文显示，输入新的 Key 并保存即可替换。由于密钥可被本机访问
   7780 管理端口的程序读取，请勿将该页面或端口暴露到局域网/公网。
-- “上游 WS 承载”和自动重试开关切换后立即保存。保存成功后，页面先读取代理状态；仅在代理运行中或连接中时，才复用
-  现有“停止代理”“启动代理”流程串行重建本程序的基线上游连接池。两个开关在该流程期间会同时禁用；停止或启动失败时，
-  已保存的新值会保留，页面显示失败状态，仍可使用顶部“启动代理”重试。代理停止或上游不可用时只保存配置，不会主动启动。
-- 重试次数、间隔时间和状态码在输入框失焦时自动保存，没有单独保存按钮，也不会触发代理重启。无效次数、间隔或状态码
-  片段会在失焦时清除并保存为空；状态码输入会自动规范化。保存请求返回期间继续编辑时，旧响应不会覆盖未失焦的新输入。
+- 代理处于启动状态（运行中或连接中）时，“上游 WS 承载”开关、“自动重试”开关及“重试次数”、“间隔时间s”、“自动重试状态码”
+  三个输入框均处于禁用置灰状态，不可点击或输入。只有在代理停止（关闭）时才可修改；修改开关后立即保存，输入框在失焦时自动保存；
+  用户修改之后点击顶部的“启动代理”，代理将读取并使用最新保存的配置参数完成启动并预热。无效次数、间隔或状态码片段会在失焦时清除
+  并保存为空；状态码输入会自动规范化。保存请求返回期间继续编辑时，旧响应不会覆盖未失焦的新输入。
 - 页面底部的“开机启动”会创建或删除当前用户的
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\code-Manager` 启动项；“后台运行”依赖
   “开机启动”，关闭开机启动时会被自动关闭并禁用。“停止并退出”会调用与托盘退出相同的清理流程。
@@ -178,7 +176,7 @@ HTTP 409，不能绕过网页同时激活两者。
 
 - RTK 安装只下载到 EXE 同级 `RTK-AI\rtk.exe` 并写入版本标记，状态为“已安装/已停止”。点击“启动”后，
   code-Manager 才会写入用户与系统 PATH，并按实际检测到且可安全写入的平台配置 Codex 和 Claude Code 的提示词、
-  Claude Code、GitHub Copilot、Cursor 的官方 Hook。点击“停止”只删除 code-Manager 自己写入的 PATH、两份提示词
+  Claude Code、GitHub Copilot、Cursor 的官方 Hook；点击“启动”或安装时，还会自动将 EXE 内置编译的三份参考与常驻指令（`RTK-Codex-commands.md`、`RTK-Codex-agent-instructions.md`、`RTK-Claude-agent-instructions.md`）同步释放至受管 `RTK-AI` 目录（若存在旧版文件则先物理删除再重新写入，确保本地参考文件与 EXE 内置版本实时一致；注册到 Codex 与 Claude 的提示词仍直接使用 EXE 内置正文）。点击“停止”只删除 code-Manager 自己写入的 PATH、两份提示词
   标记段和三个官方 Hook；完整命令参考、旧 `RTK.md`、`@` 引用及用户的其它内容保持不变。
 - snip 安装只下载到 EXE 同级 `Snip\snip.exe`，不会立即修改 PATH 或 Agent 配置。启动时只检查已存在的
   四个平台用户级目录：Codex 固定为 `%USERPROFILE%\.codex`，Claude Code 使用
@@ -2663,14 +2661,14 @@ git push origin v0.1.1
 
 ### 8. 后续版本流程
 
-以后发布 `v0.1.10` 等版本时，严格按以下顺序执行：
+以后发布 `v0.1.11` 等版本时，严格按以下顺序执行：
 
-1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.10`。
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.11`。
 2. 检查隐私文件和工作区改动。
 3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
 4. 人工确认后提交并推送源码和 `vision.md`。
-5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.10` 并推送。
-6. 通过 GitHub API 创建标题同为 `v0.1.10` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
+5. 人工确认后创建与 `vision.md` 中版本值相同的 Git 标签 `v0.1.11` 并推送。
+6. 通过 GitHub API 创建标题同为 `v0.1.11` 的 Release，并通过 Uploads API 上传仍名为 `code-Manager.exe` 的附件。
 7. 发布完成后核对 `vision.md` 中的版本值、标签、Release 标题和附件名称四者一致；任何一项不一致都先停止，不要擅自覆盖远端对象。
 
 ### 9. 应用内版本安装与回退
@@ -2688,7 +2686,7 @@ git push origin v0.1.1
 - Gortex 安装使用 GitHub Release 的 Windows x64 ZIP 和 `checksums.txt`，解压后只保留受管目录中的
   `gortex.exe`，并自动配置用户 PATH 与系统 PATH。安装不会自动启动 daemon，也不会自动注册 MCP。
 - 点击“注册 MCP”时，程序按实际检测到的 Codex、Claude Code、Cursor、GitHub Copilot CLI、OpenCode、Google Antigravity、Gemini CLI 配置写入
-  `gortex` MCP，同时将内嵌 `assets\gortex提示词.md` 的 UTF-8 正文由代码自动包裹受管标记后写入各平台工作流提示词。生命周期 Hook
+  `gortex` MCP，同时将内嵌 `assets\gortex提示词.md` 的 UTF-8 正文由代码自动包裹受管标记后写入各平台工作流提示词，并自动将该最新提示词同步释放至受管 Gortex 目录（若已存在旧版文件则先物理删除再重新写入，确保本地参考文件与 EXE 内置版本一致；注册到各平台的提示词仍统一使用 EXE 内置正文）。生命周期 Hook
   为 Codex、Claude Code、GitHub Copilot CLI、Google Antigravity 和 Gemini CLI 配置；Cursor 没有当前 Gortex 受管生命周期 Hook，因此采用每个 track 项目下的
   `.cursor\rules\gortex-workflow.mdc` 项目规则；OpenCode 使用 Gortex 官方插件桥并自动写入 `plugin\gortex.js`。Antigravity 与 Gemini CLI 共用 `%USERPROFILE%\.gemini\settings.json`，使用 `SessionStart` 和 `AfterTool` 两个官方事件，重复注册只保留一组受管处理器。提示词源文件不含受管标记和版本号，
   可以只维护正文；归属账本记录本程序写入的文件，“移除 MCP”只清理这些归属内容，不删除其他 MCP。
@@ -2717,4 +2715,5 @@ git push origin v0.1.1
 - v0.1.8 增强：提示词适配 v0.64.2 源码（深入对齐 Gortex 0.64.2 运行时规范，全面完善 recall/remember 记忆系统、session 5大订阅通道与协同 Agent 状态机、review/pr/response 高阶工具契约，确立通用响应塑形 output 规范与多级冲突裁决优先级）；提示词适配桌面客户端自动切换 track 项目与多项目自适应穿透机制；强化多仓库全图谱最终铁律。
 - v0.1.9 增强：gortex 提示词微调（精炼修改/重构契约与标准化模板，明确 dry_run 与 physical_evidence 互斥规则及语法门禁；精简 overlay、recall/remember 记忆系统、session 事件通道与 review/pr/response 操作指引）。
 - v0.1.10 增强：gortex 提示词更新（深入对齐 Gortex 0.64.3 规范，补齐与细化 session 16 大通道、overlay/recall/remember 细化参数、统一 output 控制与多分支工作树 View 治理）；优化上游物理连接多路复用聚合与冗余空闲连接自动维护回收机制。
+- v0.1.11 增强：Gortex 与 RTK 提示词联动自动同步（Gortex 点击“注册 MCP”、RTK 点击“启动”时，分别自动检测受管 Gortex 与 RTK-AI 目录下的提示词参考文件，若存在旧版物理文件则先彻底删除再写入 EXE 内置最新版本，确保本地文档与 EXE 实时同步；各平台软件注册仍坚决使用 EXE 内置编译正文，不受磁盘物理文件干扰；统一清理提示词 UTF-8 BOM，通过高标准规范校验）。
 

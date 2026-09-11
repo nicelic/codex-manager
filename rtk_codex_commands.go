@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -26,7 +28,13 @@ var rtkCodexAgentInstructions []byte
 var rtkClaudeAgentInstructions []byte
 
 func writeRTKCodexCommands(installDir string) error {
+	if strings.TrimSpace(installDir) == "" {
+		return errors.New("RTK 安装目录不能为空")
+	}
 	if err := validateRTKCodexDocuments(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return err
 	}
 	for _, document := range []struct {
@@ -37,6 +45,10 @@ func writeRTKCodexCommands(installDir string) error {
 		{fileName: rtkCodexAgentInstructionsFileName, data: rtkCodexAgentInstructions},
 		{fileName: rtkClaudeAgentInstructionsFileName, data: rtkClaudeAgentInstructions},
 	} {
+		targetPath := filepath.Join(installDir, document.fileName)
+		if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("删除旧版 %s 失败: %w", document.fileName, err)
+		}
 		if err := writeEmbeddedRTKDocument(installDir, document.fileName, document.data); err != nil {
 			return fmt.Errorf("写入 %s 失败: %w", document.fileName, err)
 		}

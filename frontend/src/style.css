@@ -109,10 +109,13 @@ select:focus { border-color: #66d9ef; box-shadow: 0 0 0 3px rgba(102, 217, 239, 
 .retry-toggle { margin: 0; padding-bottom: 2px; }
 .retry-field { display: grid; gap: 8px; min-width: 0; }
 .retry-field strong { color: #dcecff; font-size: 15px; }
+.retry-field.disabled { cursor: not-allowed; }
+.retry-field.disabled strong { color: #60738b; }
 .retry-status-field { grid-column: 1 / -1; }
 input { width: 100%; min-width: 0; border: 1px solid #365775; border-radius: 8px; padding: 10px 12px; color: #eaf4ff; background: #0b1727; font: 14px Consolas, "Microsoft YaHei", monospace; outline: none; }
 input::placeholder { color: #617892; }
 input:focus { border-color: #66d9ef; box-shadow: 0 0 0 3px rgba(102, 217, 239, .12); }
+input:disabled { border-color: #243b52; color: #60738b; background: #08111c; cursor: not-allowed; opacity: .65; }
 .setting-control button { min-width: 74px; padding-inline: 16px; background: #1e4d76; }
 .setting-control button:hover:not(:disabled), .status-card button:hover:not(:disabled) { border-color: #66d9ef; background: #245b8d; }
 .notice { margin: 10px 0 0; color: #89dcb2; font-size: 13px; line-height: 1.45; }
@@ -131,6 +134,7 @@ input:focus { border-color: #66d9ef; box-shadow: 0 0 0 3px rgba(102, 217, 239, .
 .application-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #24364e; }
 .switch-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; color: #dcecff; font-size: 14px; cursor: pointer; }
 .switch-control.disabled { color: #60738b; cursor: not-allowed; }
+.switch-control.disabled strong, .switch-control.disabled small { color: #60738b; }
 .switch-control input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; pointer-events: none; }
 .switch-control i { position: relative; flex: 0 0 auto; width: 42px; height: 24px; border: 1px solid #365775; border-radius: 12px; background: #0b1727; transition: background .16s ease, border-color .16s ease, opacity .16s ease; }
 .switch-control i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #91a9c4; transition: transform .16s ease, background .16s ease; }

@@ -456,6 +456,22 @@ func TestWriteGortexPromptDocumentWritesEmbeddedDocument(t *testing.T) {
 	if string(actual) != string(gortexPromptDocument) {
 		t.Fatalf("written Gortex prompt differs from embedded document")
 	}
+
+	// 模拟已存在旧版提示词文件，验证先删除旧文件并重新释放最新版本
+	targetPath := filepath.Join(directory, gortexPromptFileName)
+	if err := os.WriteFile(targetPath, []byte("旧版过时提示词内容"), 0o644); err != nil {
+		t.Fatalf("write stale prompt file: %v", err)
+	}
+	if err := writeGortexPromptDocument(directory); err != nil {
+		t.Fatalf("writeGortexPromptDocument() with existing stale file error = %v", err)
+	}
+	overwritten, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read updated Gortex prompt: %v", err)
+	}
+	if string(overwritten) != string(gortexPromptDocument) {
+		t.Fatalf("re-written Gortex prompt differs from embedded document after replacing stale file")
+	}
 }
 
 func TestGortexCopilotHooksRemovePreservesUserEntries(t *testing.T) {

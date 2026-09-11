@@ -59,6 +59,7 @@ const proxy = reactive({
   },
 })
 const proxyNotice = ref('')
+const proxyActive = computed(() => Boolean(proxy.running || proxy.state === 'connecting' || proxy.working))
 const logViewer = reactive({ showing: false, loading: true, working: false })
 const logNotice = ref('')
 const llmtrimLogViewer = reactive({ showing: false, loading: true, working: false })
@@ -813,6 +814,12 @@ async function loadProxyStatus({ silent = false, refresh = false } = {}) {
 
 async function controlProxy(action) {
   if (proxy.working && action !== 'stop') return false
+  if (action === 'start') {
+    if (typeof document !== 'undefined' && document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur()
+    }
+    await Promise.all(Object.values(retrySaveQueue).map((p) => Promise.resolve(p).catch(() => false)))
+  }
   const operationToken = ++proxyOperationToken
   if (action === 'stop' && proxyStartController) {
     proxyStartController.abort()
@@ -1798,6 +1805,7 @@ function discardSettingEnter(key) {
 }
 
 function sanitizeRetryInput(key, event) {
+  if (proxyActive.value) return
   const value = String(event.target.value ?? '').replace(/\s+/g, '')
   if (event.target.value !== value) event.target.value = value
   retry[key] = value
@@ -1805,6 +1813,7 @@ function sanitizeRetryInput(key, event) {
 }
 
 function normalizeRetryInputForBlur(key) {
+  if (proxyActive.value) return
   const value = String(retry[key] ?? '').replace(/\s+/g, '')
   if ((key === 'count' || key === 'intervalSeconds') && value !== '' && !/^\d+$/.test(value)) {
     retry[key] = ''
@@ -1816,7 +1825,7 @@ function normalizeRetryInputForBlur(key) {
 }
 
 async function updateRetryEnabled(enabled) {
-  if (connectionSettingRestartWorking.value || retrySaving.enabled || loadingSettings.value) return
+  if (proxyActive.value || connectionSettingRestartWorking.value || retrySaving.enabled || loadingSettings.value) return
   const previous = retry.enabled
   retry.enabled = enabled
   retryEditVersion.enabled++
@@ -1835,6 +1844,7 @@ function retrySettingValue(key) {
 }
 
 function saveRetrySetting(key, endpoint) {
+  if (proxyActive.value && key !== 'enabled') return Promise.resolve(false)
   const version = ++retrySaveVersion[key]
   const editVersion = retryEditVersion[key]
   const value = retrySettingValue(key)
@@ -1921,7 +1931,7 @@ async function saveSetting(key, endpoint, value) {
 }
 
 async function updateUpstreamWebSocketEnabled(enabled) {
-  if (connectionSettingRestartWorking.value || saving.upstreamWebSocketEnabled || loadingSettings.value) return
+  if (proxyActive.value || connectionSettingRestartWorking.value || saving.upstreamWebSocketEnabled || loadingSettings.value) return
   const previous = settings.upstreamWebSocketEnabled
   settings.upstreamWebSocketEnabled = enabled
   notices.upstreamWebSocketEnabled = ''
@@ -2366,9 +2376,9 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="setting-card">
-          <label class="switch-control upstream-websocket-toggle">
+          <label class="switch-control upstream-websocket-toggle" :class="{ disabled: proxyActive || connectionSettingRestartWorking || saving.upstreamWebSocketEnabled || loadingSettings }">
             <span><strong>上游 WS 承载</strong><small>只控制直连上游是否发起 WS 协商；本地 HTTP/WS 监听与 llmtrim 链路始终保持支持。</small></span>
-            <input type="checkbox" :checked="settings.upstreamWebSocketEnabled" :disabled="connectionSettingRestartWorking || saving.upstreamWebSocketEnabled || loadingSettings" @change="updateUpstreamWebSocketEnabled($event.target.checked)" />
+            <input type="checkbox" :checked="settings.upstreamWebSocketEnabled" :disabled="proxyActive || connectionSettingRestartWorking || saving.upstreamWebSocketEnabled || loadingSettings" @change="updateUpstreamWebSocketEnabled($event.target.checked)" />
             <i aria-hidden="true"></i>
           </label>
           <p v-if="notices.upstreamWebSocketEnabled" class="notice">{{ notices.upstreamWebSocketEnabled }}</p>
@@ -2376,22 +2386,22 @@ onBeforeUnmount(() => {
 
         <div class="setting-card retry-setting-card">
           <div class="retry-config-grid">
-            <label class="retry-toggle switch-control">
+            <label class="retry-toggle switch-control" :class="{ disabled: proxyActive || connectionSettingRestartWorking || retrySaving.enabled || loadingSettings }">
               <span>自动重试</span>
-              <input type="checkbox" :checked="retry.enabled" :disabled="connectionSettingRestartWorking || retrySaving.enabled || loadingSettings" @change="updateRetryEnabled($event.target.checked)" />
+              <input type="checkbox" :checked="retry.enabled" :disabled="proxyActive || connectionSettingRestartWorking || retrySaving.enabled || loadingSettings" @change="updateRetryEnabled($event.target.checked)" />
               <i aria-hidden="true"></i>
             </label>
-            <label class="retry-field" for="retry-count">
+            <label class="retry-field" :class="{ disabled: proxyActive || loadingSettings || retrySaving.count }" for="retry-count">
               <strong>重试次数</strong>
-              <input id="retry-count" v-model="retry.count" inputmode="numeric" spellcheck="false" autocomplete="off" placeholder="重试次数" :disabled="loadingSettings" @input="sanitizeRetryInput('count', $event)" @blur="normalizeRetryInputForBlur('count'); saveRetrySetting('count', 'retry_count')" />
+              <input id="retry-count" v-model="retry.count" inputmode="numeric" spellcheck="false" autocomplete="off" placeholder="重试次数" :disabled="proxyActive || loadingSettings || retrySaving.count" @input="sanitizeRetryInput('count', $event)" @blur="normalizeRetryInputForBlur('count'); saveRetrySetting('count', 'retry_count')" />
             </label>
-            <label class="retry-field" for="retry-interval-seconds">
+            <label class="retry-field" :class="{ disabled: proxyActive || loadingSettings || retrySaving.intervalSeconds }" for="retry-interval-seconds">
               <strong>间隔时间s</strong>
-              <input id="retry-interval-seconds" v-model="retry.intervalSeconds" inputmode="numeric" spellcheck="false" autocomplete="off" placeholder="间隔时间s" :disabled="loadingSettings" @input="sanitizeRetryInput('intervalSeconds', $event)" @blur="normalizeRetryInputForBlur('intervalSeconds'); saveRetrySetting('intervalSeconds', 'retry_interval_seconds')" />
+              <input id="retry-interval-seconds" v-model="retry.intervalSeconds" inputmode="numeric" spellcheck="false" autocomplete="off" placeholder="间隔时间s" :disabled="proxyActive || loadingSettings || retrySaving.intervalSeconds" @input="sanitizeRetryInput('intervalSeconds', $event)" @blur="normalizeRetryInputForBlur('intervalSeconds'); saveRetrySetting('intervalSeconds', 'retry_interval_seconds')" />
             </label>
-            <label class="retry-field retry-status-field" for="retry-status-codes">
+            <label class="retry-field retry-status-field" :class="{ disabled: proxyActive || loadingSettings || retrySaving.statusCodes }" for="retry-status-codes">
               <strong>自动重试状态码</strong>
-              <input id="retry-status-codes" v-model="retry.statusCodes" inputmode="text" spellcheck="false" autocomplete="off" placeholder="自动重试状态码" :disabled="loadingSettings" @input="sanitizeRetryInput('statusCodes', $event)" @blur="normalizeRetryInputForBlur('statusCodes'); saveRetrySetting('statusCodes', 'retry_status_codes')" />
+              <input id="retry-status-codes" v-model="retry.statusCodes" inputmode="text" spellcheck="false" autocomplete="off" placeholder="自动重试状态码" :disabled="proxyActive || loadingSettings || retrySaving.statusCodes" @input="sanitizeRetryInput('statusCodes', $event)" @blur="normalizeRetryInputForBlur('statusCodes'); saveRetrySetting('statusCodes', 'retry_status_codes')" />
             </label>
           </div>
         </div>
