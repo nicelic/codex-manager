@@ -138,38 +138,22 @@ remember.risk_ack: 固定 ack=true。
 workspace_admin.{blame,coverage,sql_rebuild,temporal_verify}: 固定 kind=<name>。
 
 
-3.4 多项目自适应与无感无缝切换机制（核心合一规范）
+3.4 多项目联合工作区与双模检索自适应规范
 
-在单守护进程多仓库架构下，Gortex Daemon 后台统一维护所有已 track 项目的全局图谱。客户端常驻单一 MCP 会话，可能受启动环境固化在初始工作区（如 isolation_bounds 隔离）。为达成零口令感知、无缝流转与绝对闭环，Agent 必须执行以下自愈切换与穿透规范：
+在单守护进程多仓库架构下，所有已 track 仓库通过同一联合工作区（如 workspace: default）构建全局知识图谱，并由各仓库独有的 project 与 repo 标签保持业务独立。MCP 会话在此架构下实现“日常分析极致纯净、跨库协作畅通无阻”。Agent 必须严格遵守以下执行规范：
 
-1. 自动目标对齐与环境感知（零口令全自动感知）：
-环境自动感知：每次交互，Agent 必须直接从宿主上下文（例如 Antigravity 的 <user_information> 中的 active workspaces 根路径）提取当前活动工程绝对路径与目录名。在新项目中发起提问时，绝不需要用户额外说明切换项目或输入口令，Agent 自动以当前活动工作区为首要目标工程展开。
-跨库引用自动识别：若工程 A 中涉及对已 track 库 B 的引用或提问，自动感知项目 B 并纳入分析范围。
+1. 单项目日常分析与自动箝位（零噪音、高精度）：
+- 意图自动聚焦：Gortex 原生启用 Layer-B 定位意图（IntentLocate）。日常执行 search_symbols、search_text、find_files、explore 时，若未显式指定跨库范围，系统默认强制锁定在当前会话绑定的本地主场仓库（session's home repo）。
+- 零干扰保障：其他关联项目的同名类、函数或配置不会侵入当前日常检索结果，彻底杜绝跨库符号污染与 Token 浪费，保证单项目分析的高精度与低消耗。
 
-2. 状态核验与双轨自适应执行机制（击穿隔离与无感切域）：
-执行操作前，先通过 get_active_project() 获取当前绑定工程。若与当前工作区不一致：
-轨道 A：会话级静默热切换（主场聚焦模式）
-适用场景：用户直接提问新项目，或需对目标工程执行深度调用拓扑分析（explore, get_callers, get_call_chain, find_usages）、多文件连续修改（edit_file, batch_edit）、变更守护与测试闭环（check_guards, detect_changes, get_test_targets）。
-执行指令：Agent 后台首个动作静默调用：
-Core 扁平模式：set_active_project(project="<目标项目>")，若以工程名切换失败则尝试以标准化绝对路径切换 set_active_project(project="<目标绝对路径>")。
-Facade 门面模式：workspace_admin(operation="set_active_project", arguments={project:"<目标项目>"})。
-无感保障：该调用在后台静默完成（耗时通常 <5ms），严禁暂停打扰用户或向用户请求确认。切换后目标工程全局图谱与 AST 全面解锁。
-切换后首动探索铁律：切域成功后，首选动作必须立即调用 explore(task="<完整任务>") 或 smart_context 装配最小完备上下文与关键符号，遵循 completion 状态机闭环（answer_ready 直接结案停用工具，needs_exact_read 补齐精读），然后再展开精准代码函数检索。严禁一上来盲目全局扫描或遍历大量无关文件。
+2. 跨项目联合拓扑与穿透机制（畅通无阻）：
+- 跨库物理文件读写首选：对已 track 仓库的源码精读与修改，read_file、write_file、edit_file、batch_edit 传入目标工程绝对路径（如 e:/path/to/file）或仓库相对路径（如 kwor/path/to/file）直接生效。底层文件解析在全库已 track 集合内放行，无需切换工程。
+- 跨库符号与定义检索：临时查阅外部项目符号时，优先调用 query_project(project="<目标项目>", query="...") 穿透读取。如需全工作区范围符号/文本搜索，显式传入 repo="*" 或 repo="<目标项目>"。
+- 跨库调用与架构分析：get_call_chain、find_usages、contracts、audit_health 等关系型工具（IntentReach/Analyze）在联合工作区下天然全域贯通，直接支撑微服务调用链追踪与接口契约校验。
 
-轨道 B：跨项目单次轻量穿透与沙箱降级自愈（免切交叉模式）
-适用场景一：在主工程 A 分析中，仅需临时查阅公共库 B 的接口定义、配置文件或跨库比对，无需打乱工程 A 当前会话环境。
-适用场景二：沙箱隔离自愈降级。若调用 set_active_project 报错返回 outside the isolation bounds，表明当前 MCP 客户端会话被宿主单工程参数固化。此时严禁得出未 track 的错误结论（后台已被 Daemon track），必须立即自动降级为轨道 B 穿透模式在 Gortex 内部阅读与检索代码：
-跨库符号检索：Core 模式调用 query_project(project="<目标>", query="...")；Facade 门面模式调用 workspace(operation="project", project="...", query="...")。
-跨库物理文件阅读：read_file(path="<Repo前缀>/path/to/file")。
-跨库全文与文件检索：search_text(query="...", repo="<Repo前缀>")；查找文件使用 find_files(query="<Repo前缀>/...")。
-沙箱熔断说明：若因 isolation_bounds 沙箱限制完全无法执行写入或拓扑变更，应客观向用户报告当前 MCP 进程存在沙箱隔离约束，提示用户在宿主配置中将 Gortex 配置为全局 MCP 或重启会话，但严禁擅自脱离 Gortex 闭环退回宿主原生工具。
-
-3. 穿透精读与符号标识规范（严禁混淆 Path 与 Symbol ID）：
-文件路径（Path）：read_file, get_editing_context, edit_file, write_file 涉及文件系统的入参，跨库时必须显式补齐仓库前缀，如 read_file(path="<Repo前缀>/path/to/file")。
-符号标识（Node ID）：get_symbol, get_symbol_source, get_callers, find_usages, get_call_chain, edit_symbol 必须直接使用 query_project 或搜索返回的真实全局 id，严禁在已有全局 ID 前二次拼接项目名。若调用提示 symbol not found，代表超出当前会话 bound 范围，必须立即走轨道 A 静默切域或轨道 B 穿透。
-
-4. 严禁擅自退回原生工具：
-严禁以 list_repos 仅显示当前单库、search_text 裸搜无结果或未收到切换指令为由退回宿主原生工具（find_by_name, grep_search, view_file 或终端 shell）。只要仓库已被 Daemon track，必须在 Gortex 内部通过轨道 A 静默切域或轨道 B 穿透调用闭环解决。
+3. 规范调用与异常自愈铁律：
+- 严禁调用非法路径参数：set_active_project 仅接受逻辑 Project 标识，底层源码完全不接受绝对路径作为参数，严禁传入绝对路径尝试切域。
+- 严禁擅自退回宿主工具：只要目标项目属于已 track 列表，一切阅读、搜索、拓扑与写入操作必须在 Gortex 原生工具链内闭环解决，严禁擅自退回宿主工具（view_file、grep_search、find_by_name、write_to_file、replace_file_content 等）。未 track 的项目不得擅自进行 track 图谱化。
 
 4. 检索、阅读与拓扑分析
 

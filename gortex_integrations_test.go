@@ -969,3 +969,125 @@ func TestGortexCursorRulePreservesUnmarkedUserFile(t *testing.T) {
 		t.Fatal("gortexRegisterCursorProject accepted an unmarked user rule")
 	}
 }
+
+func TestEnsureGortexGlobalConfigWorkspaces(t *testing.T) {
+	tempRoot := t.TempDir()
+	configDir := filepath.Join(tempRoot, "config", "gortex")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(configDir, "config.yaml")
+	// Initial YAML has 3 items: edit, kwor, and gortex, plus an extra untracked item
+	initialYAML := []byte("repos:\n  - path: C:\\EXEXX\\edit\n  - path: E:\\111111\\kwor\\kwor\n  - path: D:\\untracked\\extra\n    workspace: other\n")
+	if err := os.WriteFile(cfgPath, initialYAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempRoot, "config"))
+
+	// Verify slug generation
+	if slug := cleanGortexProjectSlug(`C:\EXEXX\edit`); slug != "edit" {
+		t.Fatalf("cleanGortexProjectSlug(edit) = %q, want 'edit'", slug)
+	}
+	if slug := cleanGortexProjectSlug(`E:\111111\kwor\kwor`); slug != "kwor" {
+		t.Fatalf("cleanGortexProjectSlug(kwor) = %q, want 'kwor'", slug)
+	}
+	if slug := cleanGortexProjectSlug(`E:\aex\Downloads\gortex-0.64.3\gortex-0.64.3`); slug != "gortex" {
+		t.Fatalf("cleanGortexProjectSlug(gortex-0.64.3) = %q, want 'gortex'", slug)
+	}
+
+	// UI has 3 projects: edit, kwor, and gortex-0.64.3
+	uiProjects := []string{
+		`C:\EXEXX\edit`,
+		`E:\111111\kwor\kwor`,
+		`E:\aex\Downloads\gortex-0.64.3\gortex-0.64.3`,
+	}
+
+	if err := ensureGortexGlobalConfigWorkspacesAtPath(cfgPath, "default", uiProjects); err != nil {
+		t.Fatalf("ensureGortexGlobalConfigWorkspacesAtPath() error = %v", err)
+	}
+	updated, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(updated)
+	// Must contain workspace: default and project slugs for UI projects
+	if !strings.Contains(text, "workspace: default") {
+		t.Fatalf("updated YAML missing 'workspace: default':\n%s", text)
+	}
+	if !strings.Contains(text, "project: edit") {
+		t.Fatalf("updated YAML missing 'project: edit':\n%s", text)
+	}
+	if !strings.Contains(text, "project: kwor") {
+		t.Fatalf("updated YAML missing 'project: kwor':\n%s", text)
+	}
+	// Missing project gortex-0.64.3 should have been automatically added
+	if !strings.Contains(text, "project: gortex") {
+		t.Fatalf("updated YAML missing auto-added 'project: gortex':\n%s", text)
+	}
+	// Extra untracked repo must have been automatically removed
+	if strings.Contains(text, "untracked") {
+		t.Fatalf("updated YAML still contains untracked project that should have been removed:\n%s", text)
+	}
+
+	// Test idempotency
+	if err := ensureGortexGlobalConfigWorkspacesAtPath(cfgPath, "default", uiProjects); err != nil {
+		t.Fatalf("idempotent ensureGortexGlobalConfigWorkspacesAtPath() error = %v", err)
+	}
+	updated2, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(updated2) != text {
+		t.Fatalf("ensureGortexGlobalConfigWorkspacesAtPath not idempotent:\nBefore:\n%s\nAfter:\n%s", text, string(updated2))
+	}
+}
+
+func TestEnsureGortexGlobalConfigWorkspaces_ExtraRemovalAndTagRepair(t *testing.T) {
+	tempRoot := t.TempDir()
+	cfgPath := filepath.Join(tempRoot, "config.yaml")
+
+	// Start with messy YAML: wrong workspace, missing project, extra repos
+	initialYAML := []byte(`repos:
+  - path: C:\EXEXX\edit
+    workspace: custom_ws
+  - path: D:\rogue\repo1
+    workspace: rogue
+    project: rogue
+  - path: E:\rogue\repo2
+`)
+	if err := os.WriteFile(cfgPath, initialYAML, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// UI only has edit and kwor
+	uiProjects := []string{`C:\EXEXX\edit`, `E:\111111\kwor\kwor`}
+
+	if err := ensureGortexGlobalConfigWorkspacesAtPath(cfgPath, "default", uiProjects); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	// Rogue repos should be completely gone
+	if strings.Contains(content, "rogue") {
+		t.Fatalf("rogue repos should be removed, got:\n%s", content)
+	}
+
+	// Edit should have workspace fixed to default and project set to edit
+	if !strings.Contains(content, "workspace: default") {
+		t.Fatalf("expected workspace: default, got:\n%s", content)
+	}
+	if !strings.Contains(content, "project: edit") {
+		t.Fatalf("expected project: edit, got:\n%s", content)
+	}
+
+	// Kwor should be auto-added
+	if !strings.Contains(content, "project: kwor") {
+		t.Fatalf("expected kwor to be added, got:\n%s", content)
+	}
+}

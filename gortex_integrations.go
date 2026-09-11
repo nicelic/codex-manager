@@ -160,6 +160,7 @@ func ensureGortexWatchConfig(project string) error {
 	}
 	changed = changed || created
 	changed = yamlEnsureScalar(search, "index_prose", "true", "!!bool") || changed
+	changed = yamlEnsureScalar(root, "workspace", "default", "!!str") || changed
 
 	if !changed {
 		return nil
@@ -177,29 +178,262 @@ func ensureGortexWatchConfig(project string) error {
 	return replaceUTF8File(path, encoded.Bytes())
 }
 
+func cleanGortexProjectSlug(projectPath string) string {
+	base := filepath.Base(filepath.Clean(projectPath))
+	// strip version suffixes like -0.64.3 or -v1.0 to produce clean project identifier
+	for _, sep := range []string{"-0.", "-1.", "-2.", "-v", "@"} {
+		if idx := strings.Index(base, sep); idx != -1 {
+			base = base[:idx]
+			break
+		}
+	}
+	var buf strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			buf.WriteRune(r)
+		} else if r == '.' {
+			buf.WriteRune('-')
+		}
+	}
+	slug := strings.Trim(buf.String(), "-_")
+	if slug == "" {
+		return "project"
+	}
+	return strings.ToLower(slug)
+}
+
+func makeGortexRepoNode(projectPath, workspace, projectSlug string) *yaml.Node {
+	return &yaml.Node{
+		Kind: yaml.MappingNode,
+		Tag:  "!!map",
+		Content: []*yaml.Node{
+			yamlScalar("path", "!!str"),
+			yamlScalar(projectPath, "!!str"),
+			yamlScalar("workspace", "!!str"),
+			yamlScalar(workspace, "!!str"),
+			yamlScalar("project", "!!str"),
+			yamlScalar(projectSlug, "!!str"),
+		},
+	}
+}
+
+func ensureGortexGlobalConfigWorkspaces(defaultWorkspace string) error {
+	return reconcileGortexWorkspacesWithUI(defaultWorkspace)
+}
+
+func ensureGortexGlobalConfigWorkspacesAtPath(path, defaultWorkspace string, uiProjects []string) error {
+	if defaultWorkspace == "" {
+		defaultWorkspace = "default"
+	}
+	uiSet := make(map[string]string)
+	for _, p := range normalizeGortexProjects(uiProjects) {
+		clean := filepath.Clean(p)
+		uiSet[strings.ToLower(clean)] = clean
+	}
+
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if len(uiSet) == 0 {
+			return nil
+		}
+		data = []byte("repos:\n")
+	} else if err != nil {
+		return err
+	}
+	var document yaml.Node
+	if len(bytes.TrimSpace(data)) == 0 {
+		document = yaml.Node{
+			Kind: yaml.DocumentNode,
+			Content: []*yaml.Node{
+				{Kind: yaml.MappingNode, Tag: "!!map"},
+			},
+		}
+	} else if err := yaml.Unmarshal(data, &document); err != nil {
+		return fmt.Errorf("解析 %s 失败: %w", path, err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("解析 %s 失败: 根节点必须是 YAML 对象", path)
+	}
+	root := document.Content[0]
+	reposNode, ok := yamlMappingValue(root, "repos")
+	if !ok {
+		reposNode = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		root.Content = append(root.Content, yamlScalar("repos", "!!str"), reposNode)
+	} else if reposNode.Kind != yaml.SequenceNode {
+		*reposNode = yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	}
+
+	changed := false
+	var newReposContent []*yaml.Node
+	seenInConfig := make(map[string]bool)
+
+	for _, item := range reposNode.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		pathNode, ok := yamlMappingValue(item, "path")
+		if !ok || pathNode.Kind != yaml.ScalarNode || strings.TrimSpace(pathNode.Value) == "" {
+			continue
+		}
+		cleanPath := filepath.Clean(strings.TrimSpace(pathNode.Value))
+		key := strings.ToLower(cleanPath)
+
+		originalUIPath, isTracked := uiSet[key]
+		if !isTracked {
+			// UI 未登记此项目（多余项目），自动从 repos 列表中剔除
+			changed = true
+			continue
+		}
+
+		seenInConfig[key] = true
+		if yamlEnsureScalar(item, "workspace", defaultWorkspace, "!!str") {
+			changed = true
+		}
+		slug := cleanGortexProjectSlug(originalUIPath)
+		if yamlEnsureScalar(item, "project", slug, "!!str") {
+			changed = true
+		}
+		newReposContent = append(newReposContent, item)
+	}
+
+	// 补齐 UI 中存在但 config.yaml 中缺失的项目
+	for _, p := range normalizeGortexProjects(uiProjects) {
+		clean := filepath.Clean(p)
+		key := strings.ToLower(clean)
+		if !seenInConfig[key] {
+			slug := cleanGortexProjectSlug(clean)
+			newReposContent = append(newReposContent, makeGortexRepoNode(clean, defaultWorkspace, slug))
+			changed = true
+		}
+	}
+
+	if len(newReposContent) != len(reposNode.Content) {
+		changed = true
+	}
+	reposNode.Content = newReposContent
+
+	if !changed {
+		return nil
+	}
+	var encoded bytes.Buffer
+	encoder := yaml.NewEncoder(&encoded)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&document); err != nil {
+		_ = encoder.Close()
+		return err
+	}
+	if err := encoder.Close(); err != nil {
+		return err
+	}
+	return replaceUTF8File(path, encoded.Bytes())
+}
+
+var (
+	gortexConfigSyncMu          sync.Mutex
+	lastObservedConfigModTime   time.Time
+	lastObservedConfigSize      int64
+	lastObservedProjectsModTime time.Time
+	lastObservedProjectsSize    int64
+)
+
+func reconcileGortexWorkspacesWithUI(defaultWorkspace string) error {
+	gortexConfigSyncMu.Lock()
+	defer gortexConfigSyncMu.Unlock()
+
+	if defaultWorkspace == "" {
+		defaultWorkspace = "default"
+	}
+	configPath := gortexManagedPath("config", "gortex", "config.yaml")
+	if configPath == "" {
+		return nil
+	}
+	projects, err := gortexTrackedProjects()
+	if err != nil {
+		return err
+	}
+
+	if err := ensureGortexGlobalConfigWorkspacesAtPath(configPath, defaultWorkspace, projects); err != nil {
+		return err
+	}
+
+	// 刷新内部记录的 config.yaml 文件属性（自写回环抑制）
+	if info, err := os.Stat(configPath); err == nil {
+		lastObservedConfigModTime = info.ModTime()
+		lastObservedConfigSize = info.Size()
+	}
+
+	// 刷新内部记录的 projects.json 文件属性
+	if registryPath, err := gortexProjectRegistryPath(); err == nil && registryPath != "" {
+		if info, err := os.Stat(registryPath); err == nil {
+			lastObservedProjectsModTime = info.ModTime()
+			lastObservedProjectsSize = info.Size()
+		}
+	}
+
+	for _, project := range normalizeGortexProjects(projects) {
+		if err := ensureGortexWatchConfig(project); err != nil {
+			log.Printf("Gortex watcher 配置修复失败（%s）: %v", project, err)
+		}
+	}
+	return nil
+}
+
 func startGortexWatchEnforcer() {
-	enforceGortexWatchConfigs()
+	// 启动时立即执行一次全量自愈
+	if err := reconcileGortexWorkspacesWithUI("default"); err != nil {
+		log.Printf("Gortex 工作区自愈初始化失败: %v", err)
+	}
+
+	// 检测轨 1：文件变更即刻感知（500ms 高频感知 config.yaml 和 projects.json 属性变化）
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for range ticker.C {
-			enforceGortexWatchConfigs()
+			configPath := gortexManagedPath("config", "gortex", "config.yaml")
+			registryPath, _ := gortexProjectRegistryPath()
+
+			needReconcile := false
+			if configPath != "" {
+				if info, err := os.Stat(configPath); err == nil {
+					gortexConfigSyncMu.Lock()
+					if !info.ModTime().Equal(lastObservedConfigModTime) || info.Size() != lastObservedConfigSize {
+						needReconcile = true
+					}
+					gortexConfigSyncMu.Unlock()
+				}
+			}
+			if !needReconcile && registryPath != "" {
+				if info, err := os.Stat(registryPath); err == nil {
+					gortexConfigSyncMu.Lock()
+					if !info.ModTime().Equal(lastObservedProjectsModTime) || info.Size() != lastObservedProjectsSize {
+						needReconcile = true
+					}
+					gortexConfigSyncMu.Unlock()
+				}
+			}
+			if needReconcile {
+				if err := reconcileGortexWorkspacesWithUI("default"); err != nil {
+					log.Printf("Gortex 文件变更即时对齐失败: %v", err)
+				}
+			}
+		}
+	}()
+
+	// 检测轨 2：10s 心跳轮询保底检测
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := reconcileGortexWorkspacesWithUI("default"); err != nil {
+				log.Printf("Gortex 10s 轮询对齐失败: %v", err)
+			}
 		}
 	}()
 }
 
 func enforceGortexWatchConfigs() {
-	projects := []string{}
-	if local, err := gortexTrackedProjects(); err == nil {
-		projects = append(projects, local...)
-	}
-	// Include repositories tracked outside this manager but visible to the same
-	// Gortex daemon, so their watch flag is repaired as well.
-	projects = append(projects, gortexDaemonTrackedProjects(gortexManagedExecutablePath())...)
-	for _, project := range normalizeGortexProjects(projects) {
-		if err := ensureGortexWatchConfig(project); err != nil {
-			log.Printf("Gortex watcher 配置修复失败（%s）: %v", project, err)
-		}
+	if err := reconcileGortexWorkspacesWithUI("default"); err != nil {
+		log.Printf("Gortex 全局工作区标签对齐失败: %v", err)
 	}
 }
 

@@ -2661,9 +2661,9 @@ git push origin v0.1.1
 
 ### 8. 后续版本流程
 
-以后发布 `v0.1.12` 等版本时，严格按以下顺序执行：
+以后发布 `v0.1.20` 等版本时，严格按以下顺序执行：
 
-1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.12`。
+1. 修改根目录 `vision.md` 为唯一一行 `vision: v0.1.20`。
 2. 检查隐私文件和工作区改动。
 3. 运行 `build.bat`，生成仍名为 `releases\code-Manager\code-Manager.exe` 的新 EXE。
 4. 人工确认后提交并推送源码和 `vision.md`。
@@ -2717,4 +2717,5 @@ git push origin v0.1.1
 - v0.1.10 增强：gortex 提示词更新（深入对齐 Gortex 0.64.3 规范，补齐与细化 session 16 大通道、overlay/recall/remember 细化参数、统一 output 控制与多分支工作树 View 治理）；优化上游物理连接多路复用聚合与冗余空闲连接自动维护回收机制。
 - v0.1.11 增强：Gortex 与 RTK 提示词联动自动同步（Gortex 点击“注册 MCP”、RTK 点击“启动”时，分别自动检测受管 Gortex 与 RTK-AI 目录下的提示词参考文件，若存在旧版物理文件则先彻底删除再写入 EXE 内置最新版本，确保本地文档与 EXE 实时同步；各平台软件注册仍坚决使用 EXE 内置编译正文，不受磁盘物理文件干扰；统一清理提示词 UTF-8 BOM，通过高标准规范校验）。
 - v0.1.12 增强：Gortex 提示词规范精炼与参数格式优化（明确 dry_run 与 physical_evidence 互斥铁律，规范语法门禁与门面 match/replacement 别名字段；精简 overlay、recall/remember、session、review/pr/response 子命令及通用 output 塑形说明；强化多分支 View 治理与多仓库全图谱最终铁律）。
+- v0.1.20 增强：Gortex 多项目联合工作区（workspace: default）与双模自愈同步治理（全面升级提示词 3.4 节为联合工作区与双模检索自适应规范，严禁 set_active_project 传入非法绝对路径，实现日常分析意图聚焦防污染与跨库拓扑穿透畅通无阻；新增全局配置 config.yaml 双轨自动对齐与标签维护机制，高频 500ms 文件属性感知与 10s 轮询保底自动修复多项目 workspace: default 属性与 project slug，剔除多余未登记项目；增加全量单元测试覆盖）。
 

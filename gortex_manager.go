@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -2288,6 +2289,9 @@ func (g *gateway) gortexTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "保存 Gortex 项目记录失败: "+err.Error(), 500)
 		return
 	}
+	if err := ensureGortexGlobalConfigWorkspaces("default"); err != nil {
+		log.Printf("Gortex 全局工作区标签对齐失败: %v", err)
+	}
 	warnings := []string{}
 	if err := ensureGortexWatchConfig(project); err != nil {
 		warnings = append(warnings, "自动监视配置: "+err.Error())
@@ -2361,6 +2365,9 @@ func (g *gateway) gortexUntrack(w http.ResponseWriter, r *http.Request) {
 	if err := writeGortexProjectRegistry(registry); err != nil {
 		http.Error(w, "保存 Gortex 项目记录失败: "+err.Error(), 500)
 		return
+	}
+	if err := ensureGortexGlobalConfigWorkspaces("default"); err != nil {
+		log.Printf("Gortex 全局工作区标签对齐失败: %v", err)
 	}
 	warnings := gortexRemoveProjectMCP(exe, project)
 	ownership, ownershipErr := readGortexOwnership()
