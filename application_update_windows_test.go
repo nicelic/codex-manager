@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,51 +87,22 @@ func TestValidateCodeManagerExecutable(t *testing.T) {
 	}
 }
 
-func TestCodeManagerUpdatePowerShellScriptRestoresVerifiedPreviousVersion(t *testing.T) {
-	state := codeManagerUpdateState{
-		ParentPID:     123,
-		TargetVersion: "v0.1.2",
-		Executable:    `C:\\release\\code-Manager.exe`,
-		Staged:        `C:\\release\\.code-manager-update-123.new`,
-		Backup:        `C:\\release\\.code-manager-backup-123.exe`,
-		ResumeProxy:   true,
-	}
-	script := codeManagerUpdatePowerShellScript(state, `C:\\release\\config\\.code-manager-update.json`)
+func TestCodeManagerUpdateBatTemplateContainsKeyOperations(t *testing.T) {
+	script := codeManagerUpdateBatTemplate
 	for _, fragment := range []string{
-		"function Restore-PreviousVersion",
-		"function Resume-Proxy",
-		"-WorkingDirectory (Split-Path -LiteralPath $filePath -Parent)",
-		"$identity.executable_path",
-		"-Uri 'http://127.0.0.1:7780/healthz'",
-		"Wait-CodeManagerReady $targetVersion $true",
-		"if (Restore-PreviousVersion) {",
-		"if ($originalMoved) {",
-		"Get-Process -Name 'gortex'",
-		"Name='code-Manager.exe'",
+		"taskkill /F /IM gortex.exe /T",
+		"taskkill /F /IM rtk.exe /T",
+		"taskkill /F /IM snip.exe /T",
+		"taskkill /F /IM llmtrim.exe /T",
+		"taskkill /F /IM code-Manager.exe /T",
+		`move /y "%TARGET%" "%BACKUP%"`,
+		`copy /y "%STAGED%" "%TARGET%"`,
+		`start "" "%TARGET%"`,
+		`(goto) 2>nul & del "%~f0"`,
+		"code-Manager-update.log",
 	} {
 		if !strings.Contains(script, fragment) {
-			t.Fatalf("update script is missing %q", fragment)
+			t.Fatalf("update bat template is missing %q", fragment)
 		}
-	}
-}
-
-func TestCodeManagerUpdatePowerShellScriptParses(t *testing.T) {
-	powerShell, err := exec.LookPath("powershell.exe")
-	if err != nil {
-		t.Skip("powershell.exe is not available")
-	}
-	state := codeManagerUpdateState{
-		ParentPID:     123,
-		TargetVersion: "v0.1.2",
-		Executable:    `C:\\release\\code-Manager.exe`,
-		Staged:        `C:\\release\\.code-manager-update-123.new`,
-		Backup:        `C:\\release\\.code-manager-backup-123.exe`,
-		ResumeProxy:   true,
-	}
-	script := codeManagerUpdatePowerShellScript(state, `C:\\release\\config\\.code-manager-update.json`)
-	parser := fmt.Sprintf("$script = %s; $tokens = $null; $errors = $null; [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { $errors | ForEach-Object { $_.ToString() }; exit 1 }", quotePowerShellString(script))
-	output, err := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodePowerShellCommand(parser)).CombinedOutput()
-	if err != nil {
-		t.Fatalf("PowerShell script parse failed: %v\n%s", err, output)
 	}
 }

@@ -2367,6 +2367,10 @@ build.bat 的实际步骤：
   `go build -ldflags "-H=windowsgui" -o releases\code-Manager\code-Manager.exe .`，新页面才会进入 EXE。
 - 构建完成后，如果旧版 `code-Manager.exe` 仍在运行，Windows 单实例机制会让新 EXE
   打开旧进程提供的页面。发布验证前应先通过托盘菜单退出旧进程，再启动新的 EXE。
+- 应用自更新采用独立实体 BAT 批处理（`.code-manager-update-<timestamp>.bat`）执行：更新时落盘实体批处理，
+  等待主进程退出并强杀四大工具与旧版面板进程释放文件锁，循环重试备份与覆盖替换目标 EXE，拉起新版并按需
+  恢复代理服务，最后自删批处理，执行全过程记录于 `config\code-Manager-update.log`。
+
 
 4. 直接分步构建
 

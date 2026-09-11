@@ -1,1 +1,1 @@
-vision: v0.1.23
+vision: v0.1.24

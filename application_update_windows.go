@@ -379,7 +379,7 @@ func (g *gateway) applicationUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "保存更新事务失败: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := launchCodeManagerUpdatePowerShell(state, statePath); err != nil {
+	if err := launchCodeManagerUpdateBat(state, statePath); err != nil {
 		_ = os.Remove(statePath)
 		if resumeProxy {
 			if restartErr := g.startProxy(); restartErr != nil {
@@ -544,145 +544,118 @@ func applicationUpdatePendingForParent(parentPID uint32) bool {
 	return state.ParentPID == int(parentPID) && strings.EqualFold(filepath.Clean(state.Executable), filepath.Clean(executable))
 }
 
-func codeManagerUpdatePowerShellScript(state codeManagerUpdateState, statePath string) string {
-	resumeProxy := "$false"
-	if state.ResumeProxy {
-		resumeProxy = "$true"
+const codeManagerUpdateBatTemplate = `@echo off
+setlocal enabledelayedexpansion
+chcp 65001 >nul
+
+set "TARGET=%~1"
+set "STAGED=%~2"
+set "PARENT_PID=%~3"
+set "STATE_PATH=%~4"
+set "RESUME_PROXY=%~5"
+set "RELEASE_DIR=%~dp1"
+set "LOG_FILE=%RELEASE_DIR%config\code-Manager-update.log"
+set "BACKUP=%RELEASE_DIR%.code-manager-backup.exe"
+
+if not exist "%RELEASE_DIR%config" mkdir "%RELEASE_DIR%config" >nul 2>&1
+echo [%date% %time%] Update batch started. Target="%TARGET%" Staged="%STAGED%" ParentPID=%PARENT_PID% >> "%LOG_FILE%"
+
+:: 1. 等待主进程退出（最多 15 秒）
+if not "%PARENT_PID%"=="" if not "%PARENT_PID%"=="0" (
+    for /l %%i in (1,1,15) do (
+        tasklist /fi "PID eq %PARENT_PID%" 2>nul | findstr /i "%PARENT_PID%" >nul
+        if errorlevel 1 goto :parent_done
+        timeout /t 1 /nobreak >nul
+    )
+)
+:parent_done
+echo [%date% %time%] Parent process confirmed stopped. >> "%LOG_FILE%"
+
+:: 2. 彻底终止四大工具的所有进程
+taskkill /F /IM gortex.exe /T 2>nul
+taskkill /F /IM rtk.exe /T 2>nul
+taskkill /F /IM snip.exe /T 2>nul
+taskkill /F /IM llmtrim.exe /T 2>nul
+taskkill /F /IM llmtrim-tray.exe /T 2>nul
+
+:: 3. 彻底终止 code-Manager.exe 所有同名进程（释放文件锁）
+taskkill /F /IM code-Manager.exe /T 2>nul
+timeout /t 1 /nobreak >nul
+
+:: 4. 覆盖替换程序（保留备份，循环重试最多 30 秒）
+if not exist "%TARGET%" (
+    echo [%date% %time%] Target does not exist, proceeding to copy. >> "%LOG_FILE%"
+    goto :do_copy
+)
+
+set ORIGINAL_MOVED=0
+for /l %%i in (1,1,30) do (
+    move /y "%TARGET%" "%BACKUP%" >nul 2>&1
+    if not errorlevel 1 (
+        set ORIGINAL_MOVED=1
+        echo [%date% %time%] Original EXE moved to backup. >> "%LOG_FILE%"
+        goto :do_copy
+    )
+    timeout /t 1 /nobreak >nul
+)
+
+:do_copy
+for /l %%i in (1,1,30) do (
+    copy /y "%STAGED%" "%TARGET%" >nul 2>&1
+    if not errorlevel 1 (
+        echo [%date% %time%] Staged EXE copied to target successfully. >> "%LOG_FILE%"
+        goto :replace_ok
+    )
+    timeout /t 1 /nobreak >nul
+)
+
+echo [%date% %time%] ERROR: Replace failed! Restoring backup... >> "%LOG_FILE%"
+if "!ORIGINAL_MOVED!"=="1" if exist "%BACKUP%" (
+    move /y "%BACKUP%" "%TARGET%" >nul 2>&1
+)
+goto :start_and_cleanup
+
+:replace_ok
+del /f /q "%BACKUP%" 2>nul
+del /f /q "%STAGED%" 2>nul
+if not "%STATE_PATH%"=="" del /f /q "%STATE_PATH%" 2>nul
+echo [%date% %time%] Replace succeeded and temp files cleaned. >> "%LOG_FILE%"
+
+:start_and_cleanup
+:: 5. 按照名称启动目标 EXE
+echo [%date% %time%] Launching new target EXE... >> "%LOG_FILE%"
+cd /d "%RELEASE_DIR%"
+start "" "%TARGET%"
+echo [%date% %time%] New target EXE started. >> "%LOG_FILE%"
+
+:: 6. 若需要恢复代理，等待服务就绪后发起调用
+if "%RESUME_PROXY%"=="1" (
+    timeout /t 3 /nobreak >nul
+    curl -s -X POST http://127.0.0.1:7780/api/proxy/start >nul 2>&1
+)
+
+echo [%date% %time%] Update batch finished, self-deleting... >> "%LOG_FILE%"
+(goto) 2>nul & del "%~f0"
+`
+
+func launchCodeManagerUpdateBat(state codeManagerUpdateState, statePath string) error {
+	releaseDir := filepath.Dir(state.Executable)
+	batPath := filepath.Join(releaseDir, fmt.Sprintf(".code-manager-update-%d.bat", time.Now().UnixNano()))
+	if err := os.WriteFile(batPath, []byte(codeManagerUpdateBatTemplate), 0o700); err != nil {
+		return fmt.Errorf("写入更新批处理脚本失败: %w", err)
 	}
-	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$parentPID = %d
-$target = %s
-$staged = %s
-$backup = %s
-$statePath = %s
-$targetVersion = %s
-$resumeProxy = %s
-$originalMoved = $false
-$replacementProcess = $null
 
-function Start-CodeManager {
-  param([string]$filePath)
-  return Start-Process -FilePath $filePath -WorkingDirectory (Split-Path -LiteralPath $filePath -Parent) -PassThru
-}
+	resumeProxyArg := "0"
+	if state.ResumeProxy {
+		resumeProxyArg = "1"
+	}
 
-function Wait-CodeManagerReady {
-  param([string]$expectedVersion, [bool]$allowLegacy = $false)
-  $legacyDeadline = [DateTime]::UtcNow.AddSeconds(5)
-  for ($attempt = 0; $attempt -lt 40; $attempt++) {
-    try {
-      $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:7780/api/application/identity' -TimeoutSec 3
-      $identity = $response.Content | ConvertFrom-Json
-      $matchesExecutable = [string]::Equals([string]$identity.executable_path, $target, [StringComparison]::OrdinalIgnoreCase)
-      if (-not $matchesExecutable) { return $false }
-      $matchesVersion = $expectedVersion -eq '' -or [string]$identity.version -eq $expectedVersion
-      return $matchesVersion
-    } catch {}
-    if ($replacementProcess -and $replacementProcess.HasExited) { return $false }
-    if ($allowLegacy -and [DateTime]::UtcNow -ge $legacyDeadline) {
-      try {
-        Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:7780/healthz' -TimeoutSec 3 | Out-Null
-        return $true
-      } catch {}
-    }
-    Start-Sleep -Milliseconds 500
-  }
-  return $false
-}
-
-function Resume-Proxy {
-  if (-not $resumeProxy) { return }
-  $deadline = [DateTime]::UtcNow.AddSeconds(60)
-  while ([DateTime]::UtcNow -lt $deadline) {
-    try {
-      Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:7780/api/proxy/start' -TimeoutSec 60 | Out-Null
-      return
-    } catch {
-      Start-Sleep -Seconds 1
-    }
-  }
-}
-
-function Restore-PreviousVersion {
-  try {
-    if ($replacementProcess -and -not $replacementProcess.HasExited) {
-      Stop-Process -Id $replacementProcess.Id -Force -ErrorAction SilentlyContinue
-      $replacementProcess.WaitForExit(10000) | Out-Null
-    }
-    if ($originalMoved) {
-      $deadline = [DateTime]::UtcNow.AddSeconds(60)
-      while ($true) {
-        try {
-          if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force -ErrorAction Stop }
-          Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
-          break
-        } catch {
-          if ([DateTime]::UtcNow -ge $deadline) { return $false }
-          Start-Sleep -Milliseconds 250
-        }
-      }
-    }
-    if (-not (Test-Path -LiteralPath $target)) { return $false }
-    Start-CodeManager $target | Out-Null
-    if (-not (Wait-CodeManagerReady '')) { return $false }
-    Resume-Proxy
-    return $true
-  } catch {
-    return $false
-  }
-}
-
-try {
-  try { Wait-Process -Id $parentPID -TimeoutSec 15 -ErrorAction SilentlyContinue } catch {}
-
-  # 1. 停止掉四个工具的所有进程
-  Get-Process -Name 'gortex', 'rtk', 'snip', 'llmtrim' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Get-CimInstance Win32_Process -Filter "Name like '%%gortex%%' or Name like '%%rtk%%' or Name like '%%snip%%' or Name like '%%llmtrim%%'" -ErrorAction SilentlyContinue | ForEach-Object {
-    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-  }
-
-  # 2. 停止掉面板的所有进程
-  Get-Process -Name 'code-Manager' -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
-  Get-CimInstance Win32_Process -Filter "Name='code-Manager.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object {
-    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-  }
-
-  Start-Sleep -Milliseconds 500
-
-  # 3. 替换程序
-  $deadline = [DateTime]::UtcNow.AddSeconds(60)
-  while ($true) {
-    try {
-      Move-Item -LiteralPath $target -Destination $backup -Force -ErrorAction Stop
-      $originalMoved = $true
-      break
-    } catch {
-      if ([DateTime]::UtcNow -ge $deadline) { throw '等待旧版 code-Manager.exe 释放文件锁超时。' }
-      Start-Sleep -Milliseconds 250
-    }
-  }
-  Move-Item -LiteralPath $staged -Destination $target -Force -ErrorAction Stop
-
-  # 4. 按照名称启动 exe 即可
-  $replacementProcess = Start-CodeManager $target
-  Wait-CodeManagerReady $targetVersion $true | Out-Null
-  Resume-Proxy
-  Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
-} catch {
-  if (Restore-PreviousVersion) {
-    Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
-  }
-}
-`, state.ParentPID, quotePowerShellString(state.Executable), quotePowerShellString(state.Staged), quotePowerShellString(state.Backup), quotePowerShellString(statePath), quotePowerShellString(state.TargetVersion), resumeProxy)
-}
-
-func launchCodeManagerUpdatePowerShell(state codeManagerUpdateState, statePath string) error {
-	script := codeManagerUpdatePowerShellScript(state, statePath)
-	command := exec.Command("cmd.exe", "/d", "/c", "start", "", "/b", "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encodePowerShellCommand(script))
-	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
+	command := exec.Command("cmd.exe", "/c", "start", "", "/min", batPath, state.Executable, state.Staged, strconv.Itoa(state.ParentPID), statePath, resumeProxyArg)
+	command.Dir = releaseDir
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS}
 	if err := command.Start(); err != nil {
-		return err
+		_ = os.Remove(batPath)
+		return fmt.Errorf("启动更新批处理失败: %w", err)
 	}
 	return command.Process.Release()
 }
