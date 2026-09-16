@@ -2730,4 +2730,5 @@ git push origin v0.1.1
 - v0.1.12 增强：Gortex 提示词规范精炼与参数格式优化（明确 dry_run 与 physical_evidence 互斥铁律，规范语法门禁与门面 match/replacement 别名字段；精简 overlay、recall/remember、session、review/pr/response 子命令及通用 output 塑形说明；强化多分支 View 治理与多仓库全图谱最终铁律）。
 - v0.1.20 增强：Gortex 多项目联合工作区（workspace: default）与双模自愈同步治理（全面升级提示词 3.4 节为联合工作区与双模检索自适应规范，严禁 set_active_project 传入非法绝对路径，实现日常分析意图聚焦防污染与跨库拓扑穿透畅通无阻；新增全局配置 config.yaml 双轨自动对齐与标签维护机制，2s 文件属性感知与 10s 轮询保底自动修复多项目 workspace: default 属性与 project slug，剔除多余未登记项目；增加全量单元测试覆盖）。
 - v0.1.25 增强：优化 Gortex 增量监听防抖机制与配置同步自愈频率（将项目 Watcher 文件变更防抖时间 debounce_ms 调整为 50ms，显著提升代码编辑与图谱增量更新的响应速度；将双轨自愈中的高频文件属性感知周期优化为 2s，兼顾极速变更感知与低系统开销，并保持 10s 心跳轮询全量保底机制；同步更新单元测试与规范文档）。
+- v0.1.26 增强：优化 Gortex 配置同步与自愈性能（引入 `.gortex.yaml` 文件属性与大小状态缓存机制，避免高频轮询引发的无效磁盘 I/O 与解析开销；配置或 Watcher 实际发生变更时异步触发 Gortex daemon 重载（`daemon reload`），实现配置热更新与自愈即时生效；补充完整的状态缓存与变更重载单测验证）。
 

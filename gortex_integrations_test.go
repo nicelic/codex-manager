@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -1090,4 +1091,107 @@ func TestEnsureGortexGlobalConfigWorkspaces_ExtraRemovalAndTagRepair(t *testing.
 	if !strings.Contains(content, "project: kwor") {
 		t.Fatalf("expected kwor to be added, got:\n%s", content)
 	}
+}
+
+func TestEnsureGortexWatchConfig_MtimeCacheAndForced50Ms(t *testing.T) {
+	clearGortexWatchConfigCache()
+	defer clearGortexWatchConfigCache()
+
+	project := t.TempDir()
+	path := filepath.Join(project, ".gortex.yaml")
+
+	// 1. Initial file with non-50 debounce
+	initialYAML := "watch:\n  enabled: true\n  debounce_ms: 300\n"
+	if err := os.WriteFile(path, []byte(initialYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := ensureGortexWatchConfigWithChange(project)
+	if err != nil {
+		t.Fatalf("ensureGortexWatchConfigWithChange error: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true on initial upgrade to 50ms")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "debounce_ms: 50") {
+		t.Fatalf("expected debounce_ms: 50, got:\n%s", string(data))
+	}
+
+	// 2. Second call should hit cache and return changed=false
+	changed, err = ensureGortexWatchConfigWithChange(project)
+	if err != nil {
+		t.Fatalf("second call error: %v", err)
+	}
+	if changed {
+		t.Fatal("expected changed=false on cache hit")
+	}
+
+	// 3. User modifies file to 123ms, changing mtime
+	time.Sleep(10 * time.Millisecond)
+	userEdit := "watch:\n  enabled: true\n  debounce_ms: 123\n"
+	if err := os.WriteFile(path, []byte(userEdit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err = ensureGortexWatchConfigWithChange(project)
+	if err != nil {
+		t.Fatalf("third call error: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true when user altered debounce_ms to 123")
+	}
+
+	data2, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data2), "debounce_ms: 50") {
+		t.Fatalf("expected forced reset to debounce_ms: 50, got:\n%s", string(data2))
+	}
+
+	// 4. Fourth call hits cache again
+	changed, err = ensureGortexWatchConfigWithChange(project)
+	if err != nil {
+		t.Fatalf("fourth call error: %v", err)
+	}
+	if changed {
+		t.Fatal("expected changed=false on cache hit after reset")
+	}
+}
+
+func TestEnsureGortexGlobalConfigWorkspaces_ChangeDetection(t *testing.T) {
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "config.yaml")
+
+	uiProjects := []string{`C:\project1`, `C:\project2`}
+
+	// First run creates config -> changed=true
+	changed, err := ensureGortexGlobalConfigWorkspacesAtPathWithChange(cfgPath, "default", uiProjects)
+	if err != nil {
+		t.Fatalf("first run error: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true on initial creation")
+	}
+
+	// Second run with identical projects -> changed=false
+	changed, err = ensureGortexGlobalConfigWorkspacesAtPathWithChange(cfgPath, "default", uiProjects)
+	if err != nil {
+		t.Fatalf("second run error: %v", err)
+	}
+	if changed {
+		t.Fatal("expected changed=false on idempotent run")
+	}
+}
+
+func TestGortexDaemonReloadAndReconcileAsyncSafe(t *testing.T) {
+	// Should not panic even if no daemon is running or executable is missing
+	reloadGortexDaemonAsync()
+	triggerGortexReconcileAsync()
+	time.Sleep(50 * time.Millisecond)
 }

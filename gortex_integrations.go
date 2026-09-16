@@ -106,6 +106,22 @@ func yamlSequenceContains(seq *yaml.Node, value string) bool {
 	return false
 }
 
+type gortexWatchConfigStat struct {
+	modTime time.Time
+	size    int64
+}
+
+var (
+	gortexWatchConfigCacheMu sync.Mutex
+	gortexWatchConfigCache   = make(map[string]gortexWatchConfigStat)
+)
+
+func clearGortexWatchConfigCache() {
+	gortexWatchConfigCacheMu.Lock()
+	gortexWatchConfigCache = make(map[string]gortexWatchConfigStat)
+	gortexWatchConfigCacheMu.Unlock()
+}
+
 // ensureGortexWatchConfig makes the repository watcher explicit using the
 // official YAML shape and opts Markdown/prose nodes into the text index without
 // replacing unrelated user settings. Test files are indexed by Gortex's normal
@@ -115,40 +131,56 @@ func yamlSequenceContains(seq *yaml.Node, value string) bool {
 // Missing repository directories are ignored so a stale daemon entry cannot
 // be recreated by the background enforcer.
 func ensureGortexWatchConfig(project string) error {
+	_, err := ensureGortexWatchConfigWithChange(project)
+	return err
+}
+
+func ensureGortexWatchConfigWithChange(project string) (bool, error) {
 	project = filepath.Clean(project)
 	info, err := os.Stat(project)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("Gortex track 路径不是目录: %s", project)
+		return false, fmt.Errorf("Gortex track 路径不是目录: %s", project)
 	}
 
 	path := filepath.Join(project, ".gortex.yaml")
+	normPath := strings.ToLower(filepath.Clean(path))
+
+	if yamlInfo, statErr := os.Stat(path); statErr == nil {
+		gortexWatchConfigCacheMu.Lock()
+		cached, ok := gortexWatchConfigCache[normPath]
+		gortexWatchConfigCacheMu.Unlock()
+		if ok && cached.modTime.Equal(yamlInfo.ModTime()) && cached.size == yamlInfo.Size() {
+			return false, nil
+		}
+	}
+
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		data = []byte("{}\n")
 	} else if err != nil {
-		return err
+		return false, err
 	}
 	var document yaml.Node
 	if len(bytes.TrimSpace(data)) == 0 {
 		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
 	} else if err := yaml.Unmarshal(data, &document); err != nil {
-		return fmt.Errorf("解析 %s 失败: %w", path, err)
+		return false, fmt.Errorf("解析 %s 失败: %w", path, err)
 	}
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
-		return fmt.Errorf("解析 %s 失败: 根节点必须是 YAML 对象", path)
+		return false, fmt.Errorf("解析 %s 失败: 根节点必须是 YAML 对象", path)
 	}
 	root := document.Content[0]
 	changed := false
 
 	watch, created, err := yamlEnsureMappingChild(root, "watch")
 	if err != nil {
-		return err
+		return false, err
 	}
 	changed = changed || created
 	changed = yamlEnsureScalar(watch, "enabled", "true", "!!bool") || changed
@@ -156,26 +188,45 @@ func ensureGortexWatchConfig(project string) error {
 
 	search, created, err := yamlEnsureMappingChild(root, "search")
 	if err != nil {
-		return err
+		return false, err
 	}
 	changed = changed || created
 	changed = yamlEnsureScalar(search, "index_prose", "true", "!!bool") || changed
 	changed = yamlEnsureScalar(root, "workspace", "default", "!!str") || changed
 
 	if !changed {
-		return nil
+		if yamlInfo, statErr := os.Stat(path); statErr == nil {
+			gortexWatchConfigCacheMu.Lock()
+			gortexWatchConfigCache[normPath] = gortexWatchConfigStat{
+				modTime: yamlInfo.ModTime(),
+				size:    yamlInfo.Size(),
+			}
+			gortexWatchConfigCacheMu.Unlock()
+		}
+		return false, nil
 	}
 	var encoded bytes.Buffer
 	encoder := yaml.NewEncoder(&encoded)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(&document); err != nil {
 		_ = encoder.Close()
-		return err
+		return false, err
 	}
 	if err := encoder.Close(); err != nil {
-		return err
+		return false, err
 	}
-	return replaceUTF8File(path, encoded.Bytes())
+	if err := replaceUTF8File(path, encoded.Bytes()); err != nil {
+		return false, err
+	}
+	if yamlInfo, statErr := os.Stat(path); statErr == nil {
+		gortexWatchConfigCacheMu.Lock()
+		gortexWatchConfigCache[normPath] = gortexWatchConfigStat{
+			modTime: yamlInfo.ModTime(),
+			size:    yamlInfo.Size(),
+		}
+		gortexWatchConfigCacheMu.Unlock()
+	}
+	return true, nil
 }
 
 func cleanGortexProjectSlug(projectPath string) string {
@@ -217,11 +268,35 @@ func makeGortexRepoNode(projectPath, workspace, projectSlug string) *yaml.Node {
 	}
 }
 
+func reloadGortexDaemonAsync() {
+	exe := gortexManagedExecutablePath()
+	if exe == "" {
+		return
+	}
+	go func() {
+		// 异步触发 Gortex 守护进程重新加载配置，5秒超时；若守护进程未运行则静默处理
+		_, _ = runGortexCommandWithTimeout(5*time.Second, exe, "daemon", "reload")
+	}()
+}
+
+func triggerGortexReconcileAsync() {
+	go func() {
+		if err := reconcileGortexWorkspacesWithUI("default"); err != nil {
+			log.Printf("Gortex 主动事件对齐失败: %v", err)
+		}
+	}()
+}
+
 func ensureGortexGlobalConfigWorkspaces(defaultWorkspace string) error {
 	return reconcileGortexWorkspacesWithUI(defaultWorkspace)
 }
 
 func ensureGortexGlobalConfigWorkspacesAtPath(path, defaultWorkspace string, uiProjects []string) error {
+	_, err := ensureGortexGlobalConfigWorkspacesAtPathWithChange(path, defaultWorkspace, uiProjects)
+	return err
+}
+
+func ensureGortexGlobalConfigWorkspacesAtPathWithChange(path, defaultWorkspace string, uiProjects []string) (bool, error) {
 	if defaultWorkspace == "" {
 		defaultWorkspace = "default"
 	}
@@ -234,11 +309,11 @@ func ensureGortexGlobalConfigWorkspacesAtPath(path, defaultWorkspace string, uiP
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if len(uiSet) == 0 {
-			return nil
+			return false, nil
 		}
 		data = []byte("repos:\n")
 	} else if err != nil {
-		return err
+		return false, err
 	}
 	var document yaml.Node
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -249,10 +324,10 @@ func ensureGortexGlobalConfigWorkspacesAtPath(path, defaultWorkspace string, uiP
 			},
 		}
 	} else if err := yaml.Unmarshal(data, &document); err != nil {
-		return fmt.Errorf("解析 %s 失败: %w", path, err)
+		return false, fmt.Errorf("解析 %s 失败: %w", path, err)
 	}
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
-		return fmt.Errorf("解析 %s 失败: 根节点必须是 YAML 对象", path)
+		return false, fmt.Errorf("解析 %s 失败: 根节点必须是 YAML 对象", path)
 	}
 	root := document.Content[0]
 	reposNode, ok := yamlMappingValue(root, "repos")
@@ -313,19 +388,22 @@ func ensureGortexGlobalConfigWorkspacesAtPath(path, defaultWorkspace string, uiP
 	reposNode.Content = newReposContent
 
 	if !changed {
-		return nil
+		return false, nil
 	}
 	var encoded bytes.Buffer
 	encoder := yaml.NewEncoder(&encoded)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(&document); err != nil {
 		_ = encoder.Close()
-		return err
+		return false, err
 	}
 	if err := encoder.Close(); err != nil {
-		return err
+		return false, err
 	}
-	return replaceUTF8File(path, encoded.Bytes())
+	if err := replaceUTF8File(path, encoded.Bytes()); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 var (
@@ -352,7 +430,8 @@ func reconcileGortexWorkspacesWithUI(defaultWorkspace string) error {
 		return err
 	}
 
-	if err := ensureGortexGlobalConfigWorkspacesAtPath(configPath, defaultWorkspace, projects); err != nil {
+	configChanged, err := ensureGortexGlobalConfigWorkspacesAtPathWithChange(configPath, defaultWorkspace, projects)
+	if err != nil {
 		return err
 	}
 
@@ -370,10 +449,18 @@ func reconcileGortexWorkspacesWithUI(defaultWorkspace string) error {
 		}
 	}
 
+	watchChanged := false
 	for _, project := range normalizeGortexProjects(projects) {
-		if err := ensureGortexWatchConfig(project); err != nil {
+		changed, err := ensureGortexWatchConfigWithChange(project)
+		if err != nil {
 			log.Printf("Gortex watcher 配置修复失败（%s）: %v", project, err)
+		} else if changed {
+			watchChanged = true
 		}
+	}
+
+	if configChanged || watchChanged {
+		reloadGortexDaemonAsync()
 	}
 	return nil
 }
