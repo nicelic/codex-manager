@@ -2516,7 +2516,7 @@ Gortex 管理补充
 - Gortex 的启动、停止、MCP 注册、track 和 untrack 只允许使用 code-Manager.exe 同级 `Gortex\\bin\\gortex.exe`；PATH 中已有的外部版本仅用于状态检测，普通管理操作不会控制它们。卸载是例外：为确保删除完整，会按精确进程名清理所有 `gortex.exe`。
 - Gortex 状态页会定期通过 `gortex.exe version` 查询版本，并通过受管 `Gortex\\run\\daemon.sock` 与 `daemon.pid` 确认真实 daemon；同路径的 `gortex.exe mcp` MCP stdio 客户端不计入 daemon 运行状态。Windows 下这些查询和 daemon 操作均使用隐藏子进程，不应周期性弹出控制台窗口；若仍看到闪窗，应确认运行的是重新构建后的 EXE，而不是旧发布目录中的版本。
 - Gortex 的配置、数据、索引、缓存、daemon 运行文件和日志均通过受管环境变量归档到同级 `Gortex\\` 目录；卸载只删除该受管目录及本程序拥有的 MCP/项目记录，不删除其他 MCP 或项目文件。
-- 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=1h` 和 `GORTEX_DAEMON_IDLE_TIMEOUT=0`；项目 watcher 使用 `debounce_ms: 300`，前者分别控制定期 reconcile 与常驻不空闲退出，后者控制文件变更后的延迟索引。
+- 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=1h` 和 `GORTEX_DAEMON_IDLE_TIMEOUT=0`；项目 watcher 使用 `debounce_ms: 50`，前者分别控制定期 reconcile 与常驻不空闲退出，后者控制文件变更后的延迟索引。
 - “启动 daemon”“停止 daemon”只负责受管 Gortex daemon 的真实进程生命周期，不会隐式注册或移除 MCP。Codex 等宿主启动的 `gortex.exe mcp` 不属于 daemon 状态；daemon 被 MCP 调用按需重新启动后，管理页的 1 秒级 WebSocket 状态快照会自动显示运行中。
 - “注册 MCP”与“移除 MCP”分别扫描 Codex、Claude Code、Cursor、GitHub Copilot CLI、OpenCode、Google Antigravity、Gemini CLI 的用户级配置。注册会修复仍明显指向 `gortex mcp` 但缺少受管环境变量的残缺条目；移除只删除本程序账本拥有或仍明显属于 Gortex 的条目，用户改写成其它命令的配置会保留并在页面提示。
 - Gortex MCP 客户端可以连接或按自身配置启动 daemon，但 `track` 建图需要 daemon 控制接口。页面 track 会在 daemon 已停止时按需启动受管 daemon，然后调用 `gortex track <path> --wait --wait-timeout 30m` 等待索引稳定；因此大型项目可能需要较长时间，失败时输入框内容保留，成功后输入框清空且已完成目录显示在下方。
@@ -2719,7 +2719,7 @@ git push origin v0.1.1
   该信任流程与 Snip 的 Hook 记录分开处理。
 - “验证 doctor/status”会执行受管 `gortex.exe doctor --json` 和 `gortex.exe status`，页面分别展示
   MCP、Hook、索引、daemon 以及全部 tracked repositories 的诊断输出。
-- 页面点击 track 前会去除项目绝对路径首尾空格，再提交给后端；track 成功后会确保项目 `.gortex.yaml` 中 `watch.enabled: true`，缺失或不一致时写入 `debounce_ms: 100`；
+- 页面点击 track 前会去除项目绝对路径首尾空格，再提交给后端；track 成功后会确保项目 `.gortex.yaml` 中 `watch.enabled: true`，缺失或不一致时写入 `debounce_ms: 50`；
   后台每 5 秒检查本地账本和同一 daemon 可见的外部 tracked 项目，发现 watcher 被关闭会自动恢复。
 - v0.1.6 增强：针对 Google Antigravity 原生不支持 cwd 且子进程继承安装目录导致 Gortex 0.64.1 报告 repository not tracked 的死锁问题，由 code-Manager 在连接调度层接管启动跳板（gortex-bridge），在拉起原版 Gortex 二进制前动态探测并设置合法工作目录，实现 Antigravity 与原版 Gortex 0.64.1 的无缝兼容；严格解耦 Cursor 平台并维持其原生直连，全面保障 7 大平台的独立性与单测验证；同步校准 Gortex 提示词，明确安装目录报错防降级规则与 55 Core 工具使用规范。
 - v0.1.7 增强：校准 Gortex 提示词规范，确立多项目自适应与动态感知机制（核心合一规范），规范自动目标对齐与穿透搜索/精读规则，明确多仓库全图谱铁律，严禁未经穿透检索擅自断定未索引并退回原生工具；统一去除提示词 UTF-8 BOM 确保标准编码。
@@ -2728,5 +2728,6 @@ git push origin v0.1.1
 - v0.1.10 增强：gortex 提示词更新（深入对齐 Gortex 0.64.3 规范，补齐与细化 session 16 大通道、overlay/recall/remember 细化参数、统一 output 控制与多分支工作树 View 治理）；优化上游物理连接多路复用聚合与冗余空闲连接自动维护回收机制。
 - v0.1.11 增强：Gortex 与 RTK 提示词联动自动同步（Gortex 点击“注册 MCP”、RTK 点击“启动”时，分别自动检测受管 Gortex 与 RTK-AI 目录下的提示词参考文件，若存在旧版物理文件则先彻底删除再写入 EXE 内置最新版本，确保本地文档与 EXE 实时同步；各平台软件注册仍坚决使用 EXE 内置编译正文，不受磁盘物理文件干扰；统一清理提示词 UTF-8 BOM，通过高标准规范校验）。
 - v0.1.12 增强：Gortex 提示词规范精炼与参数格式优化（明确 dry_run 与 physical_evidence 互斥铁律，规范语法门禁与门面 match/replacement 别名字段；精简 overlay、recall/remember、session、review/pr/response 子命令及通用 output 塑形说明；强化多分支 View 治理与多仓库全图谱最终铁律）。
-- v0.1.20 增强：Gortex 多项目联合工作区（workspace: default）与双模自愈同步治理（全面升级提示词 3.4 节为联合工作区与双模检索自适应规范，严禁 set_active_project 传入非法绝对路径，实现日常分析意图聚焦防污染与跨库拓扑穿透畅通无阻；新增全局配置 config.yaml 双轨自动对齐与标签维护机制，高频 500ms 文件属性感知与 10s 轮询保底自动修复多项目 workspace: default 属性与 project slug，剔除多余未登记项目；增加全量单元测试覆盖）。
+- v0.1.20 增强：Gortex 多项目联合工作区（workspace: default）与双模自愈同步治理（全面升级提示词 3.4 节为联合工作区与双模检索自适应规范，严禁 set_active_project 传入非法绝对路径，实现日常分析意图聚焦防污染与跨库拓扑穿透畅通无阻；新增全局配置 config.yaml 双轨自动对齐与标签维护机制，2s 文件属性感知与 10s 轮询保底自动修复多项目 workspace: default 属性与 project slug，剔除多余未登记项目；增加全量单元测试覆盖）。
+- v0.1.25 增强：优化 Gortex 增量监听防抖机制与配置同步自愈频率（将项目 Watcher 文件变更防抖时间 debounce_ms 调整为 50ms，显著提升代码编辑与图谱增量更新的响应速度；将双轨自愈中的高频文件属性感知周期优化为 2s，兼顾极速变更感知与低系统开销，并保持 10s 心跳轮询全量保底机制；同步更新单元测试与规范文档）。
 

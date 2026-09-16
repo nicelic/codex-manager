@@ -55,7 +55,7 @@ func repairInstalledGortexPath() {
 	}
 }
 
-const gortexWatchDebounceMilliseconds = 300
+const gortexWatchDebounceMilliseconds = 50
 
 func yamlMappingValue(node *yaml.Node, key string) (*yaml.Node, bool) {
 	if node == nil || node.Kind != yaml.MappingNode {
@@ -384,9 +384,9 @@ func startGortexWatchEnforcer() {
 		log.Printf("Gortex 工作区自愈初始化失败: %v", err)
 	}
 
-	// 检测轨 1：文件变更即刻感知（500ms 高频感知 config.yaml 和 projects.json 属性变化）
+	// 检测轨 1：文件变更即刻感知（2s 周期感知 config.yaml 和 projects.json 属性变化）
 	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			configPath := gortexManagedPath("config", "gortex", "config.yaml")

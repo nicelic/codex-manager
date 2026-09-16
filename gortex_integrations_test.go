@@ -885,7 +885,7 @@ func TestEnsureGortexWatchConfigPreservesUserYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	watch := root["watch"].(map[string]any)
-	if watch["enabled"] != true || int(watch["debounce_ms"].(int)) != 300 {
+	if watch["enabled"] != true || int(watch["debounce_ms"].(int)) != 50 {
 		t.Fatalf("watch config = %#v", watch)
 	}
 	if watch["paths"].([]any)[0] != "src" {
