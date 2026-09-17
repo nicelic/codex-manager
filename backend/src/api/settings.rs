@@ -61,9 +61,13 @@ pub async fn update_setting(
         }
         "startup_enabled" => {
             cfg.startup_enabled = val.parse::<bool>().unwrap_or(false);
+            let _ = crate::common::windows::sync_startup_registry(cfg.startup_enabled, cfg.background_start);
         }
         "background_start" => {
             cfg.background_start = val.parse::<bool>().unwrap_or(false);
+            if cfg.startup_enabled {
+                let _ = crate::common::windows::sync_startup_registry(cfg.startup_enabled, cfg.background_start);
+            }
         }
         "retry_enabled" => {
             cfg.retry_enabled = val.parse::<bool>().unwrap_or(false);

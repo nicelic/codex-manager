@@ -6,7 +6,7 @@ llmtrim_path: ''
 local_api_key: ''
 upstream_websocket_enabled: true
 startup_enabled: false
-background_start: false
+background_start: true
 retry_enabled: false
 retry_count: '5'
 retry_interval_seconds: '1'

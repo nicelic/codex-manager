@@ -21,37 +21,91 @@ pub async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     Json(LlmtrimService::get_status(&cfg.llmtrim_path))
 }
 
-pub async fn get_releases(Query(query): Query<PageQuery>) -> impl IntoResponse {
+pub async fn get_releases(
+    State(state): State<AppState>,
+    Query(query): Query<PageQuery>,
+) -> impl IntoResponse {
     let page = query.page.unwrap_or(1);
-    Json(LlmtrimService::get_releases(page))
+    let proxy = {
+        let cfg = state.config.read().await;
+        if cfg.outbound_proxy.is_empty() {
+            None
+        } else {
+            Some(cfg.outbound_proxy.clone())
+        }
+    };
+
+    match LlmtrimService::fetch_releases(page, proxy.as_deref()).await {
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err, "releases": [], "page": page, "has_more": false })),
+        ),
+    }
 }
 
-pub async fn install(Json(_payload): Json<LlmtrimInstallRequest>) -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "llmtrim 安装任务已完成", "success": true })),
-    )
+pub async fn install(
+    State(state): State<AppState>,
+    Json(payload): Json<LlmtrimInstallRequest>,
+) -> impl IntoResponse {
+    let proxy = {
+        let cfg = state.config.read().await;
+        if cfg.outbound_proxy.is_empty() {
+            None
+        } else {
+            Some(cfg.outbound_proxy.clone())
+        }
+    };
+
+    match LlmtrimService::install(payload.tag_name, proxy.as_deref()).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "llmtrim 安装任务已完成", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn start() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "llmtrim 守护进程已启动", "success": true })),
-    )
+    match LlmtrimService::start() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "llmtrim 守护进程已启动", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn stop() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "llmtrim 已停止", "success": true })),
-    )
+    match LlmtrimService::stop() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "llmtrim 已停止", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn uninstall() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "llmtrim 已卸载", "success": true })),
-    )
+    match LlmtrimService::uninstall() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "llmtrim 已卸载", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
@@ -65,6 +119,7 @@ pub async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn show_logs(State(state): State<AppState>) -> impl IntoResponse {
     let mut showing = state.llmtrim_log_showing.write().await;
     *showing = true;
+    let _ = LlmtrimService::show_logs();
     (StatusCode::OK, Json(json!({ "showing": true })))
 }
 

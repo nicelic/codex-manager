@@ -22,6 +22,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    let _single_instance = match common::windows::acquire_single_instance("Local\\code-Manager-SingleInstanceMutex") {
+        Ok(guard) => guard,
+        Err(err) => {
+            error!("{}", err);
+            eprintln!("{}", err);
+            return Ok(());
+        }
+    };
+
     let config_path = "config.yaml";
     let config = if Path::new(config_path).exists() {
         AppConfig::load_or_default(config_path)
@@ -63,14 +72,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("前端网页已内嵌打包在可执行文件中");
     info!("==================================================");
 
-    // 自动唤起默认系统浏览器
-    let launch_url = url.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-        if let Err(e) = open::that(&launch_url) {
-            error!("无法自动唤起系统浏览器: {}, 请手动访问: {}", e, launch_url);
-        }
-    });
+    let args: Vec<String> = std::env::args().collect();
+    let is_background = args.iter().any(|a| a == "--background");
+
+    // 自动唤起默认系统浏览器（若非后台静默启动）
+    if !is_background {
+        let launch_url = url.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+            if let Err(e) = open::that(&launch_url) {
+                error!("无法自动唤起系统浏览器: {}, 请手动访问: {}", e, launch_url);
+            }
+        });
+    } else {
+        info!("检测到 --background 参数，程序以后台静默方式运行。");
+    }
 
     let app = router::create_router(state);
 

@@ -1,5 +1,5 @@
 use axum::{
-    extract::Query,
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -20,44 +20,104 @@ pub async fn get_status() -> impl IntoResponse {
     Json(SnipService::get_status())
 }
 
-pub async fn get_releases(Query(query): Query<PageQuery>) -> impl IntoResponse {
+pub async fn get_releases(
+    State(state): State<AppState>,
+    Query(query): Query<PageQuery>,
+) -> impl IntoResponse {
     let page = query.page.unwrap_or(1);
-    Json(SnipService::get_releases(page))
+    let proxy = {
+        let cfg = state.config.read().await;
+        if cfg.outbound_proxy.is_empty() {
+            None
+        } else {
+            Some(cfg.outbound_proxy.clone())
+        }
+    };
+
+    match SnipService::fetch_releases(page, proxy.as_deref()).await {
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err, "releases": [], "page": page, "has_more": false })),
+        ),
+    }
 }
 
-pub async fn install(Json(_payload): Json<SnipInstallRequest>) -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "snip 安装成功", "success": true })),
-    )
+pub async fn install(
+    State(state): State<AppState>,
+    Json(payload): Json<SnipInstallRequest>,
+) -> impl IntoResponse {
+    let proxy = {
+        let cfg = state.config.read().await;
+        if cfg.outbound_proxy.is_empty() {
+            None
+        } else {
+            Some(cfg.outbound_proxy.clone())
+        }
+    };
+
+    match SnipService::install(payload.tag_name, proxy.as_deref()).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "snip 安装成功，Hook 与环境已就绪", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn start() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "snip 已启动", "success": true })),
-    )
+    match SnipService::start() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "snip 已启动", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn stop() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "snip 已停止", "success": true })),
-    )
+    match SnipService::stop() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "snip 已停止", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn trust() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "snip 信任设置已生效", "success": true })),
-    )
+    match SnipService::launch_trust() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "已在独立控制台启动 Codex 信任审核引导", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn uninstall() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "snip 已卸载", "success": true })),
-    )
+    match SnipService::uninstall() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "snip 已卸载", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub fn router() -> Router<AppState> {

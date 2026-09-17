@@ -20,3 +20,8 @@ dist/
 Thumbs.db
 Desktop.ini
 .DS_Store
+.agents/
+.codex/
+.gortex.yaml
+backend/config.yaml
+
