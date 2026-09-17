@@ -1,0 +1,22 @@
+# Rust
+target/
+**/target/
+**/*.rs.bk
+Cargo.lock
+
+# Frontend
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+*.local
+.pnpm-debug.log*
+
+# OS & Editors
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
