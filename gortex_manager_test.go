@@ -934,3 +934,30 @@ func TestAntigravityBridgeEntryAndResolution(t *testing.T) {
 	}
 }
 
+func TestGortexActiveTaskMemoryPersistence(t *testing.T) {
+	clearGortexActiveTask()
+	if task := getGortexActiveTask(); task != nil {
+		t.Fatalf("expected nil active task initially, got %#v", task)
+	}
+
+	testPath := `E:\test\project`
+	setGortexActiveTask(testPath, "track")
+	task := getGortexActiveTask()
+	if task == nil || task.Path != testPath || task.Action != "track" {
+		t.Fatalf("expected active track task for %s, got %#v", testPath, task)
+	}
+
+	snapshot := gortexStatusSnapshot()
+	if snapshot.ActiveTask == nil || snapshot.ActiveTask.Path != testPath || snapshot.ActiveTask.Action != "track" {
+		t.Fatalf("snapshot missing active task: %#v", snapshot.ActiveTask)
+	}
+
+	clearGortexActiveTask()
+	if task := getGortexActiveTask(); task != nil {
+		t.Fatalf("expected nil active task after clear, got %#v", task)
+	}
+	snapshotAfter := gortexStatusSnapshot()
+	if snapshotAfter.ActiveTask != nil {
+		t.Fatalf("snapshot should not have active task after clear, got %#v", snapshotAfter.ActiveTask)
+	}
+}

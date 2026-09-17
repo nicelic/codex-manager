@@ -2733,3 +2733,4 @@ git push origin v0.1.1
 - v0.1.26 增强：优化 Gortex 配置同步与自愈性能（引入 `.gortex.yaml` 文件属性与大小状态缓存机制，避免高频轮询引发的无效磁盘 I/O 与解析开销；配置或 Watcher 实际发生变更时异步触发 Gortex daemon 重载（`daemon reload`），实现配置热更新与自愈即时生效；补充完整的状态缓存与变更重载单测验证）。
 - v0.1.27 增强：Gortex 提示词深度对齐 Gortex 0.64.4 规范与大型项目 track 索引不限时优化（全面升级提示词至 61 项核心与门面工具规范，补齐 ownership 代码归属与 blame 状态机、explain_view 路径视图与代际穿透诊断、search_text 截断标志与 count 下界判定、search_ast 语法防误报及 githook watchdog 保护；将受管 gortex track 超时与 --wait-timeout 参数调整为不限制，彻底解除超大工程建图索引超时限制）。
 
+- v0.1.28 增强：优化 Gortex track 与 untrack 交互反馈与任务状态感知（后端增加 ActiveTask 运行时状态追踪与内存快照透传，前端增加动态旋转加载点动效与任务级禁用保护，支持 track 期间实时显示正在索引的项目条目与进度反馈，全面增强长时间建图操作的可观测性与界面响应体验；补充内存持久化与快照覆盖单测）。

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 const statusPollInterval = 1000
 const managementWebSocketConnectTimeout = 2500
@@ -42,7 +42,21 @@ const checking = ref(false)
 const loadingSettings = ref(true)
 const checkedAt = ref('尚未检查')
 const activeAddress = window.location.host
-const activeTab = ref('rtk')
+const validTabs = ['rtk', 'snip', 'llmtrim', 'gortex']
+const savedTab = (() => {
+  try {
+    const t = localStorage.getItem('codex_manager_active_tab')
+    return validTabs.includes(t) ? t : 'rtk'
+  } catch {
+    return 'rtk'
+  }
+})()
+const activeTab = ref(savedTab)
+watch(activeTab, (tab) => {
+  try {
+    localStorage.setItem('codex_manager_active_tab', tab)
+  } catch {}
+})
 const managementProtocol = ref('http1.1')
 const apiKey = ref('')
 const proxy = reactive({
@@ -89,12 +103,59 @@ const selectedSnipVersion = ref('')
 const snipInstallWorking = ref(false)
 const snipDeleteWorking = ref(false)
 const snipTrustWorking = ref(false)
-const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
+const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', activeTask: null, statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
 const gortexDiagnostics = reactive({ loading: false, doctorOk: false, doctorOutput: '', doctorError: '', statusOk: false, statusOutput: '', statusError: '' })
 const gortexProjectPath = ref('')
 const gortexReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
 const selectedGortexVersion = ref('')
 const gortexBusy = computed(() => gortex.working || gortex.installWorking || gortex.installing)
+
+const DOT_FRAMES = ['·', '··', '···']
+const rotatingDots = ref('···')
+let rotatingDotsTimer = null
+let rotatingDotsIndex = 0
+
+function startRotatingDots() {
+  if (rotatingDotsTimer) return
+  rotatingDotsIndex = 0
+  rotatingDots.value = DOT_FRAMES[0]
+  rotatingDotsTimer = window.setInterval(() => {
+    rotatingDotsIndex = (rotatingDotsIndex + 1) % DOT_FRAMES.length
+    rotatingDots.value = DOT_FRAMES[rotatingDotsIndex]
+  }, 450)
+}
+
+function stopRotatingDots() {
+  if (rotatingDotsTimer) {
+    window.clearInterval(rotatingDotsTimer)
+    rotatingDotsTimer = null
+  }
+  rotatingDotsIndex = 2
+  rotatingDots.value = '···'
+}
+
+watch(
+  () => gortexBusy.value,
+  (busy) => {
+    if (busy) {
+      startRotatingDots()
+    } else {
+      stopRotatingDots()
+    }
+  },
+  { immediate: true }
+)
+
+const isGortexTracking = computed(() => {
+  if (gortex.activeTask && gortex.activeTask.action === 'track') return true
+  return Boolean(gortex.working && gortexProjectPath.value)
+})
+
+function isGortexUntracking(project) {
+  if (!gortex.activeTask) return false
+  if (gortex.activeTask.action !== 'untrack') return false
+  return (gortex.activeTask.path || '').toLowerCase() === (project || '').toLowerCase()
+}
 function gortexVersionKey(value) {
   const text = String(value || '').trim().toLowerCase()
   const match = text.match(/v?\d+(?:\.\d+){2}/)
@@ -577,6 +638,16 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.projectMCPEnabled = Boolean(data.project_mcp_enabled)
   gortex.projectMCPProjects = Array.isArray(data.project_mcp_projects) ? data.project_mcp_projects : []
   gortex.defaultProject = data.default_project || ''
+  if (data.active_task && data.active_task.path) {
+    gortex.activeTask = data.active_task
+    gortex.working = true
+    if (data.active_task.action === 'track' && !gortexProjectPath.value) {
+      gortexProjectPath.value = data.active_task.path
+    }
+  } else if (gortex.activeTask) {
+    gortex.activeTask = null
+    gortex.working = false
+  }
   gortex.loading = false
   if (!silent && data.message) gortex.notice = data.message
 }
@@ -2355,7 +2426,7 @@ onBeforeUnmount(() => {
               {{ activationLabel(gortex, 'daemon 运行中') }}
             </span>
             <button type="button" :class="{ stop: gortex.running }" :disabled="gortex.loading || gortexBusy || !gortex.managedInstalled" @click="controlGortex(gortex.running ? 'stop' : 'start')">
-              {{ gortex.working ? '处理中…' : (!gortex.managedInstalled ? '仅检测' : (gortex.running ? '停止 daemon' : '启动 daemon')) }}
+              {{ gortex.working ? ('处理中' + rotatingDots) : (!gortex.managedInstalled ? '仅检测' : (gortex.running ? '停止 daemon' : '启动 daemon')) }}
             </button>
             <button type="button" :disabled="gortex.loading || gortexBusy" @click="loadGortexStatus">
               {{ gortex.loading ? '读取中…' : '刷新状态' }}
@@ -2414,13 +2485,17 @@ onBeforeUnmount(() => {
             <span>输入项目绝对路径后执行 track；取消 track 只解除 Gortex 对该项目的索引关联，不删除项目文件。</span>
           </label>
           <div class="setting-control">
-            <input id="gortex-project-path" v-model="gortexProjectPath" spellcheck="false" autocomplete="off" placeholder="D:\\你的项目所在的目录" />
-            <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="trackGortexProject">track</button>
+            <input id="gortex-project-path" v-model="gortexProjectPath" spellcheck="false" autocomplete="off" placeholder="D:\\你的项目所在的目录" :disabled="gortexBusy" />
+            <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="trackGortexProject">{{ isGortexTracking ? ('track' + rotatingDots) : 'track' }}</button>
           </div>
-          <div v-if="gortex.trackedProjects.length" class="gortex-project-list">
+          <div v-if="gortex.trackedProjects.length || (gortex.activeTask && gortex.activeTask.action === 'track')" class="gortex-project-list">
+            <div v-if="gortex.activeTask && gortex.activeTask.action === 'track' && !gortex.trackedProjects.some(p => p.toLowerCase() === gortex.activeTask.path.toLowerCase())" class="gortex-project-item">
+              <code>{{ gortex.activeTask.path }}</code>
+              <button type="button" disabled>{{ 'track' + rotatingDots }}</button>
+            </div>
             <div v-for="project in gortex.trackedProjects" :key="project" class="gortex-project-item">
               <code>{{ project }}</code>
-              <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="untrackGortexProject(project)">untrack</button>
+              <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="untrackGortexProject(project)">{{ isGortexUntracking(project) ? ('untrack' + rotatingDots) : 'untrack' }}</button>
             </div>
           </div>
           <p v-else class="daemon-meta">尚未记录通过本页面 track 的项目。</p>

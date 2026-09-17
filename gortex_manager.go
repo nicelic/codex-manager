@@ -117,10 +117,46 @@ type gortexStatusResponse struct {
 	CodexTrustSteps           []string `json:"codex_trust_steps,omitempty"`
 	TrackedProjects           []string `json:"tracked_projects"`
 	ProjectMCPEnabled         bool     `json:"project_mcp_enabled"`
-	ProjectMCPProjects        []string `json:"project_mcp_projects,omitempty"`
-	DefaultProject            string   `json:"default_project"`
-	IntegrationPresent        bool     `json:"integration_present"`
-	Message                   string   `json:"message"`
+	ProjectMCPProjects        []string          `json:"project_mcp_projects,omitempty"`
+	DefaultProject            string            `json:"default_project"`
+	IntegrationPresent        bool              `json:"integration_present"`
+	ActiveTask                *GortexActiveTask `json:"active_task,omitempty"`
+	Message                   string            `json:"message"`
+}
+
+type GortexActiveTask struct {
+	Path   string `json:"path"`
+	Action string `json:"action"`
+}
+
+var gortexActiveTaskState struct {
+	sync.RWMutex
+	task *GortexActiveTask
+}
+
+func setGortexActiveTask(path, action string) {
+	gortexActiveTaskState.Lock()
+	defer gortexActiveTaskState.Unlock()
+	gortexActiveTaskState.task = &GortexActiveTask{
+		Path:   path,
+		Action: action,
+	}
+}
+
+func clearGortexActiveTask() {
+	gortexActiveTaskState.Lock()
+	defer gortexActiveTaskState.Unlock()
+	gortexActiveTaskState.task = nil
+}
+
+func getGortexActiveTask() *GortexActiveTask {
+	gortexActiveTaskState.RLock()
+	defer gortexActiveTaskState.RUnlock()
+	if gortexActiveTaskState.task == nil {
+		return nil
+	}
+	taskCopy := *gortexActiveTaskState.task
+	return &taskCopy
 }
 
 type gortexOperationRequest struct {
@@ -1634,7 +1670,7 @@ func gortexStatusSnapshot() gortexStatusResponse {
 	exe := gortexExecutablePath()
 	managedPath := gortexManagedPath("bin", gortexExecutableName)
 	managedRoot := gortexInstallRoot()
-	response := gortexStatusResponse{Path: exe, ManagedRoot: managedRoot, ManagedRootExists: directoryExists(managedRoot), Installed: exe != "", ManagedInstalled: fileExists(managedPath), Installing: gortexInstallInProgress.Load(), AnyProcessRunning: gortexAnyProcessRunning(), UnmanagedProcessRunning: gortexUnmanagedProcessRunning(), DefaultProject: gortexDefaultProject()}
+	response := gortexStatusResponse{Path: exe, ManagedRoot: managedRoot, ManagedRootExists: directoryExists(managedRoot), Installed: exe != "", ManagedInstalled: fileExists(managedPath), Installing: gortexInstallInProgress.Load(), AnyProcessRunning: gortexAnyProcessRunning(), UnmanagedProcessRunning: gortexUnmanagedProcessRunning(), DefaultProject: gortexDefaultProject(), ActiveTask: getGortexActiveTask()}
 	response.CodexAvailable = gortexAgentAvailable("codex")
 	response.ClaudeAvailable = gortexAgentAvailable("claude")
 	response.CursorAvailable = gortexAgentAvailable("cursor")
@@ -2262,6 +2298,8 @@ func (g *gateway) gortexTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	setGortexActiveTask(project, "track")
+	defer clearGortexActiveTask()
 	exe := gortexManagedExecutablePath()
 	if exe == "" {
 		http.Error(w, "未检测到受管 Gortex，请先安装到 code-Manager.exe 同级目录", 400)
@@ -2346,6 +2384,8 @@ func (g *gateway) gortexUntrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	setGortexActiveTask(project, "untrack")
+	defer clearGortexActiveTask()
 	exe := gortexManagedExecutablePath()
 	if exe == "" {
 		http.Error(w, "未检测到受管 Gortex，请先安装到 code-Manager.exe 同级目录", 400)
