@@ -2519,7 +2519,7 @@ Gortex 管理补充
 - 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=1h` 和 `GORTEX_DAEMON_IDLE_TIMEOUT=0`；项目 watcher 使用 `debounce_ms: 50`，前者分别控制定期 reconcile 与常驻不空闲退出，后者控制文件变更后的延迟索引。
 - “启动 daemon”“停止 daemon”只负责受管 Gortex daemon 的真实进程生命周期，不会隐式注册或移除 MCP。Codex 等宿主启动的 `gortex.exe mcp` 不属于 daemon 状态；daemon 被 MCP 调用按需重新启动后，管理页的 1 秒级 WebSocket 状态快照会自动显示运行中。
 - “注册 MCP”与“移除 MCP”分别扫描 Codex、Claude Code、Cursor、GitHub Copilot CLI、OpenCode、Google Antigravity、Gemini CLI 的用户级配置。注册会修复仍明显指向 `gortex mcp` 但缺少受管环境变量的残缺条目；移除只删除本程序账本拥有或仍明显属于 Gortex 的条目，用户改写成其它命令的配置会保留并在页面提示。
-- Gortex MCP 客户端可以连接或按自身配置启动 daemon，但 `track` 建图需要 daemon 控制接口。页面 track 会在 daemon 已停止时按需启动受管 daemon，然后调用 `gortex track <path> --wait --wait-timeout 30m` 等待索引稳定；因此大型项目可能需要较长时间，失败时输入框内容保留，成功后输入框清空且已完成目录显示在下方。
+- Gortex MCP 客户端可以连接或按自身配置启动 daemon，但 `track` 建图需要 daemon 控制接口。页面 track 会在 daemon 已停止时按需启动受管 daemon，然后调用 `gortex track <path> --wait --wait-timeout 0` 不限制等待时间直到索引稳定；因此大型项目可能需要较长时间，失败时输入框内容保留，成功后输入框清空且已完成目录显示在下方。
 - track 项目录入只写入同级 `Gortex\\config\\projects.json`；取消 track 不删除项目文件。track/untrack 的命令超时独立于版本查询，分别允许较长索引/清理操作，避免统一的 30 秒超时导致 `context deadline exceeded`。
 - Windows 安装不再执行远端 `install.ps1`，而是直接读取 GitHub Release API，下载 `gortex_windows_amd64.zip` 和 `checksums.txt`，校验 SHA-256 后安全解压到受管 `Gortex\\bin`；安装或升级前会先强制结束所有路径下精确匹配的 `gortex.exe`（包括外部启动的 MCP/daemon），等待全部退出后才下载和解压；只有临时目录中的新 exe 已成功得到且通过有效文件检查后，才使用备份回滚方式替换当前文件，下载、解压或替换失败不会先删除旧版本。安装只写入 Gortex 文件，不启动 daemon，也不修改 MCP。
 - 安装进行中会锁定 Gortex 的版本、安装、daemon、MCP、track 和卸载操作；受管 daemon 运行时，管理页要求先停止 daemon，停止确认后才允许安装或升级。外部或 MCP 进程不会阻塞版本列表加载，点击安装时会统一清理；状态版本会把 `gortex version` 输出中的构建后缀（例如 `v0.64.1+173cad8`）与 Release tag `v0.64.1` 归一化比较，同版本禁用重复安装，版本不同显示升级。卸载确认后先移除受管 MCP 配置、停止受管 daemon，再按精确进程名检查并结束所有路径下的 `gortex.exe`（包括外部启动的 MCP/daemon），最后删除 Gortex 目录。该操作可能影响用户手工安装的其他 Gortex 实例，因此只在用户明确确认卸载时执行。
@@ -2731,4 +2731,5 @@ git push origin v0.1.1
 - v0.1.20 增强：Gortex 多项目联合工作区（workspace: default）与双模自愈同步治理（全面升级提示词 3.4 节为联合工作区与双模检索自适应规范，严禁 set_active_project 传入非法绝对路径，实现日常分析意图聚焦防污染与跨库拓扑穿透畅通无阻；新增全局配置 config.yaml 双轨自动对齐与标签维护机制，2s 文件属性感知与 10s 轮询保底自动修复多项目 workspace: default 属性与 project slug，剔除多余未登记项目；增加全量单元测试覆盖）。
 - v0.1.25 增强：优化 Gortex 增量监听防抖机制与配置同步自愈频率（将项目 Watcher 文件变更防抖时间 debounce_ms 调整为 50ms，显著提升代码编辑与图谱增量更新的响应速度；将双轨自愈中的高频文件属性感知周期优化为 2s，兼顾极速变更感知与低系统开销，并保持 10s 心跳轮询全量保底机制；同步更新单元测试与规范文档）。
 - v0.1.26 增强：优化 Gortex 配置同步与自愈性能（引入 `.gortex.yaml` 文件属性与大小状态缓存机制，避免高频轮询引发的无效磁盘 I/O 与解析开销；配置或 Watcher 实际发生变更时异步触发 Gortex daemon 重载（`daemon reload`），实现配置热更新与自愈即时生效；补充完整的状态缓存与变更重载单测验证）。
+- v0.1.27 增强：Gortex 提示词深度对齐 Gortex 0.64.4 规范与大型项目 track 索引不限时优化（全面升级提示词至 61 项核心与门面工具规范，补齐 ownership 代码归属与 blame 状态机、explain_view 路径视图与代际穿透诊断、search_text 截断标志与 count 下界判定、search_ast 语法防误报及 githook watchdog 保护；将受管 gortex track 超时与 --wait-timeout 参数调整为不限制，彻底解除超大工程建图索引超时限制）。
 

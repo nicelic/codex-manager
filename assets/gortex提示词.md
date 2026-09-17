@@ -42,16 +42,16 @@ Gortex 是对其 track 仓库代码定位、源码精读、关系分析、数据
 
 2.2 检索、阅读与图谱协同
 各工具正交协同，按需自由组合：
-search_text(query="...", regexp=false, path="...", repo="...")：Trigram 索引全文/正则搜索。命中附带 symbol_id 与 symbol_name，可衔接图谱工具。
+search_text(query="...", regexp=false, limit=100, path="...", repo="...")：Trigram 索引全文/正则搜索。命中附带 symbol_id 与 symbol_name，可衔接图谱工具。支持 limit（默认 100，上限 1000）。若返回 _truncated_by_limit=true 则 count_is_exact=false（count 仅为下界 floor；受截断结果严禁/无法追加 path 参数找回未命中项，需扩大 limit 或细化 query）。
 search_symbols(query="...", kind="...", flavor="...", path="...")：BM25 驼峰分词检索 AST 定义。
-search_ast(pattern="...") 或 search_ast(detector="...")：[热] 语法级代码检索。支持 15+ 缺陷/安全检测器及 Tree-sitter S 表达式匹配。
+search_ast(pattern="...") 或 search_ast(detector="...")：[热] 语法级代码检索。支持 15+ 缺陷/安全检测器及 Tree-sitter S 表达式匹配（Python 下 f-string 常量插值免误报，Pydantic 验证器识别为主干入口）。
 find_files(query="...", glob="*.*")：按路径前缀或 Glob 通配查找工程物理文件。
 get_callers / get_call_chain / find_usages / find_implementations：沿 AST 拓扑追踪调用链、实现与精准引用点。
 read_file / get_symbol_source：阅读文件或具体函数源码。长文件巡检建议配合 offset/limit 或 compress_bodies=true。
 
 3. 双模调用对照字典与参数防错规范
 
-3.1 双模核心对照字典（基于 Gortex 0.64.3 源码事实）
+3.1 双模核心对照字典（基于 Gortex 0.64.4 源码事实）
 
 Core 扁平离散模式下严格属性校验（additionalProperties: false）。入参属性名必须严格匹配。若遇冷目录工具，调用 tools_search 唤醒或选用热核心等价工具。
 
@@ -60,7 +60,7 @@ Core 扁平离散模式下严格属性校验（additionalProperties: false）。
 3. 工程骨架大纲：get_repo_outline() / 门面 explore(operation="outline")。[热] 模块大纲，无 repo 参
 4. 架构统一分析：analyze(kind="architecture") / 门面 analyze(kind="architecture")。[热] 架构全景(门面鉴别参为kind)
 5. 符号精确搜索：search_symbols(query="...", kind="...") / 门面 search(operation="symbols", query="...")。[热] 固定 assist=off
-6. 文本全文搜索：search_text(query="...", regexp=false) / 门面 search(operation="text", query="...")。[热] Trigram加速
+6. 文本全文搜索：search_text(query="...", regexp=false, limit=100) / 门面 search(operation="text", query="...")。[热] Trigram加速，截断返回 _truncated_by_limit=true，此时 count 为下界 floor
 7. AST 语法检索：search_ast(pattern="...") / 门面 search(operation="ast", query="...")。[热] 门面 query 自动别名转 pattern
 8. 查找文件：find_files(query="...", glob="*.*") / 门面 search(operation="files", query="...")。[热] 文件名与 Glob 查找
 9. 多轴约束过滤：winnow_symbols(text_match="...") / 门面 search(operation="winnow", query="...")。[冷] BM25与图属性联合过滤
@@ -103,17 +103,19 @@ Core 扁平离散模式下严格属性校验（additionalProperties: false）。
 46. 复杂度健康评分：audit_health() / 门面 analyze(kind="health")。[热] A-F 级图健康度评分
 47. 代码热点与扰动率：get_churn_rate() / 门面 analyze(kind="churn")。[热] 函数级代码提交扰动率
 48. 未重读增量变动：get_recent_changes() / 门面 analyze(kind="recent_changes")。[热] Watch 增量变更检测
-49. 持久化规约记忆：store_memory(kind="invariant", title="...", body="...") / 门面 remember(operation="memory", arguments={...})。[热] 记录跨会话不变量
-50. 保存代码决策笔记：save_note(file_path="...", body="...", tags="tag1,tag2") / 门面 remember(operation="note", arguments={...})。[热] 扁平参为 file_path
-51. 召回规约记忆：surface_memories(task="...", symbol_ids="...") / 门面 recall(operation="surface", arguments={task:"..."})。[热] 召回历史记忆
-52. 提炼会话摘要：distill_session() / 门面 recall(operation="distill")。[热] 提炼关键上下文
-53. 跨项目穿透检索：query_project(project="...", query="...") / 门面 workspace(operation="project", arguments={project:"...", query:"..."})。[热] 跨库穿透免切检索
-54. 热切换活跃工程：set_active_project(project="...") / 门面 workspace_admin(operation="set_active_project", arguments={...})。[热] 动态重定向主工程
-55. 当前活跃工程：get_active_project() / 门面 workspace(operation="active_project")。[热] 查询当前绑定工程
-56. 已索引仓库列表：list_repos() / 门面 workspace(operation="repos")。[热] 查询已 track 仓库
-57. 全局图谱统计：graph_stats() / 门面 workspace(operation="graph")。[热] 节点边与容量统计
-58. 守护进程健康检查：index_health() / 门面 workspace(operation="index")。[热] 索引健康度诊断
-59. 发现延迟目录工具：tools_search(query="...") / 门面 capabilities(operation="legacy_search")。[热] 动态激活冷目录工具
+49. 代码归属与责任人：analyze(kind="ownership", path_prefix="...", min_symbols=1) / 门面 analyze(kind="ownership")。[热] 作者分布与提交统计。遵守 data_state 状态机：若 state 为 absent 或 partial，零作者非无人维护证据（严禁调用 reindex_repository，必须通过宿主运行 gortex enrich blame 修复；若有作者但行数为空可调低 min_symbols）
+50. 持久化规约记忆：store_memory(kind="invariant", title="...", body="...") / 门面 remember(operation="memory", arguments={...})。[热] 记录跨会话不变量
+51. 保存代码决策笔记：save_note(file_path="...", body="...", tags="tag1,tag2") / 门面 remember(operation="note", arguments={...})。[热] 扁平参为 file_path
+52. 召回规约记忆：surface_memories(task="...", symbol_ids="...") / 门面 recall(operation="surface", arguments={task:"..."})。[热] 召回历史记忆
+53. 提炼会话摘要：distill_session() / 门面 recall(operation="distill")。[热] 提炼关键上下文
+54. 跨项目穿透检索：query_project(project="...", query="...") / 门面 workspace(operation="project", arguments={project:"...", query:"..."})。[热] 跨库穿透免切检索
+55. 热切换活跃工程：set_active_project(project="...") / 门面 workspace_admin(operation="set_active_project", arguments={...})。[热] 动态重定向主工程
+56. 当前活跃工程：get_active_project() / 门面 workspace(operation="active_project")。[热] 查询当前绑定工程
+57. 已索引仓库列表：list_repos() / 门面 workspace(operation="repos")。[热] 查询已 track 仓库
+58. 全局图谱统计：graph_stats() / 门面 workspace(operation="graph")。[热] 节点边与容量统计
+59. 守护进程健康检查：index_health() / 门面 workspace(operation="index")。[热] 索引健康度诊断
+60. 路径视图与代际诊断：explain_view(path="<path>") / 门面 workspace(operation="view", target={path:"..."})。[冷] 诊断具体物理文件绑定的工作树 checkout、路由代际与无视图响应原因，支持透过未绑定 CWD 穿透诊断
+61. 发现延迟目录工具：tools_search(query="...") / 门面 capabilities(operation="legacy_search")。[热] 动态激活冷目录工具
 
 3.2 参数容器与 arguments 规范
 
@@ -175,7 +177,7 @@ relations（11个）：callers（调用者）, cluster（连通社区）, declar
 trace（7个）：call_chain（调用链路追踪）, cfg（控制流图）, flow（端到端数据流向）, graph（通用图谱查询）, path（节点最短路径，入参 source_id/sink_id）, taint（污点传播分析）, walk（图漫游拓扑步进）。
 
 4.4 analyze 统一分析全景（Core 78 种 kind vs Facade 22 种 kind）
-Core 模式 analyze(kind="...")：内置 78 种分析 kind。涵盖架构拓扑（cycles, would_create_cycle, clusters, suggest_boundaries, hotspots, components）、代码健康（dead_code, coverage_gaps, doc_staleness, todos）、并发与安全（race_writes, channel_ops, goroutine_spawns, sast, hygiene, unsafe_patterns, routes, models）等。传 kind="help" 获取全量清单。
+Core 模式 analyze(kind="...")：内置 78 种分析 kind。涵盖架构拓扑（cycles, would_create_cycle, clusters, suggest_boundaries, hotspots, components）、代码健康与归属（ownership, dead_code, coverage_gaps, doc_staleness, todos；Python Pydantic 验证器和序列化器已认为主干活动入口免除 dead_code 误报；ownership 携带 data_state 状态机，遇 absent/partial 需通过 CLI 运行 gortex enrich blame 修复而不能靠 reindex_repository）、并发与安全（race_writes, channel_ops, goroutine_spawns, sast, hygiene, unsafe_patterns, routes, models）等。传 kind="help" 获取全量清单。
 Facade 门面 analyze(kind="...")：鉴别参数固化为 kind，包含 22 个子种类，聚合路由至离散分析（如 contracts, health, churn, recent_changes, architecture, clones, untested, why, lint 等）。切勿传 operation="..." 导致静默退化为 help。
 
 5. 修改、重构与验证
@@ -204,7 +206,7 @@ Facade 门面 analyze(kind="...")：鉴别参数固化为 kind，包含 22 个�
 2. get_test_targets(ids="id1,id2")：定位受波及单测。
 3. check_guards(ids="id1,id2")：评估防护规则与架构边界。
 4. change_contract(...)：评估变更风险契约与停止条件。
-5. 真实测试执行：在宿主环境运行构建与测试命令（go test, npm test 等）。
+5. 真实测试执行：在宿主环境运行构建与测试命令（go test, npm test 等）。若配置了 gortex githook（支持 post-commit, post-merge, post-checkout），可使用 --hook-timeout=30 开启 watchdog 保护防挂死。
 
 6. 状态机、隔离层与持久化记忆
 
@@ -232,12 +234,12 @@ response：超大响应裁剪 response(operation="slice", arguments={start:1, en
 门面与查询类扁平工具支持统一 output 控制对象与顶层参数：max_bytes（最大字节）、limit（最大条数）、format（json、gcx、toon，gcx 节约约 27% Token）、cursor（增量分页游标）、fields（稀疏列投影）、scope（保存范围限定）。
 
 7.2 冲突裁决优先级与分支视图（View）
-多分支与工作树（View）治理：当前工作区由 session/CWD 决定视图，显式检出分支构成自动 Overlay；跨分支只读审计传 view={kind:"worktree",checkout_id:"..."} 或 view={kind:"git_ref",value:"refs/heads/release"}；强一致性传 require_exact=true 与 require_fresh=true。
+多分支与工作树（View）治理：当前工作区由 session/CWD 决定视图，显式检出分支构成自动 Overlay；跨分支只读审计传 view={kind:"worktree",checkout_id:"..."} 或 view={kind:"git_ref",value:"refs/heads/release"}；强一致性传 require_exact=true 与 require_fresh=true。若视图解析异常或需查明路径归属，调用 explain_view(path="<path>") 诊断底层 checkout 路由链与代际（支持透过未绑定 CWD 穿透诊断）。
 自顶向下裁决优先级：
 1. 当前工具返回的真实响应（error、completion、view、guard、effect 信息）。
 2. 当前运行时 capabilities / Schema 规范（request_shape、fixed_arguments、available）。
 3. 真实文件系统与代码仓库状态（workspace、index、repository 物理状态）。
-4. 当前 Gortex 0.64.3 运行时源码实现。
+4. 当前 Gortex 0.64.4 运行时源码实现。
 5. 本规范文档。
 
 多仓库全图谱最终铁律：已 track 仓库统一托管于全局图谱。严禁未经穿透检索或静默切域直接断定未索引并退回原生工具。全流程（探索、定位、精读、修改、重构、验证）全程由 Gortex MCP 闭环，严禁读写脱节。严禁调用 replace_file_content、write_to_file、view_file、grep_search 等宿主工具。仅当 query_project 与带前缀路径均证实未 track 且用户明确要求本地检查时，方可报告未 track。

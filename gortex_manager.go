@@ -38,7 +38,7 @@ const (
 	gortexCommandTimeout     = 30 * time.Second
 	gortexDaemonTimeout      = 2 * time.Minute
 	gortexProcessStopTimeout = 15 * time.Second
-	gortexTrackTimeout       = 35 * time.Minute
+	gortexTrackTimeout       = 0
 	gortexUntrackTimeout     = 10 * time.Minute
 	gortexGitHubReleasesURL  = "https://api.github.com/repos/zzet/gortex/releases"
 	gortexReleasePageSize    = 5
@@ -648,7 +648,13 @@ func runGortexCommand(executable string, args ...string) (string, error) {
 	return runGortexCommandWithTimeout(gortexCommandTimeout, executable, args...)
 }
 func runGortexCommandWithTimeout(timeout time.Duration, executable string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Env = gortexManagedEnv()
@@ -951,7 +957,6 @@ func gortexAgentMCPEntryComplete(existing any, agent, executable string) bool {
 	}
 	return gortexMCPEntryComplete(existing, executable, agent == "copilot")
 }
-
 
 func gortexOpenCodeMCPEntry(executable string) map[string]any {
 	return map[string]any{
@@ -2275,7 +2280,7 @@ func (g *gateway) gortexTrack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if _, err := runGortexCommandWithTimeout(gortexTrackTimeout, exe, "track", project, "--wait", "--wait-timeout", "30m"); err != nil {
+	if _, err := runGortexCommandWithTimeout(gortexTrackTimeout, exe, "track", project, "--wait", "--wait-timeout", "0"); err != nil {
 		http.Error(w, "Gortex track 失败: "+err.Error(), 502)
 		return
 	}
@@ -2742,4 +2747,3 @@ func runGortexBridge(args []string) {
 		os.Exit(1)
 	}
 }
-
