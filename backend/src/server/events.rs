@@ -38,7 +38,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         "listen_address": cfg.listen_address,
                         "message": if proxy_running { "HTTP 代理转发已启动。" } else { "代理转发已停止，请在网页中点击“启动代理”。" },
                         "connections": {
-                            "local_http1": 0,
+                            "local_http1": state.active_requests.load(std::sync::atomic::Ordering::Relaxed),
                             "local_ws": 1,
                             "upstream_h2": 0,
                             "upstream_h2_ws": false,
