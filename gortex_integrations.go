@@ -55,7 +55,7 @@ func repairInstalledGortexPath() {
 	}
 }
 
-const gortexWatchDebounceMilliseconds = 50
+const gortexWatchDebounceMilliseconds = 100
 
 func yamlMappingValue(node *yaml.Node, key string) (*yaml.Node, bool) {
 	if node == nil || node.Kind != yaml.MappingNode {

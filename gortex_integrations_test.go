@@ -886,7 +886,7 @@ func TestEnsureGortexWatchConfigPreservesUserYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	watch := root["watch"].(map[string]any)
-	if watch["enabled"] != true || int(watch["debounce_ms"].(int)) != 50 {
+	if watch["enabled"] != true || int(watch["debounce_ms"].(int)) != 100 {
 		t.Fatalf("watch config = %#v", watch)
 	}
 	if watch["paths"].([]any)[0] != "src" {
@@ -1093,14 +1093,14 @@ func TestEnsureGortexGlobalConfigWorkspaces_ExtraRemovalAndTagRepair(t *testing.
 	}
 }
 
-func TestEnsureGortexWatchConfig_MtimeCacheAndForced50Ms(t *testing.T) {
+func TestEnsureGortexWatchConfig_MtimeCacheAndForced100Ms(t *testing.T) {
 	clearGortexWatchConfigCache()
 	defer clearGortexWatchConfigCache()
 
 	project := t.TempDir()
 	path := filepath.Join(project, ".gortex.yaml")
 
-	// 1. Initial file with non-50 debounce
+	// 1. Initial file with non-100 debounce
 	initialYAML := "watch:\n  enabled: true\n  debounce_ms: 300\n"
 	if err := os.WriteFile(path, []byte(initialYAML), 0o600); err != nil {
 		t.Fatal(err)
@@ -1111,15 +1111,15 @@ func TestEnsureGortexWatchConfig_MtimeCacheAndForced50Ms(t *testing.T) {
 		t.Fatalf("ensureGortexWatchConfigWithChange error: %v", err)
 	}
 	if !changed {
-		t.Fatal("expected changed=true on initial upgrade to 50ms")
+		t.Fatal("expected changed=true on initial upgrade to 100ms")
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "debounce_ms: 50") {
-		t.Fatalf("expected debounce_ms: 50, got:\n%s", string(data))
+	if !strings.Contains(string(data), "debounce_ms: 100") {
+		t.Fatalf("expected debounce_ms: 100, got:\n%s", string(data))
 	}
 
 	// 2. Second call should hit cache and return changed=false
@@ -1150,8 +1150,8 @@ func TestEnsureGortexWatchConfig_MtimeCacheAndForced50Ms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data2), "debounce_ms: 50") {
-		t.Fatalf("expected forced reset to debounce_ms: 50, got:\n%s", string(data2))
+	if !strings.Contains(string(data2), "debounce_ms: 100") {
+		t.Fatalf("expected forced reset to debounce_ms: 100, got:\n%s", string(data2))
 	}
 
 	// 4. Fourth call hits cache again

@@ -2516,13 +2516,34 @@ Gortex 管理补充
 - Gortex 的启动、停止、MCP 注册、track 和 untrack 只允许使用 code-Manager.exe 同级 `Gortex\\bin\\gortex.exe`；PATH 中已有的外部版本仅用于状态检测，普通管理操作不会控制它们。卸载是例外：为确保删除完整，会按精确进程名清理所有 `gortex.exe`。
 - Gortex 状态页会定期通过 `gortex.exe version` 查询版本，并通过受管 `Gortex\\run\\daemon.sock` 与 `daemon.pid` 确认真实 daemon；同路径的 `gortex.exe mcp` MCP stdio 客户端不计入 daemon 运行状态。Windows 下这些查询和 daemon 操作均使用隐藏子进程，不应周期性弹出控制台窗口；若仍看到闪窗，应确认运行的是重新构建后的 EXE，而不是旧发布目录中的版本。
 - Gortex 的配置、数据、索引、缓存、daemon 运行文件和日志均通过受管环境变量归档到同级 `Gortex\\` 目录；卸载只删除该受管目录及本程序拥有的 MCP/项目记录，不删除其他 MCP 或项目文件。
-- 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=1h` 和 `GORTEX_DAEMON_IDLE_TIMEOUT=0`；项目 watcher 使用 `debounce_ms: 50`，前者分别控制定期 reconcile 与常驻不空闲退出，后者控制文件变更后的延迟索引。
+- 受管 code-Manager 启动的 Gortex daemon 使用 `GORTEX_RECONCILE_INTERVAL=1h` 和 `GORTEX_DAEMON_IDLE_TIMEOUT=0`；项目 watcher 使用 `debounce_ms: 100`，前者分别控制定期 reconcile 与常驻不空闲退出，后者控制文件变更后的延迟索引。
 - “启动 daemon”“停止 daemon”只负责受管 Gortex daemon 的真实进程生命周期，不会隐式注册或移除 MCP。Codex 等宿主启动的 `gortex.exe mcp` 不属于 daemon 状态；daemon 被 MCP 调用按需重新启动后，管理页的 1 秒级 WebSocket 状态快照会自动显示运行中。
 - “注册 MCP”与“移除 MCP”分别扫描 Codex、Claude Code、Cursor、GitHub Copilot CLI、OpenCode、Google Antigravity、Gemini CLI 的用户级配置。注册会修复仍明显指向 `gortex mcp` 但缺少受管环境变量的残缺条目；移除只删除本程序账本拥有或仍明显属于 Gortex 的条目，用户改写成其它命令的配置会保留并在页面提示。
 - Gortex MCP 客户端可以连接或按自身配置启动 daemon，但 `track` 建图需要 daemon 控制接口。页面 track 会在 daemon 已停止时按需启动受管 daemon，然后调用 `gortex track <path> --wait --wait-timeout 0` 不限制等待时间直到索引稳定；因此大型项目可能需要较长时间，失败时输入框内容保留，成功后输入框清空且已完成目录显示在下方。
 - track 项目录入只写入同级 `Gortex\\config\\projects.json`；取消 track 不删除项目文件。track/untrack 的命令超时独立于版本查询，分别允许较长索引/清理操作，避免统一的 30 秒超时导致 `context deadline exceeded`。
 - Windows 安装不再执行远端 `install.ps1`，而是直接读取 GitHub Release API，下载 `gortex_windows_amd64.zip` 和 `checksums.txt`，校验 SHA-256 后安全解压到受管 `Gortex\\bin`；安装或升级前会先强制结束所有路径下精确匹配的 `gortex.exe`（包括外部启动的 MCP/daemon），等待全部退出后才下载和解压；只有临时目录中的新 exe 已成功得到且通过有效文件检查后，才使用备份回滚方式替换当前文件，下载、解压或替换失败不会先删除旧版本。安装只写入 Gortex 文件，不启动 daemon，也不修改 MCP。
 - 安装进行中会锁定 Gortex 的版本、安装、daemon、MCP、track 和卸载操作；受管 daemon 运行时，管理页要求先停止 daemon，停止确认后才允许安装或升级。外部或 MCP 进程不会阻塞版本列表加载，点击安装时会统一清理；状态版本会把 `gortex version` 输出中的构建后缀（例如 `v0.64.1+173cad8`）与 Release tag `v0.64.1` 归一化比较，同版本禁用重复安装，版本不同显示升级。卸载确认后先移除受管 MCP 配置、停止受管 daemon，再按精确进程名检查并结束所有路径下的 `gortex.exe`（包括外部启动的 MCP/daemon），最后删除 Gortex 目录。该操作可能影响用户手工安装的其他 Gortex 实例，因此只在用户明确确认卸载时执行。
+
+
+### Gortex 完整时间体系与自愈机制速查（时间参数总览）
+
+为避免排查或配置时反复检索代码，下表汇总 code-Manager 受管 Gortex 运行环境、Watcher 监听、双轨自愈与命令生命周期的所有时间参数：
+
+| 时间参数 | 参数名称 / 代码定义 | 作用机制与职责说明 | 涉及文件与配置位置 |
+| :--- | :--- | :--- | :--- |
+| **100ms** | `debounce_ms: 100` / `gortexWatchDebounceMilliseconds = 100` | **文件变更增量防抖**：项目 track 后自动写入 `.gortex.yaml`。文件保存后在 100ms 内聚合频繁文件事件并触发增量 AST 与图谱索引，保证极速响应与适度合并。 | `.gortex.yaml`、`gortex_integrations.go` |
+| **2s** | `time.NewTicker(2 * time.Second)` | **双轨自愈 — 高频属性感知轨**：后台每 2 秒检测 `config.yaml` 和 `projects.json` 的修改时间（ModTime）与文件大小（Size），发生外部变动即刻触发对齐。 | `gortex_integrations.go:startGortexWatchEnforcer` |
+| **5s** | `gortexTrackedStatusCache`（`5 * time.Second`） | **已 Track 项目状态缓存**：在执行 `gortex status` 查询已 track 仓库列表时在内存中缓存 5 秒，防止前端高频轮询引发 CLI 频繁调用卡顿。 | `gortex_integrations.go:gortexDaemonTrackedProjects` |
+| **10s** | `time.NewTicker(10 * time.Second)` | **双轨自愈 — 全量保底心跳轨**：后台每 10 秒固定执行一次 `reconcileGortexWorkspacesWithUI("default")`，全量巡检并对齐所有已 track 项目的 `.gortex.yaml` 和全局工作区配置。 | `gortex_integrations.go:startGortexWatchEnforcer` |
+| **15s** | `waitForGortexProcessStart(..., 15*time.Second)` | **Daemon 启动等待超时**：执行 track 时若检测到 daemon 尚未运行，拉起进程后最长等待 15 秒确认进程就绪。 | `gortex_manager.go:gateway.gortexTrack` |
+| **30s** | `gortexCommandTimeout = 30 * time.Second` | **通用命令执行超时**：常规 Gortex 管理命令（如版本查询、非 track 命令）的默认超时时间。 | `gortex_manager.go` |
+| **10 分钟** | `gortexUntrackTimeout = 10 * time.Minute` | **取消 Track 超时**：执行 `gortex untrack` 取消项目关联、清理索引和元数据时的超时上限。 | `gortex_manager.go` |
+| **1 小时** | `GORTEX_RECONCILE_INTERVAL="1h"` | **守护进程全量 Reconcile**：注入 Gortex Daemon 环境变量。守护进程自身每隔 1 小时自动对所有已 track 项目进行一次全量 Reconcile 校准。 | `gortex_manager.go:gortexManagedEnv` |
+| **0（常驻）** | `GORTEX_DAEMON_IDLE_TIMEOUT="0"` | **Daemon 空闲不退出**：注入 Gortex Daemon 环境变量。0 表示守护进程常驻后台，永不因空闲超时自动退出。 | `gortex_manager.go:gortexManagedEnv` |
+| **0（不限时）** | `gortexTrackTimeout = 0` / `--wait-timeout 0` | **Track 建图无超时**：执行 `gortex track <path> --wait --wait-timeout 0` 时彻底解除超时限制，确保超大项目首轮建图顺利完成。 | `gortex_manager.go:gateway.gortexTrack` |
+
+- **对已 Track 项目的维护逻辑**：日常依靠 `debounce_ms: 100` 进行文件保存时的实时增量 AST 索引，辅以 `2s` 属性感知与 `10s` 心跳自愈对齐配置，底层由 Gortex Daemon 每 `1h` 自动执行一次全量 Reconcile；无需人工重复执行全量 track。
+- **Track 建图触发原则**：Track 必须由用户在前端界面或接口显式提交目录触发，后台绝不会自动将未登记的项目纳入 track；建图过程解除超时限制（`gortexTrackTimeout = 0`），保障超大型项目建图稳定完成。
 
 
 十四、变更后的交付检查清单
@@ -2719,7 +2740,7 @@ git push origin v0.1.1
   该信任流程与 Snip 的 Hook 记录分开处理。
 - “验证 doctor/status”会执行受管 `gortex.exe doctor --json` 和 `gortex.exe status`，页面分别展示
   MCP、Hook、索引、daemon 以及全部 tracked repositories 的诊断输出。
-- 页面点击 track 前会去除项目绝对路径首尾空格，再提交给后端；track 成功后会确保项目 `.gortex.yaml` 中 `watch.enabled: true`，缺失或不一致时写入 `debounce_ms: 50`；
+- 页面点击 track 前会去除项目绝对路径首尾空格，再提交给后端；track 成功后会确保项目 `.gortex.yaml` 中 `watch.enabled: true`，缺失或不一致时写入 `debounce_ms: 100`；
   后台每 5 秒检查本地账本和同一 daemon 可见的外部 tracked 项目，发现 watcher 被关闭会自动恢复。
 - v0.1.6 增强：针对 Google Antigravity 原生不支持 cwd 且子进程继承安装目录导致 Gortex 0.64.1 报告 repository not tracked 的死锁问题，由 code-Manager 在连接调度层接管启动跳板（gortex-bridge），在拉起原版 Gortex 二进制前动态探测并设置合法工作目录，实现 Antigravity 与原版 Gortex 0.64.1 的无缝兼容；严格解耦 Cursor 平台并维持其原生直连，全面保障 7 大平台的独立性与单测验证；同步校准 Gortex 提示词，明确安装目录报错防降级规则与 55 Core 工具使用规范。
 - v0.1.7 增强：校准 Gortex 提示词规范，确立多项目自适应与动态感知机制（核心合一规范），规范自动目标对齐与穿透搜索/精读规则，明确多仓库全图谱铁律，严禁未经穿透检索擅自断定未索引并退回原生工具；统一去除提示词 UTF-8 BOM 确保标准编码。
@@ -2734,3 +2755,4 @@ git push origin v0.1.1
 - v0.1.27 增强：Gortex 提示词深度对齐 Gortex 0.64.4 规范与大型项目 track 索引不限时优化（全面升级提示词至 61 项核心与门面工具规范，补齐 ownership 代码归属与 blame 状态机、explain_view 路径视图与代际穿透诊断、search_text 截断标志与 count 下界判定、search_ast 语法防误报及 githook watchdog 保护；将受管 gortex track 超时与 --wait-timeout 参数调整为不限制，彻底解除超大工程建图索引超时限制）。
 
 - v0.1.28 增强：优化 Gortex track 与 untrack 交互反馈与任务状态感知（后端增加 ActiveTask 运行时状态追踪与内存快照透传，前端增加动态旋转加载点动效与任务级禁用保护，支持 track 期间实时显示正在索引的项目条目与进度反馈，全面增强长时间建图操作的可观测性与界面响应体验；补充内存持久化与快照覆盖单测）。
+- v0.1.29 增强：优化 Gortex 增量监听防抖机制与关键时间参数规范（将项目 Watcher 文件变更防抖时间 debounce_ms 调整为 100ms，进一步提升频繁保存时的 AST 解析与图谱增量更新稳定性，平衡高频触发与索引合并开销；完善文档全景时间参数与维护机制说明，同步更新单元测试验证）。
