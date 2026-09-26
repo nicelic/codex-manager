@@ -57,14 +57,15 @@ pub async fn install(
     };
 
     match RtkService::install(payload.tag_name, proxy.as_deref()).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "message": "RTK 安装成功，PATH 与接入规则已配置", "success": true })),
-        ),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
-        ),
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
+        Err(err) => {
+            let status = if err.contains("正在运行") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, Json(json!({ "message": format!("安装 RTK 失败: {}", err) })))
+        }
     }
 }
 
@@ -72,12 +73,21 @@ pub async fn start() -> impl IntoResponse {
     match RtkService::start() {
         Ok(()) => (
             StatusCode::OK,
-            Json(json!({ "message": "RTK 已启动，环境配置已生效", "success": true })),
+            Json(json!({
+                "running": true,
+                "desired_running": true,
+                "activation_state": "running",
+                "message": "RTK 已激活。PATH 已配置；仅检测到且可安全写入的平台会尝试接入，请查看各平台状态。"
+            })),
         ),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
-        ),
+        Err(err) => {
+            let status = if err.contains("正在运行") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, Json(json!({ "message": format!("启动 RTK 失败: {}", err) })))
+        }
     }
 }
 
@@ -85,24 +95,26 @@ pub async fn stop() -> impl IntoResponse {
     match RtkService::stop() {
         Ok(()) => (
             StatusCode::OK,
-            Json(json!({ "message": "RTK 已停止，Hook 与 PATH 已停用", "success": true })),
+            Json(json!({
+                "running": false,
+                "desired_running": false,
+                "activation_state": "installed_stopped",
+                "message": "RTK 已停止，当前受管 PATH、提示词和 Hook 已清理；未受管内容会保留。"
+            })),
         ),
         Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": format!("停止 RTK 失败: {}", err) })),
         ),
     }
 }
 
 pub async fn uninstall() -> impl IntoResponse {
     match RtkService::uninstall() {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "message": "RTK 已完全卸载", "success": true })),
-        ),
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
         Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": format!("删除 RTK 失败: {}", err) })),
         ),
     }
 }

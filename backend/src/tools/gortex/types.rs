@@ -1,18 +1,20 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GortexStatusResponse {
     pub path: String,
-    pub managed_installed: bool,
+    pub managed_root: String,
     pub managed_root_exists: bool,
     pub version: String,
-    pub installing: bool,
     pub installed: bool,
+    pub managed_installed: bool,
+    pub installing: bool,
     pub running: bool,
     pub any_process_running: bool,
     pub unmanaged_process_running: bool,
-    pub integration_present: bool,
-    pub process_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<u32>,
     pub activation_state: String,
 
     pub codex_available: bool,
@@ -27,9 +29,9 @@ pub struct GortexStatusResponse {
     pub copilot_available: bool,
     pub copilot_configured: bool,
     pub copilot_complete: bool,
-    pub open_code_available: bool,
-    pub open_code_configured: bool,
-    pub open_code_complete: bool,
+    pub opencode_available: bool,
+    pub opencode_configured: bool,
+    pub opencode_complete: bool,
     pub antigravity_available: bool,
     pub antigravity_configured: bool,
     pub antigravity_complete: bool,
@@ -45,8 +47,8 @@ pub struct GortexStatusResponse {
     pub cursor_prompt_complete: bool,
     pub copilot_prompt: bool,
     pub copilot_prompt_complete: bool,
-    pub open_code_prompt: bool,
-    pub open_code_prompt_complete: bool,
+    pub opencode_prompt: bool,
+    pub opencode_prompt_complete: bool,
     pub antigravity_prompt: bool,
     pub antigravity_prompt_complete: bool,
     pub gemini_prompt: bool,
@@ -58,8 +60,8 @@ pub struct GortexStatusResponse {
     pub claude_hook_complete: bool,
     pub copilot_hook: bool,
     pub copilot_hook_complete: bool,
-    pub open_code_hook: bool,
-    pub open_code_hook_complete: bool,
+    pub opencode_hook: bool,
+    pub opencode_hook_complete: bool,
     pub antigravity_hook: bool,
     pub antigravity_hook_complete: bool,
     pub gemini_hook: bool,
@@ -67,17 +69,43 @@ pub struct GortexStatusResponse {
 
     pub user_path: bool,
     pub system_path: bool,
-    pub codex_trust_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_trust_status: Option<String>,
     pub codex_trust_required: bool,
-    pub codex_trust_notice: String,
-    pub codex_trust_steps: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_trust_notice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_trust_steps: Option<Vec<String>>,
 
     pub tracked_projects: Vec<String>,
     pub project_mcp_enabled: bool,
-    pub project_mcp_projects: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_mcp_projects: Option<Vec<String>>,
     pub default_project: String,
-    pub status_known: bool,
+    pub integration_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_task: Option<GortexActiveTask>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GortexActiveTask {
+    pub path: String,
+    pub action: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GortexOperationRequest {
+    pub path: String,
+}
+
+pub type GortexTrackRequest = GortexOperationRequest;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GortexOperationResponse {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,9 +113,9 @@ pub struct GortexInstallRequest {
     pub tag_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct GortexTrackRequest {
-    pub path: String,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GortexProjectRegistry {
+    pub projects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +125,7 @@ pub struct GortexReleaseOption {
     pub published_at: String,
     pub prerelease: bool,
     pub available: bool,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
     pub asset_name: String,
 }
 
@@ -116,4 +145,60 @@ pub struct GortexDiagnosticsResponse {
     pub status_ok: bool,
     pub status_output: String,
     pub status_error: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GortexOwnedMCP {
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GortexOwnedProjectMCP {
+    pub agent: String,
+    pub project: String,
+    pub path: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GortexOwnedArtifact {
+    pub kind: String,
+    pub agent: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handler_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GortexMCPOwnership {
+    #[serde(default)]
+    pub platforms: BTreeMap<String, GortexOwnedMCP>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub project_mcp: BTreeMap<String, GortexOwnedProjectMCP>,
+    #[serde(default)]
+    pub project_mcp_enabled: bool,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub artifacts: BTreeMap<String, GortexOwnedArtifact>,
+    #[serde(default)]
+    pub user_path: bool,
+    #[serde(default)]
+    pub system_path: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GortexCodexTrustInfo {
+    pub status: String,
+    pub required: bool,
+    pub notice: String,
+    pub command: String,
+    pub steps: Vec<String>,
+    pub shell_opened: bool,
 }

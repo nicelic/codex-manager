@@ -1,0 +1,29 @@
+2026-09-18T05:19:58.914808Z  INFO edit_rust: ==================================================
+2026-09-18T05:19:58.914938Z  INFO edit_rust: code-Manager 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T05:19:58.914954Z  INFO edit_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T05:19:58.914969Z  INFO edit_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T05:19:58.914979Z  INFO edit_rust: ==================================================
+2026-09-18T05:20:14.055478Z  INFO edit_rust::server::proxy: HTTP 反向代理已启动
+2026-09-18T05:20:17.662904Z  INFO edit_rust::server::proxy: HTTP 反向代理已停止
+2026-09-18T05:21:24.882615Z  INFO edit_rust::server::proxy: HTTP 反向代理已启动
+2026-09-18T05:21:27.580974Z  INFO edit_rust::server::proxy: HTTP 反向代理已停止
+2026-09-18T05:22:30.007719Z  INFO edit_rust::server::proxy: HTTP 反向代理已启动
+2026-09-18T05:23:32.698894Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:23:34.498787Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:23:34.950402Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/sub2api/billing)
+2026-09-18T05:23:55.209289Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:29:14.504087Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:29:15.828135Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:29:16.012390Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:29:16.289073Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:29:16.677781Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:29:16.783236Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T05:29:17.439661Z ERROR edit_rust::server::proxy: 请求上游最终失败: error sending request for url (https://149.104.4.233:39380/v1/v1/models)
+2026-09-18T06:01:49.079571Z  WARN edit_rust: code-Manager 实例已在运行中，请勿重复启动
+2026-09-18T06:02:02.716161Z  INFO edit_rust::server::proxy: HTTP 反向代理已停止
+2026-09-18T06:02:03.355033Z  INFO edit_rust::server::proxy: HTTP 反向代理已启动
+2026-09-18T06:02:46.611693Z  INFO edit_rust::server::proxy: HTTP 反向代理已停止
+2026-09-18T06:02:47.363412Z  INFO edit_rust::server::proxy: HTTP 反向代理已启动
+2026-09-18T06:45:18.836891Z  WARN edit_rust: code-Manager 实例已在运行中，请勿重复启动
+2026-09-18T06:47:25.584704Z  WARN edit_rust: code-Manager 实例已在运行中，请勿重复启动
+2026-09-18T06:48:42.884620Z  WARN edit_rust: code-Manager 实例已在运行中，请勿重复启动

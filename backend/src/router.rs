@@ -8,7 +8,11 @@ use tower_http::cors::CorsLayer;
 use crate::{api, server, state::AppState, tools, web};
 
 pub async fn health() -> impl IntoResponse {
-    (StatusCode::OK, "OK")
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        r#"{"status":"ok"}"#,
+    )
 }
 
 pub fn create_router(state: AppState) -> Router {

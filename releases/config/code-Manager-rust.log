@@ -1,0 +1,142 @@
+2026-09-18T06:55:19.419633Z  INFO code_Manager_rust: ==================================================
+2026-09-18T06:55:19.419867Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T06:55:19.419884Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T06:55:19.419909Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T06:55:19.419918Z  INFO code_Manager_rust: ==================================================
+2026-09-18T06:55:19.425938Z  WARN code_Manager_rust::tray: 未能向 Windows 通知区域添加托盘图标，将保持主服务继续运行
+2026-09-18T06:55:19.428259Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T06:58:21.795764Z  INFO code_Manager_rust: ==================================================
+2026-09-18T06:58:21.795946Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T06:58:21.795952Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T06:58:21.795969Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T06:58:21.795972Z  INFO code_Manager_rust: ==================================================
+2026-09-18T06:58:21.795975Z  INFO code_Manager_rust: 检测到后台静默运行模式，已跳过自动唤起浏览器。
+2026-09-18T06:58:44.507694Z  INFO code_Manager_rust: ==================================================
+2026-09-18T06:58:44.507830Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T06:58:44.507835Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T06:58:44.507844Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T06:58:44.507847Z  INFO code_Manager_rust: ==================================================
+2026-09-18T06:58:44.507850Z  INFO code_Manager_rust: 检测到后台静默运行模式，已跳过自动唤起浏览器。
+2026-09-18T06:58:44.513905Z  WARN code_Manager_rust::tray: 未能向 Windows 通知区域添加托盘图标 (Win32 Error: 2147500037)，将保持主服务继续运行
+2026-09-18T06:58:44.515723Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T07:01:10.451277Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:01:10.451484Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T07:01:10.451494Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T07:01:10.451512Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T07:01:10.451515Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:01:10.451518Z  INFO code_Manager_rust: 检测到后台静默运行模式，已跳过自动唤起浏览器。
+2026-09-18T07:01:33.338799Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:01:33.338975Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T07:01:33.338983Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T07:01:33.338992Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T07:01:33.338995Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:03:03.278482Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:03:03.278710Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T07:03:03.278723Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T07:03:03.278737Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T07:03:03.278770Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:03:03.279609Z  INFO code_Manager_rust: 正在启动 Windows 系统托盘与任务栏服务...
+2026-09-18T07:03:03.279786Z  INFO code_Manager_rust::tray: tray thread: 正在获取模块句柄与加载图标...
+2026-09-18T07:03:03.284006Z  INFO code_Manager_rust::tray: tray thread: 图标加载完成 (is_null=false)，正在注册窗口类...
+2026-09-18T07:03:03.284209Z  INFO code_Manager_rust::tray: tray thread: 正在创建隐藏主窗口...
+2026-09-18T07:03:03.287056Z  INFO code_Manager_rust::tray: tray thread: 主隐藏窗口创建完成，正在初始化托盘图标...
+2026-09-18T07:03:03.789462Z  WARN code_Manager_rust::tray: 未能向 Windows 通知区域添加托盘图标 (Win32 Error: 2147500037)，将保持主服务继续运行
+2026-09-18T07:03:03.792477Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T07:03:03.792536Z  INFO code_Manager_rust: Windows 系统托盘与任务栏服务启动完成: is_some=true
+2026-09-18T07:03:03.792601Z  INFO code_Manager_rust: 正在启动 HTTP 服务器并开始监听请求...
+2026-09-18T07:15:54.918650Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:15:54.918846Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T07:15:54.918859Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T07:15:54.918872Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T07:15:54.918876Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:15:54.919723Z  INFO code_Manager_rust: 正在启动 Windows 系统托盘与任务栏服务...
+2026-09-18T07:15:54.920032Z  INFO code_Manager_rust::tray: tray thread: 正在获取模块句柄与加载图标...
+2026-09-18T07:15:54.923517Z  INFO code_Manager_rust::tray: tray thread: 图标加载完成 (is_null=false)，正在注册窗口类...
+2026-09-18T07:15:54.923574Z  INFO code_Manager_rust::tray: tray thread: 正在创建隐藏主窗口...
+2026-09-18T07:15:54.931901Z  INFO code_Manager_rust::tray: tray thread: 主隐藏窗口创建完成，正在初始化托盘图标...
+2026-09-18T07:15:54.964980Z  INFO code_Manager_rust::tray: 系统托盘图标已就绪（提示: code-Manager-rust 本地网关）
+2026-09-18T07:15:54.971032Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T07:15:54.971103Z  INFO code_Manager_rust: Windows 系统托盘与任务栏服务启动完成: is_some=true
+2026-09-18T07:15:54.971199Z  INFO code_Manager_rust: 正在启动 HTTP 服务器并开始监听请求...
+2026-09-18T07:18:17.072992Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:18:17.073134Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T07:18:17.073142Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T07:18:17.073149Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T07:18:17.073153Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:18:17.073810Z  INFO code_Manager_rust: 正在启动 Windows 系统托盘与任务栏服务...
+2026-09-18T07:18:17.074146Z  INFO code_Manager_rust::tray: tray thread: 正在获取模块句柄与加载图标...
+2026-09-18T07:18:17.078329Z  INFO code_Manager_rust::tray: tray thread: 图标加载完成 (is_null=false)，正在注册窗口类...
+2026-09-18T07:18:17.078390Z  INFO code_Manager_rust::tray: tray thread: 正在创建隐藏主窗口...
+2026-09-18T07:18:17.085537Z  INFO code_Manager_rust::tray: tray thread: 主隐藏窗口创建完成，正在初始化托盘图标...
+2026-09-18T07:18:17.116162Z  INFO code_Manager_rust::tray: 系统托盘图标已就绪（提示: code-Manager-rust 本地网关）
+2026-09-18T07:18:17.120617Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T07:18:17.120680Z  INFO code_Manager_rust: Windows 系统托盘与任务栏服务启动完成: is_some=true
+2026-09-18T07:18:17.120752Z  INFO code_Manager_rust: 正在启动 HTTP 服务器并开始监听请求...
+2026-09-18T07:18:38.925387Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:18:38.925521Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T07:18:38.925531Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T07:18:38.925538Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T07:18:38.925541Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:18:38.926213Z  INFO code_Manager_rust: 正在启动 Windows 系统托盘与任务栏服务...
+2026-09-18T07:18:38.926477Z  INFO code_Manager_rust::tray: tray thread: 正在获取模块句柄与加载图标...
+2026-09-18T07:18:38.929720Z  INFO code_Manager_rust::tray: tray thread: 图标加载完成 (is_null=false)，正在注册窗口类...
+2026-09-18T07:18:38.929778Z  INFO code_Manager_rust::tray: tray thread: 正在创建隐藏主窗口...
+2026-09-18T07:18:38.936875Z  INFO code_Manager_rust::tray: tray thread: 主隐藏窗口创建完成，正在初始化托盘图标...
+2026-09-18T07:18:38.946304Z  INFO code_Manager_rust::tray: 系统托盘图标已就绪（提示: code-Manager-rust 本地网关）
+2026-09-18T07:18:38.953287Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T07:18:38.953363Z  INFO code_Manager_rust: Windows 系统托盘与任务栏服务启动完成: is_some=true
+2026-09-18T07:18:38.953449Z  INFO code_Manager_rust: 正在启动 HTTP 服务器并开始监听请求...
+2026-09-18T07:25:26.829530Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:25:26.829770Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T07:25:26.829787Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T07:25:26.829797Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T07:25:26.829800Z  INFO code_Manager_rust: ==================================================
+2026-09-18T07:25:26.830661Z  INFO code_Manager_rust: 正在启动 Windows 系统托盘与任务栏服务...
+2026-09-18T07:25:26.830920Z  INFO code_Manager_rust::tray: tray thread: 正在获取模块句柄与加载图标...
+2026-09-18T07:25:26.834159Z  INFO code_Manager_rust::tray: tray thread: 图标加载完成 (is_null=false)，正在注册窗口类...
+2026-09-18T07:25:26.834248Z  INFO code_Manager_rust::tray: tray thread: 正在创建隐藏主窗口...
+2026-09-18T07:25:26.842714Z  INFO code_Manager_rust::tray: tray thread: 主隐藏窗口创建完成，正在初始化托盘图标...
+2026-09-18T07:25:26.871081Z  INFO code_Manager_rust::tray: 系统托盘图标已就绪（提示: code-Manager-rust 本地网关）
+2026-09-18T07:25:26.876094Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T07:25:26.876172Z  INFO code_Manager_rust: Windows 系统托盘与任务栏服务启动完成: is_some=true
+2026-09-18T07:25:26.876241Z  INFO code_Manager_rust: 正在启动 HTTP 服务器并开始监听请求...
+2026-09-18T07:25:31.020288Z  INFO code_Manager_rust::server::proxy: 上游预热握手成功: https://chain888.vip/v1 (状态: 200 OK)
+2026-09-18T07:25:31.020402Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已启动并就绪
+2026-09-18T07:26:05.459064Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已停止
+2026-09-18T07:26:07.002852Z  INFO code_Manager_rust::server::proxy: 上游预热握手成功: https://chain888.vip/v1 (状态: 200 OK)
+2026-09-18T07:26:07.002906Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已启动并就绪
+2026-09-18T07:27:02.370300Z  INFO code_Manager_rust::server::proxy: GET /v1/models completed in 251.2399ms
+2026-09-18T07:27:08.292066Z  INFO code_Manager_rust::server::proxy: GET /v1/models completed in 248.2553ms
+2026-09-18T07:27:09.096363Z  INFO code_Manager_rust::server::proxy: GET /v1/models completed in 229.6525ms
+2026-09-18T07:30:28.710441Z  INFO code_Manager_rust::server::proxy: POST /v1/responses completed in 2.7909529s
+2026-09-18T07:30:29.563250Z  INFO code_Manager_rust::server::proxy: POST /v1/responses completed in 3.1956995s
+2026-09-18T07:31:56.641366Z  INFO code_Manager_rust::server::proxy: GET /v1/models completed in 868.8026ms
+2026-09-18T07:32:45.589573Z  INFO code_Manager_rust::server::proxy: GET /v1/sub2api/billing completed in 234.0485ms
+2026-09-18T07:56:53.714708Z  INFO code_Manager_rust::server::proxy: POST /v1/responses completed in 2.8062301s
+2026-09-18T07:56:54.335756Z  INFO code_Manager_rust::server::proxy: POST /v1/responses completed in 3.0543653s
+2026-09-18T10:48:22.066393Z  INFO code_Manager_rust: 收到安全停机指令，正在清理资源并优雅退出...
+2026-09-18T10:48:22.067443Z  INFO code_Manager_rust: code-Manager-rust 已安全退出。
+2026-09-18T10:49:06.747362Z  INFO code_Manager_rust: ==================================================
+2026-09-18T10:49:06.747571Z  INFO code_Manager_rust: code-Manager-rust 服务已启动，监听地址: http://127.0.0.1:7788
+2026-09-18T10:49:06.747578Z  INFO code_Manager_rust: 配置文件位于: "C:\\EXEXX\\edit-rust\\releases\\config\\config.yaml"
+2026-09-18T10:49:06.747596Z  INFO code_Manager_rust: 前端网页已内嵌打包在可执行文件中
+2026-09-18T10:49:06.747599Z  INFO code_Manager_rust: ==================================================
+2026-09-18T10:49:06.748455Z  INFO code_Manager_rust: 正在启动 Windows 系统托盘与任务栏服务...
+2026-09-18T10:49:06.748732Z  INFO code_Manager_rust::tray: tray thread: 正在获取模块句柄与加载图标...
+2026-09-18T10:49:06.753018Z  INFO code_Manager_rust::tray: tray thread: 图标加载完成 (is_null=false)，正在注册窗口类...
+2026-09-18T10:49:06.753083Z  INFO code_Manager_rust::tray: tray thread: 正在创建隐藏主窗口...
+2026-09-18T10:49:06.763541Z  INFO code_Manager_rust::tray: tray thread: 主隐藏窗口创建完成，正在初始化托盘图标...
+2026-09-18T10:49:06.795501Z  INFO code_Manager_rust::tray: 系统托盘图标已就绪（提示: code-Manager-rust 本地网关）
+2026-09-18T10:49:06.802305Z  INFO code_Manager_rust::tray: Windows 底部任务栏图标按钮已就绪
+2026-09-18T10:49:06.802408Z  INFO code_Manager_rust: Windows 系统托盘与任务栏服务启动完成: is_some=true
+2026-09-18T10:49:06.802494Z  INFO code_Manager_rust: 正在启动 HTTP 服务器并开始监听请求...
+2026-09-18T10:49:11.315049Z  INFO code_Manager_rust::server::proxy: 上游预热握手成功: https://chain888.vip/v1 (状态: 200 OK)
+2026-09-18T10:49:11.315120Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已启动并就绪
+2026-09-18T10:49:14.615130Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已停止
+2026-09-18T10:49:23.313287Z  INFO code_Manager_rust::server::proxy: 上游预热握手成功: https://chain888.vip/v1 (状态: 200 OK)
+2026-09-18T10:49:23.313334Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已启动并就绪
+2026-09-18T10:49:33.173457Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已停止
+2026-09-18T13:40:58.043740Z  INFO code_Manager_rust::server::proxy: 上游预热握手成功: https://chain888.vip/v1 (状态: 200 OK)
+2026-09-18T13:40:58.043858Z  INFO code_Manager_rust::server::proxy: HTTP/WS 反向代理已启动并就绪
+2026-09-18T14:21:13.316295Z  INFO code_Manager_rust: 收到安全停机指令，正在清理资源并优雅退出...
+2026-09-18T14:21:13.316774Z  INFO code_Manager_rust: code-Manager-rust 已安全退出。

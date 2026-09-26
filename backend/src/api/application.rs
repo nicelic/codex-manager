@@ -28,7 +28,7 @@ pub async fn identity() -> impl IntoResponse {
     Json(json!({
         "version": CURRENT_VERSION,
         "is_dev_mode": false,
-        "name": "code-Manager"
+        "name": "code-Manager-rust"
     }))
 }
 
@@ -80,7 +80,7 @@ pub async fn releases(
             "published_at": "2026-09-18T00:00:00Z",
             "prerelease": false,
             "available": true,
-            "asset_name": "code-Manager.exe"
+            "asset_name": "code-Manager-rust.exe"
         }));
     }
 

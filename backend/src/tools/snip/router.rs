@@ -7,9 +7,10 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use crate::state::AppState;
+
 use super::service::SnipService;
 use super::types::SnipInstallRequest;
+use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
@@ -57,66 +58,67 @@ pub async fn install(
     };
 
     match SnipService::install(payload.tag_name, proxy.as_deref()).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "message": "snip 安装成功，Hook 与环境已就绪", "success": true })),
-        ),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
-        ),
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
+        Err(err) => {
+            let status = if err.contains("正在运行") || err.contains("请先停止") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, Json(json!({ "message": format!("安装 snip 失败: {}", err), "success": false })))
+        }
     }
 }
 
 pub async fn start() -> impl IntoResponse {
     match SnipService::start() {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "message": "snip 已启动", "success": true })),
-        ),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
-        ),
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
+        Err(err) => {
+            let status = if err.contains("正在运行") || err.contains("请先停止") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, Json(json!({ "message": format!("启动 snip 失败: {}", err), "success": false })))
+        }
     }
 }
 
 pub async fn stop() -> impl IntoResponse {
     match SnipService::stop() {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "message": "snip 已停止", "success": true })),
-        ),
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
         Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "message": format!("snip 操作失败: {}", err), "success": false })),
         ),
     }
 }
 
 pub async fn trust() -> impl IntoResponse {
     match SnipService::launch_trust() {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "message": "已在独立控制台启动 Codex 信任审核引导", "success": true })),
-        ),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
-        ),
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
+        Err(err) => {
+            let status = if err.contains("尚未安装") || err.contains("未检测到") || err.contains("请先") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, Json(json!({ "message": format!("Codex 信任失败: {}", err), "success": false })))
+        }
     }
 }
 
 pub async fn uninstall() -> impl IntoResponse {
     match SnipService::uninstall() {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "message": "snip 已卸载", "success": true })),
-        ),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "message": err, "success": false })),
-        ),
+        Ok(res) => (StatusCode::OK, Json(json!(res))),
+        Err(err) => {
+            let status = if err.contains("正在运行") || err.contains("请先停止") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, Json(json!({ "message": format!("删除 snip 失败: {}", err), "success": false })))
+        }
     }
 }
 

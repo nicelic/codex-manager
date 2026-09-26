@@ -151,10 +151,20 @@ const isGortexTracking = computed(() => {
   return Boolean(gortex.working && gortexProjectPath.value)
 })
 
+function cleanPathDisplay(p) {
+  if (!p) return ''
+  let s = String(p).trim()
+  if (s.startsWith('\\\\?\\UNC\\') || s.startsWith('//?/UNC/')) return '\\\\' + s.slice(8).replace(/\//g, '\\')
+  if (s.startsWith('\\\\?\\') || s.startsWith('\\??\\') || s.startsWith('//?/') || s.startsWith('/??/')) return s.slice(4).replace(/\//g, '\\')
+  return s.replace(/\//g, '\\')
+}
+
 function isGortexUntracking(project) {
   if (!gortex.activeTask) return false
   if (gortex.activeTask.action !== 'untrack') return false
-  return (gortex.activeTask.path || '').toLowerCase() === (project || '').toLowerCase()
+  const activeClean = cleanPathDisplay(gortex.activeTask.path || '').toLowerCase()
+  const projectClean = cleanPathDisplay(project || '').toLowerCase()
+  return activeClean === projectClean
 }
 function gortexVersionKey(value) {
   const text = String(value || '').trim().toLowerCase()
@@ -634,15 +644,15 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.codexTrustRequired = Boolean(data.codex_trust_required)
   gortex.codexTrustNotice = data.codex_trust_notice || ''
   gortex.codexTrustSteps = Array.isArray(data.codex_trust_steps) ? data.codex_trust_steps : []
-  gortex.trackedProjects = Array.isArray(data.tracked_projects) ? data.tracked_projects : []
+  gortex.trackedProjects = (Array.isArray(data.tracked_projects) ? data.tracked_projects : []).map(cleanPathDisplay)
   gortex.projectMCPEnabled = Boolean(data.project_mcp_enabled)
-  gortex.projectMCPProjects = Array.isArray(data.project_mcp_projects) ? data.project_mcp_projects : []
-  gortex.defaultProject = data.default_project || ''
+  gortex.projectMCPProjects = (Array.isArray(data.project_mcp_projects) ? data.project_mcp_projects : []).map(cleanPathDisplay)
+  gortex.defaultProject = cleanPathDisplay(data.default_project || '')
   if (data.active_task && data.active_task.path) {
-    gortex.activeTask = data.active_task
+    gortex.activeTask = { ...data.active_task, path: cleanPathDisplay(data.active_task.path) }
     gortex.working = true
     if (data.active_task.action === 'track' && !gortexProjectPath.value) {
-      gortexProjectPath.value = data.active_task.path
+      gortexProjectPath.value = cleanPathDisplay(data.active_task.path)
     }
   } else if (gortex.activeTask) {
     gortex.activeTask = null
@@ -1336,7 +1346,7 @@ async function removeGortex() {
 }
 
 async function trackGortexProject() {
-  const pathValue = gortexProjectPath.value.trim()
+  const pathValue = cleanPathDisplay(gortexProjectPath.value.trim())
   gortexProjectPath.value = pathValue
   if (gortexBusy.value || !gortex.managedInstalled || !pathValue) {
     if (!pathValue) gortex.notice = '请输入要 track 的项目绝对路径。'
@@ -1361,11 +1371,12 @@ async function trackGortexProject() {
 }
 
 async function untrackGortexProject(pathValue) {
-  if (gortexBusy.value || !gortex.managedInstalled || !pathValue) return
+  const clean = cleanPathDisplay(pathValue)
+  if (gortexBusy.value || !gortex.managedInstalled || !clean) return
   gortex.working = true
   gortex.notice = ''
   try {
-    const response = await fetch('/api/gortex/untrack', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: pathValue }) })
+    const response = await fetch('/api/gortex/untrack', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: clean }) })
     const responseText = await response.text()
     let data = {}
     try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex untrack 接口返回了无效响应') }
@@ -2490,11 +2501,11 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="gortex.trackedProjects.length || (gortex.activeTask && gortex.activeTask.action === 'track')" class="gortex-project-list">
             <div v-if="gortex.activeTask && gortex.activeTask.action === 'track' && !gortex.trackedProjects.some(p => p.toLowerCase() === gortex.activeTask.path.toLowerCase())" class="gortex-project-item">
-              <code>{{ gortex.activeTask.path }}</code>
+              <code>{{ cleanPathDisplay(gortex.activeTask.path) }}</code>
               <button type="button" disabled>{{ 'track' + rotatingDots }}</button>
             </div>
             <div v-for="project in gortex.trackedProjects" :key="project" class="gortex-project-item">
-              <code>{{ project }}</code>
+              <code>{{ cleanPathDisplay(project) }}</code>
               <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="untrackGortexProject(project)">{{ isGortexUntracking(project) ? ('untrack' + rotatingDots) : 'untrack' }}</button>
             </div>
           </div>

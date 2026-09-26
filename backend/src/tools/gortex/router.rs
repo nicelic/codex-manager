@@ -129,10 +129,20 @@ pub async fn remove() -> impl IntoResponse {
 }
 
 pub async fn trust() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({ "message": "Gortex 信任配置已注入", "success": true })),
-    )
+    match GortexService::trust_codex() {
+        Ok(res) => (
+            StatusCode::OK,
+            Json(json!({
+                "message": res.message,
+                "warnings": res.warnings,
+                "success": true
+            })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
 }
 
 pub async fn diagnostics() -> impl IntoResponse {
@@ -140,10 +150,14 @@ pub async fn diagnostics() -> impl IntoResponse {
 }
 
 pub async fn track(Json(payload): Json<GortexTrackRequest>) -> impl IntoResponse {
-    match GortexService::track_project(&payload.path) {
-        Ok(()) => (
+    match GortexService::track_project(&payload.path).await {
+        Ok(res) => (
             StatusCode::OK,
-            Json(json!({ "message": "项目已成功添加到 Gortex 跟踪列表", "success": true })),
+            Json(json!({
+                "message": res.message,
+                "warnings": res.warnings,
+                "success": true
+            })),
         ),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -153,10 +167,14 @@ pub async fn track(Json(payload): Json<GortexTrackRequest>) -> impl IntoResponse
 }
 
 pub async fn untrack(Json(payload): Json<GortexTrackRequest>) -> impl IntoResponse {
-    match GortexService::untrack_project(&payload.path) {
-        Ok(()) => (
+    match GortexService::untrack_project(&payload.path).await {
+        Ok(res) => (
             StatusCode::OK,
-            Json(json!({ "message": "项目已从 Gortex 跟踪列表中移除", "success": true })),
+            Json(json!({
+                "message": res.message,
+                "warnings": res.warnings,
+                "success": true
+            })),
         ),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -167,9 +185,13 @@ pub async fn untrack(Json(payload): Json<GortexTrackRequest>) -> impl IntoRespon
 
 pub async fn uninstall() -> impl IntoResponse {
     match GortexService::uninstall() {
-        Ok(()) => (
+        Ok(res) => (
             StatusCode::OK,
-            Json(json!({ "message": "Gortex 卸载完成", "success": true })),
+            Json(json!({
+                "message": res.message,
+                "warnings": res.warnings,
+                "success": true
+            })),
         ),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,

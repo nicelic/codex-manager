@@ -1,0 +1,13 @@
+listen_address: 127.0.0.1:7788
+upstream_base_url: https://your-api.example.com
+upstream_api_key: PUT_YOUR_UPSTREAM_API_KEY_HERE
+outbound_proxy: ''
+llmtrim_path: ''
+local_api_key: ''
+upstream_websocket_enabled: true
+startup_enabled: false
+background_start: false
+retry_enabled: false
+retry_count: '5'
+retry_interval_seconds: '1'
+retry_status_codes: 100-199,300-399,401-407,409-499,500-503,505-523,525-599
