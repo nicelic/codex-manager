@@ -96,10 +96,49 @@ codex-manager/
 
 ---
 
-## 🚀 发布与维护
+## 🚀 版本发布流程
 
-关于版本号修改规范、构建校验与 GitHub Release 自动发布流程，请参阅：
-👉 [版本发布指南 (RELEASE.md)](./RELEASE.md)
+本项目配备了完整的自动化发布工具链，遵循标准五步发布法：
+
+### 1. 修改版本号与更新说明 (3 处同步)
+每次准备发布新版本时（以 `v1.0.2` 为例），需同步更新以下配置文件：
+- **`vision.md`**：发布脚本核心读取源，填写目标版本号（如 `vision: v1.0.2`）
+- **`backend/Cargo.toml`**：更新 `[package]` 下的 `version = "1.0.2"`
+- **`frontend/package.json`**：更新 `"version": "1.0.2"`
+- **`RELEASE_NOTES.md`**：填写本次版本的中文更新要点（发布脚本会自动读取写入 Release 正文）
+
+### 2. 本地全量打包构建
+在项目根目录运行一键编译脚本：
+```cmd
+build.bat
+```
+脚本将自动编译 Vue 3 前端静态产物、由 Cargo 静态内嵌并生成唯一的单文件可执行程序至 `releases\code-Manager-rust.exe`。
+
+### 3. 提交变更并推送至 `main` 分支
+```bash
+git add -A
+git commit -m "chore: release v1.0.2"
+git push origin main
+```
+
+### 4. 创建 Release Tag 并推送
+```bash
+git tag -a v1.0.2 -m "Release v1.0.2"
+git push origin v1.0.2
+```
+
+### 5. 一键自动化发布至 GitHub Releases
+在 PowerShell 中运行自动化发布脚本：
+```powershell
+.\publish_release.ps1
+```
+脚本将全自动完成：
+- 自动提取版本号并校验二进制文件的 SHA-256 哈希值；
+- 提取 `RELEASE_NOTES.md` 中的说明正文；
+- 通过 Git 凭据管理器调用 GitHub REST API 创建或更新 Release，自动设为 **Latest**；
+- 严格将二进制资产命名为 **`code-Manager-rust.exe`** 上传挂载（若已有旧构建将自动覆盖刷新）。
+
+> 详细的发布规范与故障排查说明，亦可参考独立文档：👉 [RELEASE.md](./RELEASE.md)
 
 ---
 
