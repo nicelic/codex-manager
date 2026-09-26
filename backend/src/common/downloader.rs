@@ -27,7 +27,7 @@ pub struct GithubRelease {
 
 pub fn build_http_client(proxy_url: Option<&str>) -> Client {
     let mut builder = Client::builder()
-        .user_agent("code-Manager/1.0.0 (Windows NT 10.0; Win64; x64)")
+        .user_agent("code-Manager/1.0.1 (Windows NT 10.0; Win64; x64)")
         .timeout(std::time::Duration::from_secs(60));
 
     if let Some(proxy_str) = proxy_url {
