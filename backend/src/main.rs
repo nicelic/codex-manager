@@ -195,6 +195,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(pid) = *state.llmtrim_log_viewer_pid.read().await {
                 crate::common::process::kill_process_by_pid(pid);
             }
+
+            // 确保彻底停止并杀死所有 Gortex 进程（包括其他方式启动的）
+            let _ = tokio::task::spawn_blocking(|| {
+                info!("优雅退出：正在停止并杀死所有 Gortex 进程（包括其他方式启动的）...");
+                let _ = crate::tools::gortex::service::GortexService::stop_daemon();
+                let _ = crate::tools::gortex::service::GortexService::stop_all_processes(
+                    std::time::Duration::from_secs(3),
+                );
+            }).await;
         })
         .await?;
 

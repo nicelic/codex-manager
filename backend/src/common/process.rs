@@ -14,6 +14,23 @@ pub fn new_silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process
     cmd
 }
 
+fn matches_process_name(exe_name: &str, target: &str) -> bool {
+    if exe_name.eq_ignore_ascii_case(target) {
+        return true;
+    }
+    if let Some(target_base) = target.strip_suffix(".exe") {
+        if exe_name.eq_ignore_ascii_case(target_base) {
+            return true;
+        }
+    } else {
+        let with_exe = format!("{}.exe", target);
+        if exe_name.eq_ignore_ascii_case(&with_exe) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn is_process_running(name: &str) -> bool {
     find_process_id(name).is_some()
 }
@@ -44,7 +61,7 @@ pub fn find_process_id(name: &str) -> Option<u32> {
                     .unwrap_or(entry.szExeFile.len());
                 let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
 
-                if exe_name.eq_ignore_ascii_case(name) {
+                if matches_process_name(&exe_name, name) {
                     CloseHandle(snapshot);
                     return Some(entry.th32ProcessID);
                 }
@@ -87,7 +104,7 @@ pub fn find_all_process_ids(name: &str) -> Vec<u32> {
                     .unwrap_or(entry.szExeFile.len());
                 let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
 
-                if exe_name.eq_ignore_ascii_case(name) {
+                if matches_process_name(&exe_name, name) {
                     pids.push(entry.th32ProcessID);
                 }
 
@@ -184,17 +201,39 @@ pub fn kill_process_by_pid(pid: u32) -> bool {
 }
 
 pub fn kill_process_by_name(name: &str) -> bool {
-    let pids = find_all_process_ids(name);
-    if pids.is_empty() {
-        return false;
-    }
     let mut any_killed = false;
+    let exe_name = if name.ends_with(".exe") {
+        name.to_string()
+    } else {
+        format!("{}.exe", name)
+    };
+
+    // 1. 先使用 taskkill.exe /F /IM <name.exe> /T 强力杀掉进程树（覆盖其他方式启动的脱钩/多实例进程）
+    #[cfg(target_os = "windows")]
+    {
+        let output = new_silent_command("taskkill.exe")
+            .args(["/F", "/IM", &exe_name, "/T"])
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                any_killed = true;
+            }
+        }
+    }
+
+    // 2. 遍历 Toolhelp32 快照中所有匹配的 PID，使用 Win32 API TerminateProcess 再次逐个确认强杀
+    let pids = find_all_process_ids(name);
     for pid in pids {
         if kill_process_by_pid(pid) {
             any_killed = true;
         }
     }
+
     any_killed
+}
+
+pub fn kill_all_processes_by_name(name: &str) -> bool {
+    kill_process_by_name(name)
 }
 
 #[cfg(test)]

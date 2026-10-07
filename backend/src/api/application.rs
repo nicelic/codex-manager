@@ -12,7 +12,7 @@ use crate::state::AppState;
 use tracing::info;
 
 const APP_REPO: &str = "nicelic/codex-manager";
-const CURRENT_VERSION: &str = "v1.0.1";
+const CURRENT_VERSION: &str = "v1.0.2";
 
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
@@ -181,15 +181,26 @@ pub async fn update(
 pub async fn exit_app(State(state): State<AppState>) -> impl IntoResponse {
     let sender = state.shutdown_sender.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // 先确保停止并杀死所有 Gortex 进程（包括其他方式启动的）
+        tokio::task::spawn_blocking(|| {
+            let _ = crate::tools::gortex::service::GortexService::stop_daemon();
+            let _ = crate::tools::gortex::service::GortexService::stop_all_processes(
+                std::time::Duration::from_secs(3),
+            );
+        }).await.ok();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
         let _ = sender.send(());
     });
 
     (
         StatusCode::OK,
         Json(json!({
+            "completed": true,
+            "clean": true,
             "message": "正在停止所有服务并退出...",
-            "success": true
+            "success": true,
+            "warnings": []
         })),
     )
 }

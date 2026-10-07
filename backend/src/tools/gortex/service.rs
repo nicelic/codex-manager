@@ -847,6 +847,10 @@ impl GortexService {
                 cmd.env(k, v);
             }
             let _ = cmd.output();
+        } else {
+            let mut cmd = new_silent_command(GORTEX_EXECUTABLE_NAME);
+            cmd.args(["daemon", "stop"]);
+            let _ = cmd.output();
         }
 
         let _ = Self::stop_all_processes(GORTEX_PROCESS_STOP_TIMEOUT);
