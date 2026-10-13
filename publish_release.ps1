@@ -80,7 +80,43 @@ if (Test-Path $notesPath) {
     $customNotes = (Get-Content -Path $notesPath -Raw -Encoding UTF8).Trim()
 }
 
-$bodyText = "$tag release. Windows executable included.`r`nSHA-256: $localHash`r`ncode-Manager-rust.exe"
+# 4.1 Prepare .git bundle and full repository zip with .git
+$releasesDir = Join-Path $root "releases"
+if (-not (Test-Path $releasesDir)) { New-Item -ItemType Directory -Path $releasesDir | Out-Null }
+
+$zipName = "code-Manager-rust-$tag-with-git.zip"
+$zipPath = Join-Path $releasesDir $zipName
+
+$bundleName = "codex-manager-backup-$tag.bundle"
+$bundlePath = Join-Path $releasesDir $bundleName
+
+Write-Host "Creating Git Bundle ($bundleName)..."
+& git bundle create $bundlePath --all
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Failed to create git bundle at $bundlePath"
+    exit 1
+}
+
+Write-Host "Creating full source archive with .git ($zipName)..."
+if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+& tar -a -c -f $zipPath `
+    --exclude="backend/target" `
+    --exclude="frontend/node_modules" `
+    --exclude="frontend/dist" `
+    --exclude="releases/*.zip" `
+    --exclude="releases/*.bundle" `
+    .git backend frontend releases .gitignore .gortex.yaml build.bat publish_release.ps1 README.md RELEASE.md RELEASE_NOTES.md vision.md
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zipPath)) {
+    Write-Error "Failed to create source archive with .git at $zipPath"
+    exit 1
+}
+
+$zipHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+$zipSize = (Get-Item $zipPath).Length
+$bundleHash = (Get-FileHash -Path $bundlePath -Algorithm SHA256).Hash.ToLower()
+$bundleSize = (Get-Item $bundlePath).Length
+
+$bodyText = "$tag release. Windows executable included.`r`nSHA-256: $localHash`r`ncode-Manager-rust.exe`r`n`r`nSHA-256: $zipHash`r`n$zipName (Source code with .git & backup branches)`r`n`r`nSHA-256: $bundleHash`r`n$bundleName (Complete offline Git bundle)"
 if ($customNotes) {
     $bodyText = "$bodyText`r`n`r`n$customNotes"
 }
@@ -115,24 +151,38 @@ if (-not $release) {
     Write-Host "Release metadata updated"
 }
 
-# 6. Check or Upload Asset
-$existingAsset = $release.assets | Where-Object { $_.name -eq "code-Manager-rust.exe" }
-if ($existingAsset) {
-    Write-Host "Asset code-Manager-rust.exe already exists (ID: $($existingAsset.id)), removing to update..."
-    Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/assets/$($existingAsset.id)" -Headers $headers -Method Delete | Out-Null
+# 6. Check or Upload Assets
+function Upload-ReleaseAsset {
+    param(
+        [string]$FilePath,
+        [string]$AssetName
+    )
+    if (-not (Test-Path $FilePath)) {
+        Write-Error "Asset file not found: $FilePath"
+        exit 1
+    }
+    $existing = $release.assets | Where-Object { $_.name -eq $AssetName }
+    if ($existing) {
+        Write-Host "Asset $AssetName already exists (ID: $($existing.id)), removing to update..."
+        Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/assets/$($existing.id)" -Headers $headers -Method Delete | Out-Null
+    }
+
+    Write-Host "Uploading asset $AssetName ($((Get-Item $FilePath).Length) bytes)..."
+    $uploadUri = $release.upload_url -replace '\{\?name,label\}', "?name=$AssetName"
+    $uploadHeaders = @{
+        "Authorization" = "token $token"
+        "Accept"        = "application/vnd.github.v3+json"
+        "User-Agent"    = "codex-manager-rust-publisher"
+        "Content-Type"  = "application/octet-stream"
+    }
+
+    $uploaded = Invoke-RestMethod -Uri $uploadUri -Headers $uploadHeaders -Method Post -InFile $FilePath
+    Write-Host "Asset $AssetName uploaded successfully (ID: $($uploaded.id), Size: $($uploaded.size) bytes)"
 }
 
-Write-Host "Uploading asset code-Manager-rust.exe ..."
-$uploadUri = $release.upload_url -replace '\{\?name,label\}', '?name=code-Manager-rust.exe'
-$uploadHeaders = @{
-    "Authorization" = "token $token"
-    "Accept"        = "application/vnd.github.v3+json"
-    "User-Agent"    = "codex-manager-rust-publisher"
-    "Content-Type"  = "application/octet-stream"
-}
-
-$uploaded = Invoke-RestMethod -Uri $uploadUri -Headers $uploadHeaders -Method Post -InFile $exePath
-Write-Host "Asset uploaded successfully (ID: $($uploaded.id), Size: $($uploaded.size) bytes)"
+Upload-ReleaseAsset -FilePath $exePath -AssetName "code-Manager-rust.exe"
+Upload-ReleaseAsset -FilePath $zipPath -AssetName $zipName
+Upload-ReleaseAsset -FilePath $bundlePath -AssetName $bundleName
 
 Write-Host "=================================================="
 Write-Host "Release verification succeeded!"
