@@ -117,7 +117,7 @@ Core 模式严格属性校验（additionalProperties: false），入参须严格
 3.2 多项目联合工作区与检索自适应规范
 
 单守护进程多仓库架构下，所有已 track 仓库接入统一联合知识图谱（默认 workspace: default）：
-1. 单项目日常分析自动箝位：search_symbols、search_text、find_files、explore 默认锁定当前主场仓库，杜绝跨库污染。
+1. 单项目日常分析自动箝位：search_symbols、search_text、find_files、explore 默认锁定当前主场仓库，杜绝跨库污染。未带前缀的工程相对路径（如 "src/main.rs"）由底层自动箝位并安全锚定至当前 Session 绑定的工作区，杜绝被外部无关仓库同名文件或外部 worktree 歧义拦截。
 2. 跨项目穿透机制：跨库文件读写直接传绝对路径即时生效；跨库符号检索优先调用 query_project(project="target_proj", query="...")，全图搜索传 repo="*"；get_call_chain、find_usages、contracts、audit_health 等关系型工具全域贯通，Python 绝对导入优先本仓并自动标记 CrossRepo 跨仓边。
 3. 规范调用铁律：set_active_project 仅接受逻辑 Project 标识，严禁传路径切域。已 track 项目一切操作必须在 Gortex 原生工具链内闭环。
 
@@ -130,6 +130,7 @@ Core 模式严格属性校验（additionalProperties: false），入参须严格
 2. get_symbol_source(id="pkg/file.go::Symbol", context_lines=0)：精读符号实现体，传 context_lines 扩展外围行数（如声明注解、包定义等）。
 3. get_file_summary(path)：快速获取单文件顶级符号大纲、类型分布与导入依赖摘要，避免无意义全文件拉取。
 4. get_editing_context(path)：修改前获取目标文件完整拓扑环境（所属模块、相邻符号、引用方分布及受波及范围）。
+5. ETag 条件缓存与零开销复查（if_none_match）：read_file、get_symbol_source、get_file_summary、get_editing_context、smart_context 均返回 etag 并在入参中支持 if_none_match="<etag>"。在多轮推演或修改后复查时，若目标未变动直接返回 not_modified（~0 Token 开销），避免重复全量拉取。
 
 4.2 拓扑关系与深度数据流追踪
 1. get_callers(id, depth=2)：反向递归查询调用者，获取调用方的位置、调用链深度与语法上下文。
@@ -186,7 +187,7 @@ analyze 工具必须且仅能通过 kind="..." 传参，分为四大核心领域
    - 符号物理重构：
      rename_symbol(id, new_name, dry_run=true)（联动更新全图谱所有引用点）。
      move_symbol(id, target_file, dry_run=true)。[*] safe_delete_symbol(id, dry_run=true, propagate=true)。
-4. 幂等与重试规范：写入操作若因并发锁定或文件系统延迟报错，优先通过 detect_changes() 重新检测状态，严禁未重新阅读最新内容前盲目重写。
+4. 幂等与重试规范：Windows 下底层已内置 3 秒有界指数退避重试（平滑吸收语言服务、杀毒软件或索引器瞬态句柄占用）。若写入仍因共享冲突（sharing violation）或权限拒绝报错，表明存在持续性硬占用，切勿盲目重复调用写工具，优先通过 detect_changes() 核验状态并向用户说明。严禁未重新阅读最新内容前盲目重写。
 
 5.2 修改后全栈闭环验证
 修改完成后必须严格按序执行闭环验证，严禁草率结案：

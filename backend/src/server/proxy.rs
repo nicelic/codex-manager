@@ -362,11 +362,12 @@ fn build_llmtrim_proxy_client() -> Option<reqwest::Client> {
 
 /// 处理 WebSocket 双向原始帧代理（支持直连及 HTTP CONNECT 代理隧道）
 async fn handle_v1_websocket_tunnel(
-    client_ws: AxumWebSocket,
+    mut client_ws: AxumWebSocket,
     state: AppState,
     target_url: String,
     upstream_api_key: String,
     outbound_proxy: Option<String>,
+    client_headers: HeaderMap,
 ) {
     let ws_target = if target_url.starts_with("https://") {
         target_url.replacen("https://", "wss://", 1)
@@ -380,9 +381,33 @@ async fn handle_v1_websocket_tunnel(
         Ok(r) => r,
         Err(e) => {
             error!("构造上游 WebSocket 请求失败: {}", e);
+            let _ = client_ws.send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: 1011,
+                reason: format!("构造上游 WebSocket 请求失败: {}", e).into(),
+            }))).await;
             return;
         }
     };
+
+    // 复制客户端自定义头部（过滤 hop-by-hop 标头与 WS 内部标头）
+    for (k, v) in client_headers.iter() {
+        let name = k.as_str().to_lowercase();
+        if name == "host"
+            || name == "connection"
+            || name == "upgrade"
+            || name == "sec-websocket-key"
+            || name == "sec-websocket-version"
+            || name == "sec-websocket-extensions"
+            || name == "sec-websocket-protocol"
+        {
+            continue;
+        }
+        if let Ok(hname) = reqwest::header::HeaderName::from_bytes(k.as_ref()) {
+            if let Ok(hval) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) {
+                req.headers_mut().insert(hname, hval);
+            }
+        }
+    }
 
     if !is_upstream_placeholder(&upstream_api_key) {
         if let Ok(auth_val) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
@@ -396,6 +421,10 @@ async fn handle_v1_websocket_tunnel(
         Ok(u) => u,
         Err(e) => {
             error!("解析 WebSocket 目标 URL 失败: {}", e);
+            let _ = client_ws.send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: 1011,
+                reason: format!("解析 WebSocket 目标 URL 失败: {}", e).into(),
+            }))).await;
             return;
         }
     };
@@ -425,13 +454,25 @@ async fn handle_v1_websocket_tunnel(
                         .await
                         .map_err(|e| format!("向出站代理发送 CONNECT 指令失败: {}", e))?;
 
-                    let mut resp_buf = [0u8; 1024];
-                    let n = tcp
-                        .read(&mut resp_buf)
-                        .await
-                        .map_err(|e| format!("读取出站代理 CONNECT 响应失败: {}", e))?;
-                    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
-                    if !resp_str.starts_with("HTTP/1.1 200") && !resp_str.starts_with("HTTP/1.0 200") {
+                    let mut resp_buf = Vec::new();
+                    let mut temp_buf = [0u8; 1024];
+                    let mut connect_ok = false;
+                    while resp_buf.len() < 8192 {
+                        let n = tcp.read(&mut temp_buf).await
+                            .map_err(|e| format!("读取出站代理 CONNECT 响应失败: {}", e))?;
+                        if n == 0 { break; }
+                        resp_buf.extend_from_slice(&temp_buf[..n]);
+                        if let Some(pos) = resp_buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let header_str = String::from_utf8_lossy(&resp_buf[..pos]);
+                            if header_str.starts_with("HTTP/1.1 200") || header_str.starts_with("HTTP/1.0 200") {
+                                connect_ok = true;
+                            }
+                            break;
+                        }
+                    }
+
+                    if !connect_ok {
+                        let resp_str = String::from_utf8_lossy(&resp_buf);
                         return Err(format!("出站代理 CONNECT 握手被拒绝: {}", resp_str.lines().next().unwrap_or("")));
                     }
 
@@ -464,6 +505,10 @@ async fn handle_v1_websocket_tunnel(
         Ok(res) => res,
         Err(err_msg) => {
             error!("{}", err_msg);
+            let _ = client_ws.send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: 1011,
+                reason: format!("连接上游失败: {}", err_msg).into(),
+            }))).await;
             return;
         }
     };
@@ -528,6 +573,188 @@ async fn handle_v1_websocket_tunnel(
     state.active_ws_sessions.fetch_sub(1, Ordering::SeqCst);
     state.upstream_ws_carriers.fetch_sub(1, Ordering::SeqCst);
     info!("WebSocket 代理隧道已断开");
+}
+
+/// 跨模态桥接：当客户端以 WebSocket 接入，但上游关闭 WS 或优先使用 SSE 时，
+/// 将客户端的 WS JSON 请求转发为上游标准 HTTP 流式调用，并将上游 SSE 打字机流实时转换推回给客户端。
+async fn handle_v1_ws_to_sse_bridge(
+    mut client_ws: AxumWebSocket,
+    state: AppState,
+    target_url: String,
+    upstream_api_key: String,
+    outbound_proxy: Option<String>,
+    client_headers: HeaderMap,
+) {
+    state.active_ws_sessions.fetch_add(1, Ordering::SeqCst);
+    info!("已开启 WebSocket -> 上游默认 SSE 流式转码桥接: {}", target_url);
+
+    let llmtrim_running = LlmtrimService::is_port_open();
+    let client = if llmtrim_running {
+        let mut cached = state.llmtrim_client.write().await;
+        if cached.is_none() {
+            *cached = build_llmtrim_proxy_client();
+        }
+        cached.clone().unwrap_or_else(|| state.http_client.clone())
+    } else if let Some(proxy_url) = outbound_proxy.as_deref().filter(|p| !p.trim().is_empty()) {
+        if let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim()) {
+            reqwest::Client::builder()
+                .proxy(proxy)
+                .build()
+                .unwrap_or_else(|_| state.http_client.clone())
+        } else {
+            state.http_client.clone()
+        }
+    } else {
+        state.http_client.clone()
+    };
+
+    while let Some(msg_res) = client_ws.recv().await {
+        let msg = match msg_res {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("读取客户端 WebSocket 帧出错: {}", e);
+                break;
+            }
+        };
+
+        match msg {
+            AxumWsMessage::Text(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                // 尝试解析为 JSON 并补齐 stream=true
+                let mut payload: serde_json::Value = match serde_json::from_str(trimmed) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        let err_resp = json!({
+                            "error": {
+                                "message": "请求体格式无效，期待 JSON 格式载荷",
+                                "type": "invalid_request_error"
+                            }
+                        });
+                        let _ = client_ws.send(AxumWsMessage::Text(err_resp.to_string().into())).await;
+                        continue;
+                    }
+                };
+
+                if payload.is_object() && payload.get("stream").is_none() {
+                    payload["stream"] = serde_json::Value::Bool(true);
+                }
+
+                let body_bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| trimmed.as_bytes().to_vec());
+
+                let mut req_builder = client.post(&target_url)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ACCEPT, "text/event-stream");
+
+                for (k, v) in client_headers.iter() {
+                    let name = k.as_str().to_lowercase();
+                    if name == "host"
+                        || name == "connection"
+                        || name == "upgrade"
+                        || name == "content-length"
+                        || name == "content-type"
+                        || name == "accept"
+                        || name.starts_with("sec-websocket-")
+                    {
+                        continue;
+                    }
+                    if let Ok(hname) = reqwest::header::HeaderName::from_bytes(k.as_ref()) {
+                        if let Ok(hval) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) {
+                            req_builder = req_builder.header(hname, hval);
+                        }
+                    }
+                }
+
+                if !is_upstream_placeholder(&upstream_api_key) {
+                    if let Ok(auth_val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
+                        req_builder = req_builder.header(reqwest::header::AUTHORIZATION, auth_val);
+                    }
+                }
+
+                match req_builder.body(body_bytes).send().await {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        if !status.is_success() {
+                            let err_text = resp.text().await.unwrap_or_default();
+                            let err_payload = json!({
+                                "error": {
+                                    "message": format!("上游返回错误状态 {}: {}", status, err_text),
+                                    "type": "upstream_error",
+                                    "code": status.as_u16()
+                                }
+                            });
+                            let _ = client_ws.send(AxumWsMessage::Text(err_payload.to_string().into())).await;
+                            continue;
+                        }
+
+                        let mut stream = resp.bytes_stream();
+                        let mut line_buf = String::new();
+
+                        while let Some(chunk_res) = stream.next().await {
+                            match chunk_res {
+                                Ok(chunk) => {
+                                    line_buf.push_str(&String::from_utf8_lossy(&chunk));
+                                    while let Some(newline_pos) = line_buf.find('\n') {
+                                        let line = line_buf[..newline_pos].trim_end().to_string();
+                                        line_buf = line_buf[newline_pos + 1..].to_string();
+
+                                        if line.is_empty() {
+                                            continue;
+                                        }
+
+                                        let payload_to_send = if let Some(stripped) = line.strip_prefix("data:") {
+                                            let s = stripped.trim();
+                                            if s == "[DONE]" {
+                                                json!({ "choices": [], "done": true }).to_string()
+                                            } else {
+                                                s.to_string()
+                                            }
+                                        } else {
+                                            line
+                                        };
+
+                                        if client_ws.send(AxumWsMessage::Text(payload_to_send.into())).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("读取上游 SSE 流中断: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let err_payload = json!({
+                            "error": {
+                                "message": format!("调用上游 SSE 接口失败: {}", e),
+                                "type": "gateway_error"
+                            }
+                        });
+                        let _ = client_ws.send(AxumWsMessage::Text(err_payload.to_string().into())).await;
+                    }
+                }
+            }
+            AxumWsMessage::Ping(p) => {
+                if client_ws.send(AxumWsMessage::Pong(p)).await.is_err() {
+                    break;
+                }
+            }
+            AxumWsMessage::Pong(_) => {}
+            AxumWsMessage::Close(c) => {
+                let _ = client_ws.send(AxumWsMessage::Close(c)).await;
+                break;
+            }
+            AxumWsMessage::Binary(_) => {}
+        }
+    }
+
+    state.active_ws_sessions.fetch_sub(1, Ordering::SeqCst);
+    info!("WebSocket -> 上游 SSE 转码会话已结束");
 }
 
 /// 核心反向代理处理函数：流式转发 /v1/* 请求到配置的 upstream_base_url
@@ -597,15 +824,31 @@ pub async fn forward_handler(
         None
     };
 
-    if is_ws && cfg.upstream_websocket_enabled {
-        if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
-            let ws_target = target_url.clone();
-            let key = cfg.upstream_api_key.clone();
-            let ws_state = state.clone();
-            let ws_proxy = effective_ws_proxy.clone();
-            return ws
-                .on_upgrade(move |socket| handle_v1_websocket_tunnel(socket, ws_state, ws_target, key, ws_proxy))
-                .into_response();
+    if is_ws {
+        if cfg.upstream_websocket_enabled {
+            if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
+                let ws_target = target_url.clone();
+                let key = cfg.upstream_api_key.clone();
+                let ws_state = state.clone();
+                let ws_proxy = effective_ws_proxy.clone();
+                let client_headers = parts.headers.clone();
+                return ws
+                    .on_upgrade(move |socket| handle_v1_websocket_tunnel(socket, ws_state, ws_target, key, ws_proxy, client_headers))
+                    .into_response();
+            }
+        } else {
+            // 当上游 WebSocket 开关关闭时，支持无缝降级为 SSE 承载：
+            // 将客户端的 WS 会话无缝桥接到上游默认的 SSE 流式接口
+            if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
+                let ws_target = target_url.clone();
+                let key = cfg.upstream_api_key.clone();
+                let ws_state = state.clone();
+                let ws_proxy = effective_ws_proxy.clone();
+                let client_headers = parts.headers.clone();
+                return ws
+                    .on_upgrade(move |socket| handle_v1_ws_to_sse_bridge(socket, ws_state, ws_target, key, ws_proxy, client_headers))
+                    .into_response();
+            }
         }
     }
 
@@ -874,5 +1117,30 @@ mod tests {
         assert!(running_status.connections.upstream_h2_ws);
         assert_eq!(running_status.connections.upstream_ws, 1);
         assert_eq!(running_status.connections.upstream_streams, 5);
+    }
+
+    #[test]
+    fn test_ws_target_url_scheme_mapping() {
+        let base_https = "https://api.openai.com/v1";
+        let target_https = join_upstream_url(base_https, "/v1/chat/completions", None).unwrap();
+        let ws_target_https = if target_https.starts_with("https://") {
+            target_https.replacen("https://", "wss://", 1)
+        } else if target_https.starts_with("http://") {
+            target_https.replacen("http://", "ws://", 1)
+        } else {
+            target_https.clone()
+        };
+        assert_eq!(ws_target_https, "wss://api.openai.com/v1/chat/completions");
+
+        let base_http = "http://127.0.0.1:8000/v1";
+        let target_http = join_upstream_url(base_http, "/v1/models", None).unwrap();
+        let ws_target_http = if target_http.starts_with("https://") {
+            target_http.replacen("https://", "wss://", 1)
+        } else if target_http.starts_with("http://") {
+            target_http.replacen("http://", "ws://", 1)
+        } else {
+            target_http.clone()
+        };
+        assert_eq!(ws_target_http, "ws://127.0.0.1:8000/v1/models");
     }
 }
