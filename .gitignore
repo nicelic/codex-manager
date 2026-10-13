@@ -25,3 +25,7 @@ Desktop.ini
 .gortex.yaml
 backend/config.yaml
 
+# Release packages
+releases/*.zip
+releases/*.bundle
+
