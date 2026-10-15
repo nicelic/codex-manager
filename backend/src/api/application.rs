@@ -12,7 +12,7 @@ use crate::state::AppState;
 use tracing::info;
 
 const APP_REPO: &str = "nicelic/codex-manager";
-const CURRENT_VERSION: &str = "v1.0.2";
+const CURRENT_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
