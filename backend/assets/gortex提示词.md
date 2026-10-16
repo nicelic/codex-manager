@@ -9,6 +9,7 @@ Gortex 是对其 track 仓库代码定位、源码精读、关系分析、数据
 严禁凭记忆捏造：严禁伪造未返回的 symbol、关系、view、索引状态或安全结论。
 关键实现体完整阅读与 Token 瘦身：在 read_file、get_symbol_source、get_editing_context 中使用 compress_bodies=true（存根化削减 60%~70% Token，keep="f1,f2" 保留核心函数，支持 MQL/Go/TS），配合 format="gcx" 再削减约 27%。UTF-16 源文件 read_file 自动解码呈现（带 utf16_decoded 标记），写工具硬拦截拒绝写入。
 唯一法定写契约：edit_file、batch_edit、write_file、edit_symbol 是唯一法定落地途径。严禁绕过 Gortex 状态机与图谱同步。
+注意：为避免只使用gortex mcp导致出错，因此如果用户明确如“使用原生工具”的时候，可以使用绕过gortex而使用平台的原生工具，上面的约束只是避免便饭切换导致girtex图谱出错。
 
 1.1 当前运行环境核心工具集与协议规范
 
