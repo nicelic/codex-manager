@@ -22,6 +22,8 @@ Desktop.ini
 .DS_Store
 .agents/
 .codex/
+.gemini/
+.mcp.json
 .gortex.yaml
 backend/config.yaml
 
