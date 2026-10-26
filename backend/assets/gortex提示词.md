@@ -1,238 +1,208 @@
+【语法说明】命令示例中的 "|" 纯属文档排版的候选间隔说明，绝非命令参数值！实际执行时严禁原样照抄 "|"，必须且仅能选择传入单一合法值。带 "|" 的合并项，各操作专属必填字段不同，调用时须按具体 operation 契约填充。
+
 1. 最高原则和使用边界
 
-Gortex 是对其 track 仓库代码定位、源码精读、关系分析、数据流追踪、影响评估、编辑、重构、验证、审查与记忆的权威工具。
+Gortex 是对其 track 仓库全生命周期代码定位、精读、分析、编辑、重构、验证与记忆的权威工具。
 
-全流程原生 MCP 绝对闭环约束：已 track 仓库的一切操作（包括检索、分析、精读、评估、编辑、替换、写入、重构与删除），必须且仅能通过 Gortex 原生 MCP 句柄闭环执行。
-严禁读写割裂：严禁阅读时使用 Gortex、修改时退回宿主原生工具。严禁对已 track 仓库调用宿主工具（包括 replace_file_content、write_to_file、view_file、grep_search、find_by_name 等）。
-不可降级与熔断通知：若 Gortex 原生工具无法使用、报错或无法满足需求，严禁擅自退回原生工具自行兜底，必须立即停止操作并向用户说明原因。未 track 的项目不得擅自进行 track 图谱化。
-全局技能只读豁免：read_file 放行全局技能只读（~/.agents/skills/ 及 Pi 包生态）。
-严禁凭记忆捏造：严禁伪造未返回的 symbol、关系、view、索引状态或安全结论。
-关键实现体完整阅读与 Token 瘦身：在 read_file、get_symbol_source、get_editing_context 中使用 compress_bodies=true（存根化削减 60%~70% Token，keep="f1,f2" 保留核心函数，支持 MQL/Go/TS），配合 format="gcx" 再削减约 27%。UTF-16 源文件 read_file 自动解码呈现（带 utf16_decoded 标记），写工具硬拦截拒绝写入。
-唯一法定写契约：edit_file、batch_edit、write_file、edit_symbol 是唯一法定落地途径。严禁绕过 Gortex 状态机与图谱同步。
-注意：为避免只使用gortex mcp导致出错，因此如果用户明确如“使用原生工具”的时候，可以使用绕过gortex而使用平台的原生工具，上面的约束只是避免便饭切换导致girtex图谱出错。
+- 原生 MCP 绝对闭环：已 track 仓库的一切操作必须且仅能通过 Gortex 原生 MCP 闭环执行。
+- 严禁读写割裂与降级：严禁阅读用 Gortex、修改退回宿主工具；严禁调用宿主工具（replace_file_content、write_to_file、grep_search、find_by_name 等）。报错或无法满足时须停用向用户说明，严禁退回宿主工具兜底。未 track 项目不得擅自图谱化。
+- 全局技能只读豁免：read 放行全局技能只读（~/.agents/skills/、~/.claude/skills/ 及 Pi 包生态）。
+- 严禁凭记忆捏造：严禁伪造未返回的 symbol、关系、view、索引状态或安全结论。
+- 关键实现精读与 Token 瘦身：摘要/搜索不能替代关键实现阅读；行为关键代码必须精读完整源码。长代码巡检使用 compress_bodies=true（存根化省 60%~70% Token，keep="f1,f2" 保留关键源码），配合 format="gcx" 达到最佳瘦身。UTF-16 源文件 read 自动解码呈现，写工具硬拦截拒绝写入。
+- 唯一法定写契约：edit、refactor（Core 模式: edit_file、batch_edit、write_file、edit_symbol）是唯一法定落地途径。写操作严格遵守当前 schema、guard、view、overlay 与 partial failure，严禁绕过状态机与图谱同步。
+- 平台工具例外豁免：若用户明确指令“使用原生工具”时方可使用平台工具，避免频繁切换导致图谱失步。
 
-1.1 当前运行环境核心工具集与协议规范
+1.1 核心工具集协议规范
 
-本环境采用 Core 扁平离散工具预设（暴露 explore, read_file, get_symbol_source, search_symbols, search_text, edit_file, batch_edit 等 65 个热核心与延迟工具）。调用时参数扁平传入，严格遵守以下法定协议：
-1. 纯净 ToolName 铁律：MCP 工具命令名永远为纯小写下划线标识符（如 read_file）。严禁拼接带句点、带斜杠或带操作派发的虚构工具名。
-2. 真实参数值契约：
-   - 符号 id：格式为 "文件相对路径::符号名"（如 "pkg/foo.go::Bar"），严禁使用尖括号等占位符号。路径分隔符统一使用正斜杠。
-   - 文件 path：必须传入具体工程相对路径或绝对路径，严禁使用尖括号等占位符号。
-3. analyze 鉴别参铁律：analyze 工具必须传 kind="..."（如 analyze(kind="architecture")），严禁传 operation="..." 导致静默退化为 help。
-4. 延迟目录发现机制（Deferred Catalog）：winnow_symbols, context_closure, plan_turn, safe_delete_symbol, get_cfg, trace_path 等冷目录工具若初始未暴露，通过 tools_search(query="...") 动态唤醒。
-5. 系统固定参数（fixed_arguments）——调用时严禁覆盖：
-   search_symbols 固定 assist="off"；change_contract 固定 ack=false；simulate_chain 固定 keep=false；surface_memories 固定 mark_accessed=false；overlay_merge 默认 to_disk=false（落盘时显式传 to_disk=true）。
-6. 统一 Output 响应控制（顶层扁平传入）：max_bytes（限制字节）、limit/cursor（分页）、format（推荐 "gcx"，削减约 27% Token）、fields（稀疏列）、scope（限定范围，如 scope="unstaged"）。search_text、find_declaration、graph_query 统一支持 _truncated_by_limit 截断与 count_is_exact:false 披露。
+支持双运行范式：默认客户端接入为「Facade-v1 紧凑门面模式」（21 个面向效果的领域工具）；配置 GORTEX_TOOLS=core/full 时切换为「Core 扁平离散模式」（34 个核心热工具，其余归入 Deferred Catalog）。协议规范：
+1. ToolName 契约：
+   - 默认 Facade-v1：命令名为 21 个领域动词（explore, search, read, relations, trace, analyze, ask, change, edit, refactor, review, publish_review, pr, recall, remember, workspace, workspace_admin, overlay, session, response, capabilities）。调用旧版扁平工具会被底层拦截；通过 operation 参数派发。
+   - Core 扁平模式：命令名纯小写下划线标识符（如 read_file, edit_file, get_callers），严禁虚构。
+2. 容器分层契约（Container Boundaries）：
+   - 通用门面工具扩展参数归入 options（limit, path, depth, glob）、source（changes, steps, scope）、target（file, symbol, symbols, query）、to（symbol, query）、context（context_lines, compress_bodies）、output（format, max_bytes）；严禁随意平铺至根层级触发 additionalProperties: false 拒绝。
+   - 冷门面强制 arguments 容器：remember, recall, workspace, workspace_admin, overlay, pr, publish_review, session 的业务参数必须且仅能封装在 arguments: { ... } 对象内（顶层仅接收 operation, arguments, output, view 及 session 的 channel）。
+3. 真实参数值：符号 id 必为 "相对路径::符号名"（如 "pkg/foo.go::Bar"）或全局唯一短名，正斜杠分隔，严禁尖括号占位；文件 path 必为具体工程相对或绝对路径，严禁尖括号占位。
+4. 固定参数（fixed_arguments）：search.symbols 服务端固定 assist="off"（无需传参）；change.contract 固定 ack=false（确认风险走 remember(risk_ack)）；simulate_chain / change.simulate 固定 keep=false；surface_memories / recall.surface 固定 mark_accessed=false；overlay_merge 默认 to_disk=false（落盘走 edit.apply_overlay 或显式传 to_disk=true）。
+5. 统一 Output 控制：max_bytes（限字节）、limit/cursor（分页）、format（推荐 "gcx" 专有编码省 27% Token）、fields（稀疏投影）、scope（如 "unstaged"）。截断工具统一支持 _truncated_by_limit=true、count_is_exact:false 及 truncation_note 披露。
 
 2. 任务开启与探索流转
 
 流转准则与核心工具：
-1. 明确文件名首读：用户明确指定文件时，首个动作直接调用 read_file(path="path/to/file.ext")，勿触发定位。
-2. 代码定位与探索：未知位置或排障时优先 explore(task="...", path="...", token_budget=1600)。遵循 completion.required_action 状态机：
-   - answer_ready：直接从 completion.final_response 结案并停用工具。
-   - needs_exact_read：补齐 read_file 或 get_symbol_source 精读。
-   - needs_more_context：缩小 task 范围或指定 path 追加线索。
-3. 智能上下文装配：优先 smart_context(task="...", entry_point="...", fidelity="graded", token_budget=8000) 装配最小完备上下文与多文件编辑规划。
-4. 架构速览与拓扑辅助：get_repo_outline() 获取工程语言分布、入口、热点与顶层大纲；context_closure(symbols, files) 计算拓扑闭包；plan_turn(task) 推荐开局工具序列；gortex_wakeup() 生成约 500 Token 架构摘要。
+1. 首读契约：用户指定文件阅读/审查时，首个动作直接调用 read(operation="file", target:{file:"具体路径"}, options:{new_user_task:true})（Core: read_file）；严禁触发 localize 定位流程。
+2. 代码定位与探索状态机：
+   - 位置未知："where is X" 时调用 explore(operation="localize", task="...")。遵循 completion.required_action 状态机：
+     * answer_ready：结果完备，直接从 completion.final_response 结案并停用工具。
+     * needs_exact_read：补齐 read(operation="source", target:{symbol:"..."}) 精读核心实现体。
+     * needs_more_context：缩小 task 范围或传入 path 补充线索。
+   - 诊断排障或代码变更：调用 explore(operation="task", task="...")。探索后最多仅对 1 个未决符号追问一次（search, read, relations, trace），随后推进到 change(impact) -> edit -> verify 阶段。严禁退回原生 Grep/Glob。
+3. 智能上下文装配：优先 explore(operation="context", task="任务描述", options:{entry_point:"入口符号", fidelity:"graded", token_budget:8000})（Core: smart_context）装配最小完备上下文与多文件编辑规划。
+4. 架构速览辅助：explore(operation="outline") 获取主干入口与骨架；explore(operation="closure", options:{symbols:"id1,id2"}) 拓扑闭包；explore(operation="plan", task="...") 推荐开局序列；explore(operation="wakeup") 生成 500 Token 架构摘要。
 
 2.1 检索、阅读与图谱协同
-search_text(query, regexp=false, limit=100, path, repo)：Trigram 全文搜索，命中附带 symbol_id 与 symbol_name。path 过滤前置于 limit 截断执行且自动归一化路由；若返回 _truncated_by_limit=true，count 仅为当前范围下界 floor，可追加 path 收窄或扩大 limit/细化 query 恢复完整结果。
-search_symbols(query, kind, flavor, path)：BM25 驼峰分词检索 AST 定义，固定 assist=off。
-search_ast(pattern) 或 search_ast(detector)：[热] 语法级代码检索，支持 15+ 缺陷与安全检测器及 Tree-sitter S 表达式匹配。
-find_files(query, glob)：按路径前缀或 Glob 通配查找工程物理文件。
-关系追踪工具集（get_callers, get_call_chain, find_usages, find_implementations）：沿 AST 拓扑追踪调用链、实现与引用点。原生支持 Python 第一方绝对导入（杜绝 dep:: 存根断裂），以及 TS/JS 路径别名与 Go 模块内导入精准映射。
+- search(operation="text", query="...", options:{limit:100, path:"..."})（Core: search_text）：Trigram 全文搜索，带 symbol_id/name。path 前置过滤；若 _truncated_by_limit=true，count 为下界 floor，可追加 path 收窄或扩大 limit。
+- search(operation="symbols", query="...", options:{kind:"function", flavor:"struct"})（Core: search_symbols）：BM25 驼峰检索 AST 定义，服务端固定 assist="off"。
+- search(operation="ast", query="模式表达式", options:{detector:"检测器名", language:"go"})（Core: search_ast）：语法级检索，支持 15+ 缺陷安全检测器及 Tree-sitter S 表达式。
+- search(operation="files", query="...", options:{glob:"*.*"})（Core: find_files）：按路径前缀或 Glob 通配查找物理文件。
+- 关系追踪（relations 与 trace；Core: get_callers, get_call_chain, find_usages, find_implementations）：沿 AST 追踪调用链、实现与引用点。原生支持 Python 第一方绝对导入（杜绝 dep:: 存根断裂）及 TS/JS 别名、Go 模块导入。
 
 3. 原生独立核心工具调用全景字典
 
-3.1 核心工具调用速查（Core 扁平模式；[*] 表示延迟目录工具）
+3.1 核心工具调用速查（Facade-v1 21 领域门面；Core 模式映射：read.file->read_file, edit.file->edit_file, search.symbols->search_symbols 等）
 
-Core 模式严格属性校验（additionalProperties: false），入参须严格匹配属性名：
-1. 全局任务定位：explore(task="...", path="...", token_budget=1600)
-2. 上下文规划装配：smart_context(task="...", entry_point="...", fidelity="graded", token_budget=8000)
-3. 工程骨架大纲：get_repo_outline()
-4. 架构全景分析：analyze(kind="architecture")
-5. 符号精确搜索：search_symbols(query="...", kind="...", flavor="...")（固定 assist=off）
-6. 文本全文搜索：search_text(query="...", regexp=false, limit=100)
-7. AST 语法检索：search_ast(pattern="...") 或 search_ast(detector="...")
-8. 物理文件查找：find_files(query="...", glob="*.go")
-9. [*] 多轴联合过滤：winnow_symbols(text_match="...", kind="函数", language="go", min_fan_in=2, limit=50)
-10. [*] 非代码资产读取：get_artifact(id="art_id")
-11. 文件源码读取：read_file(path="path/to/file", offset=1, limit=100, compress_bodies=false)
-12. 符号实现源码：get_symbol_source(id="pkg/file.go::Symbol", context_lines=0)
-13. 符号元数据读取：get_symbol(id="pkg/file.go::Symbol")
-14. [*] 批量符号源码：batch_symbols(symbols=["id1","id2"])
-15. 单文件符号概览：get_file_summary(path="path/to/file")
-16. 编辑前拓扑分析：get_editing_context(path="path/to/file")
-17. 反向调用者查找：get_callers(id="pkg/file.go::Symbol", depth=2)
-18. 语法级引用定位：find_usages(id="pkg/file.go::Symbol", context="call")
-19. 接口实现查找：find_implementations(id="pkg/file.go::Symbol")
-20. [*] 类继承层次树：get_class_hierarchy(id="pkg/file.go::Symbol")
-21. 虚方法重写查找：find_overrides(id="pkg/file.go::Symbol")
-22. [*] 声明使用跳转：find_declaration(use_site="use_pos")
-23. 依赖拓扑评估：get_dependencies(id="pkg/file.go::Symbol") 与 get_dependents(id="pkg/file.go::Symbol")
-24. 递归深度调用链：get_call_chain(id="pkg/file.go::Symbol", depth=4)
-25. [*] 控制流图分析：get_cfg(id="pkg/file.go::Symbol")
-26. [*] 节点最短路径：trace_path(source_id="id1", sink_id="id2")
-27. 文件局部替换：edit_file(path, old_string, new_string, dry_run=false, expected_occurrences=1)
-28. 符号精确修改：edit_symbol(id, old_source, new_source, dry_run=false)
-29. 覆盖写入文件：write_file(path, content)
-30. 事务批量修改：batch_edit(dry_run=true, edits=[...])
-31. 符号安全重命名：rename_symbol(id="pkg/file.go::Symbol", new_name="NewName", dry_run=true)
-32. [*] 符号安全删除：safe_delete_symbol(id="pkg/file.go::Symbol", dry_run=true, propagate=true)
-33. 符号跨文件移动：move_symbol(id="pkg/a.go::A", target_file="pkg/b.go", dry_run=true)
-34. 微小函数内联：inline_symbol(id="pkg/a.go::fn", dry_run=true)
-35. 守护规则检查：check_guards(ids="id1,id2")
-36. 受波及单测定位：get_test_targets(ids="id1,id2")
-37. 函数签名契约：verify_change(changes='[{"symbol_id":"sym_id","new_signature":"sig"}]')
-38. 变更影响评估：explain_change_impact(ids="sym_id") 或 analyze(kind="impact")
-39. [*] 变更风险契约：change_contract(diff="...")（固定 ack=false）
-40. LSP 编辑模拟：preview_edit(workspace_edit="...")
-41. 沙箱链式推演：simulate_chain(steps="[...]", keep=false)（固定 keep=false）
-42. 检测脏改动：detect_changes()
-43. Diff 上下文：diff_context(scope="unstaged")
-44. 代码审查引擎：review(scope="unstaged")
-45. 跨服务契约校验：contracts(action="list") 或 analyze(kind="contracts")
-46. 复杂度健康评分：audit_health() 或 analyze(kind="health")
-47. 代码热点扰动率：get_churn_rate() 或 analyze(kind="churn")
-48. 增量变动检测：get_recent_changes() 或 analyze(kind="recent_changes")
-49. 代码归属与责任人：analyze(kind="ownership", path_prefix="pkg/", min_symbols=1)
-50. 持久规约记忆：store_memory(kind="invariant", title="标题", body="内容")
-51. 保存决策笔记：save_note(file_path="pkg/util.go", body="笔记", tags="tag1,tag2")
-52. 召回规约记忆：surface_memories(task="任务描述", symbol_ids="sym_id")（固定 mark_accessed=false）
-53. 提炼会话摘要：distill_session()
-54. 跨项目穿透检索：query_project(project="other_proj", query="...")
-55. 切换活跃工程：set_active_project(project="proj_name")
-56. 当前活跃工程：get_active_project()
-57. 已索引仓库列表：list_repos()
-58. 全局图谱统计：graph_stats()
-59. 索引健康检查：index_health()
-60. [*] 路径视图诊断：explain_view(path="path/to/file")
-61. 发现延迟工具：tools_search(query="...")
-62. 语言诊断获取：get_diagnostics(path="path/to/file", wait=false, timeout_ms=5000)
-63. 分支图层比对：compare_branches(a, b, kind="get_callers", id="...", depth=2, limit=50)
-64. 编辑缓冲比对：compare_with_overlay(kind="get_callers", id="...", depth=2, limit=50)
-65. 枚举图层分支：overlay_branches()
-66. 活动图层列表：overlay_list()
-67. 工具开销画像：tool_profile(tool="read_file")
+严守属性校验，入参严格匹配容器与属性名（注："|" 仅为备选说明）：
+1. explore(operation="localize"|"task", task="...", options:{token_budget:1600})
+2. explore(operation="context", task="...", options:{entry_point:"...", token_budget:8000})
+3. explore(operation="outline")
+4. analyze(kind="architecture")（鉴别参必须为 kind，支持 kind="help" 导出字典）
+5. search(operation="symbols", query="...", options:{kind:"...", flavor:"..."})
+6. search(operation="text", query="...", options:{limit:100})
+7. search(operation="ast", query="模式", options:{detector:"检测器", language:"go"})
+8. search(operation="files", query="...", options:{glob:"*.*"})
+9. search(operation="winnow", query="...", options:{limit:50, min_fan_in:2})
+10. read(operation="file", target:{file:"path"}, options:{offset:1, limit:100}, context:{compress_bodies:false})
+11. read(operation="source", target:{symbol:"pkg/foo.go::Bar"}, context:{context_lines:0})
+12. read(operation="symbols", target:{symbols:["id1","id2"]})
+13. read(operation="summary"|"editing_context", target:{file:"path"}, options:{keep:"fn1"})
+14. relations(operation="callers"|"dependencies"|"dependents", target:{symbol:"id"}, options:{depth:2})
+15. relations(operation="usages", target:{symbol:"id"}, options:{context:"call"})
+16. relations(operation="implementations"|"hierarchy"|"overrides", target:{symbol:"id"})
+17. relations(operation="declaration", target:{query:"pos"})
+18. trace(operation="call_chain", target:{symbol:"id"}, options:{depth:4})
+19. trace(operation="cfg", target:{symbol:"id"})
+20. trace(operation="path"|"flow", target:{symbol:"src"}, to:{symbol:"dst"}, options:{max_depth:8})
+21. trace(operation="taint", target:{query:"src"}, to:{query:"sink"})
+22. edit(operation="file"|"symbol", target:{file:"path", symbol:"id"}, match="旧", replacement="新", dry_run:false)
+23. edit(operation="write", target:{file:"path"}, content="全量文本", dry_run:false)
+24. edit(operation="batch", changes:[{"op":"edit_file","path":"..","old_string":"..","new_string":".."}], dry_run:true)
+25. edit(operation="apply_overlay")
+26. refactor(operation="rename", target:{symbol:"id"}, new_name="NewName", dry_run:true)
+27. refactor(operation="move", target:{symbol:"id"}, destination="path/dst.go", dry_run:true)
+28. refactor(operation="delete"|"inline", target:{symbol:"id"}, dry_run:true)
+29. change(operation="impact", target:{symbol:"id"})
+30. change(operation="verify", source:{changes:[{"symbol_id":"sym_id","new_signature":"sig"}]})
+31. change(operation="detect")
+32. change(operation="tests"|"guards", target:{symbols:["id1","id2"]})
+33. change(operation="contract", source:{scope:"unstaged"})
+34. change(operation="simulate", source:{steps:"[...]"})
+35. change(operation="diagnostics", source:{file:"path"})
+36. change(operation="compare_branches", target:{symbol:"id"}, options:{a:"b1", b:"b2", kind:"get_callers"})
+37. change(operation="compare_overlay", target:{symbol:"id"}, options:{kind:"get_callers"})
+38. review(operation="diff_context"|"run"|"pr_context", options:{scope:"unstaged"})
+39. publish_review(operation="post", arguments:{pr:123, body:"..."})
+40. pr(operation="list"|"impact"|"risk"|"reviewers", arguments:{pr:123})
+41. recall(operation="surface", arguments:{task:"任务描述", symbol_ids:"id1,id2"})
+42. recall(operation="distill")
+43. recall(operation="notes"|"memories", arguments:{symbol_id:"id", text:"关键词"})
+44. remember(operation="note", arguments:{file_path:"path", body:"理由", pinned:true})
+45. remember(operation="memory", arguments:{kind:"invariant", title:"标题", body:"内容", symbol_ids:"id", importance:5})
+46. remember(operation="risk_ack", arguments:{source:"symbols", symbols:"id"})
+47. workspace(operation="project", arguments:{project:"target", query:"query"})
+48. workspace(operation="repos"|"graph"|"index"|"checkouts")
+49. workspace_admin(operation="track", arguments:{path:"abs/path"})
+50. workspace_admin(operation="untrack"|"blame"|"coverage"|"sql_rebuild", arguments:{path:"..."})
+51. overlay(operation="register"|"switch"|"fork"|"drop"|"delete")
+52. overlay(operation="push", arguments:{path:"path", content:"代码"})
+53. session(operation="planning_mode"|"cursor")
+54. session(operation="subscribe"|"unsubscribe", channel="diagnostics")
+55. capabilities(domain="read", operation="file", detail="schema")
 
 3.2 多项目联合工作区与检索自适应规范
 
-单守护进程多仓库架构下，所有已 track 仓库接入统一联合知识图谱（默认 workspace: default）：
-1. 单项目日常分析自动箝位：search_symbols、search_text、find_files、explore 默认锁定当前主场仓库，杜绝跨库污染。未带前缀的工程相对路径（如 "src/main.rs"）由底层自动箝位并安全锚定至当前 Session 绑定的工作区，杜绝被外部无关仓库同名文件或外部 worktree 歧义拦截。
-2. 跨项目穿透机制：跨库文件读写直接传绝对路径即时生效；跨库符号检索优先调用 query_project(project="target_proj", query="...")，全图搜索传 repo="*"；get_call_chain、find_usages、contracts、audit_health 等关系型工具全域贯通，Python 绝对导入优先本仓并自动标记 CrossRepo 跨仓边。
-3. 规范调用铁律：set_active_project 仅接受逻辑 Project 标识，严禁传路径切域。已 track 项目一切操作必须在 Gortex 原生工具链内闭环。
+单守护进程多仓库接入统一联合知识图谱（默认 workspace: default）：
+1. 单项目自动箝位：search、explore 默认锁定主场仓库。相对路径由底层自动箝位至当前工作区，杜绝跨库与外围 worktree 歧义拦截。
+2. 跨项目穿透机制：跨库文件读写直接传绝对路径；跨库符号检索调用 workspace(operation="project", arguments:{project:"target", query:"..."})（Core: query_project），全图搜索传 repo="*"；关系工具全域贯通，Python 绝对导入自动标记 CrossRepo 跨仓边。
+3. 规范铁律：set_active_project 仅接受逻辑 Project 标识，严禁传路径。已 track 项目一切操作必须在 Gortex 原生工具链内闭环。
 
 4. 源码精读、关系分析与架构全景深度指南
 
 4.1 源码阅读契约与 Token 优化策略
-1. read_file(path="path/to/file", offset=1, limit=100, compress_bodies=false, keep="")：
-   - 扁平模式仅传 path, offset, limit，严禁直传 line_range。
-   - 长文件巡检必须开启 compress_bodies=true（存根化，节省 60%~70% Token），配合 keep="fn1,fn2" 精准保留核心函数源码。
-2. get_symbol_source(id="pkg/file.go::Symbol", context_lines=0)：精读符号实现体，传 context_lines 扩展外围行数（如声明注解、包定义等）。
-3. get_file_summary(path)：快速获取单文件顶级符号大纲、类型分布与导入依赖摘要，避免无意义全文件拉取。
-4. get_editing_context(path)：修改前获取目标文件完整拓扑环境（所属模块、相邻符号、引用方分布及受波及范围）。
-5. ETag 条件缓存与零开销复查（if_none_match）：read_file、get_symbol_source、get_file_summary、get_editing_context、smart_context 均返回 etag 并在入参中支持 if_none_match="<etag>"。在多轮推演或修改后复查时，若目标未变动直接返回 not_modified（~0 Token 开销），避免重复全量拉取。
+1. read(operation="file", target:{file:"path"}, options:{offset:1, limit:100})（Core: read_file）：首读支持 options:{new_user_task:true}。扁平模式仅传 path, offset, limit，禁传 line_range。长文件巡检必开 compress_bodies=true（存根化省 60%~70% Token），配合 keep="fn1,fn2" 保留关键源码。
+2. read(operation="source", target:{symbol:"pkg/file.go::Symbol"}, context:{context_lines:0})（Core: get_symbol_source）：精读实现体，传 context_lines 扩展外围行数。
+3. read(operation="summary", target:{file:"path"})（Core: get_file_summary）：快速获取顶级符号大纲、类型分布与导入依赖。
+4. read(operation="editing_context", target:{file:"path"}, options:{keep:"fn1"})（Core: get_editing_context）：修改前装配文件拓扑、相邻符号、引用分布与波及范围。
+5. ETag 缓存复查：read、explore(context) 均返回 etag 并支持 options:{if_none_match:"etag"}。若未变动返回 not_modified（~0 Token 开销）。
 
 4.2 拓扑关系与深度数据流追踪
-1. get_callers(id, depth=2)：反向递归查询调用者，获取调用方的位置、调用链深度与语法上下文。
-2. get_call_chain(id, depth=4)：自顶向下或自底向上递归追踪深度调用链路。
-3. find_usages(id, context="call")：语法级定位符号的所有真实使用点（filter 支持 call, read, write, import）。
-4. find_implementations(id)：定位接口定义对应的所有具体实现类与方法。
-5. find_overrides(id)：定位基类虚函数在派生类中的重写实现。
-6. get_dependencies(id) 与 get_dependents(id)：前向与反向依赖评估，快速计算重构影响面。
-7. [*] get_cfg(id) 与 [*] trace_path(source_id, sink_id)：深入函数内部控制流分支结构（CFG），或计算两节点间的最短依赖/调用路径。
-8. Python 绝对导入全链路闭环：支持 import a.b as m 与 from a.b import f，穿透点分命名空间精准落地 AST 节点，杜绝虚假 dep:: 存根断裂。
+1. relations(operation="callers", target:{symbol:"id"}, options:{depth:2})（Core: get_callers）：反向递归查询调用者，获取位置、深度与语法上下文。
+2. trace(operation="call_chain", target:{symbol:"id"}, options:{depth:4})（Core: get_call_chain）：递归追踪深度调用链路。
+3. relations(operation="usages", target:{symbol:"id"}, options:{context:"call"})（Core: find_usages）：定位真实使用点（filter: call, read, write, import）。
+4. relations(operation="implementations"|"overrides", target:{symbol:"id"})：定位接口实现类与基类虚函数重写。
+5. relations(operation="dependencies"|"dependents", target:{symbol:"id"})：前向与反向依赖评估，计算重构影响面。
+6. trace(operation="cfg", target:{symbol:"id"}) 与 trace(operation="path", target:{symbol:"src"}, to:{symbol:"dst"})：深入函数控制流（CFG），或计算两节点间最短依赖/调用路径。
+7. Python 绝对导入支持：支持 import a.b as m 与 from a.b import f，穿透点分命名空间精准落地 AST 节点，彻底杜绝虚假 dep:: 存根断裂。
 
-4.3 analyze 统一分析全景（78 种 kind）
-analyze 工具必须且仅能通过 kind="..." 传参，分为四大核心领域：
-1. 架构拓扑与模块边界：
-   - cycles：循环依赖检测。would_create_cycle：预测是否引入新循环依赖。
-   - clusters：自动识别代码模块社区。suggest_boundaries：推荐架构分层与边界隔离策略。
-   - hotspots：结合变更频率与复杂度计算架构热点（未就绪返回 analysis_pending，需重试）。components：强连通组件分析。
-   - layer_violations：分层架构违规检测。cohesion & coupling：内聚与耦合度量。
-2. 代码健康度、技术债与责任归属：
-   - ownership：代码归属统计。遇 absent/partial 需 CLI 运行 gortex enrich blame，严禁 reindex_repository。
-   - dead_code：无引用符号检测。Python Pydantic 验证器和序列化器已原生识别为主干入口，免误报；第一方绝对导入解析已落地真实边，杜绝被导入函数误报。
-   - coverage_gaps：定位未覆盖的关键业务分支。doc_staleness：识别陈旧 docstring。
-   - todos：提取未完成的技术债注释。clones：AST 语义级代码克隆检测。health：综合健康度评分（A-F 级）。
-3. 并发安全、缺陷与模式审计：
-   - race_writes：竞态写入风险检测。channel_ops：Go Channel 死锁、阻塞与非缓冲通道分析。
-   - goroutine_spawns：协程泄漏与未监管生命周期协程追踪。
-   - sast：静态安全分析（SQL 注入、硬编码凭证、XSS 与反序列化风险）。hygiene：代码风格卫生度分析。
-   - unsafe_patterns：内存越界、未校验指针与危险系统调用检测。routes & models：API 路由与数据模型完整性映射。
-4. 跨服务契约与依赖治理：
-   - contracts：跨微服务 API 契约一致性校验（可配合 contracts 工具使用）。
-   - api_impact：公共 API 变更对消费方的破坏性影响预测。
+4.3 analyze 统一分析全景（78 种 kind 与 Admin 安全治理）
+analyze 必传 kind="..."（kind="help" 导字典），只读分析：
+1. 拓扑与边界：cycles（成环）、would_create_cycle、clusters、suggest_boundaries、hotspots（热点）、components、pagerank。
+2. 健康与技术债：ownership（责任人，遇 absent/partial 运行 gortex enrich blame）、dead_code（Pydantic 验证器免误报）、coverage_gaps、doc_staleness、todos、health_score。
+3. 并发与安全：race_writes、channel_ops、goroutine_spawns、sast（190+ 跨语言安全规则）、hygiene、unsafe_patterns、routes、models。
+4. 禁令与写治理：blame, coverage, sql_rebuild, temporal_verify 涉及落盘，analyze 严禁执行，必须由 workspace_admin 执行。
+5. 范围收窄：todos, dead_code, hotspots 等支持 options:{repo:"..."} 收窄；不支持的返回 scope_note。
 
 5. 代码修改、重构与全生命周期闭环验证
 
 5.1 代码修改唯一法定入口与写入契约
-对已 track 仓库文件的增删改查必须经由 Gortex 原生写工具完成。严禁调用宿主 replace_file_content、write_to_file 等外挂工具，以防 Gortex 内存图谱、AST 依赖与物理磁盘失步。
+已 track 仓库文件必须经由 Gortex 原生写工具修改，严禁调用宿主 replace_file_content、write_to_file，防图谱与磁盘失步。
 
 核心契约与安全门禁：
-1. dry_run=true 与 physical_evidence=true 严格互斥：预览阶段传 dry_run=true（必须 omit physical_evidence），落地阶段传 dry_run=false, physical_evidence=true。
-2. 语法门禁与编码安全：默认开启 AST 语法校验，草稿写入传 allow_parse_errors=true 放行。支持 base_sha 防脏写覆盖。UTF-16 源文件写操作底层硬拦截拒绝（防字节损坏，须外部转码 UTF-8）；scaffold/safe_delete 自动保持原文件权限模式。
+1. dry_run 与 physical_evidence 互斥：预览传 dry_run:true，落地传 dry_run:false, options:{physical_evidence:true}。
+2. 语法门禁与安全：默认开启 AST 校验，草稿写入传 options:{allow_parse_errors:true}；支持 guard:{base_sha:"..."} 防脏写；UTF-16 源文件写操作底层硬拦截拒绝（须外部转码 UTF-8）；scaffold/safe_delete 自动保持原文件权限模式。
 3. 标准化调用模板：
-   - 文件局部替换：edit_file(path, old_string, new_string, dry_run=false, expected_occurrences=1)
-     预览时传 dry_run=true，落地时传 dry_run=false, physical_evidence=true。
-     传 expected_occurrences=1 防止多处同名串被意外批量覆盖。严禁退回宿主 replace_file_content。
-   - 符号精确修改：edit_symbol(id, old_source, new_source, dry_run=false, physical_evidence=true)
-   - 全量覆盖写入：write_file(path, content, dry_run=false)（严禁退回宿主 write_to_file）。
-   - 批量事务修改（batch_edit）：
-     支持原子执行多文件/符号混合变更，单项失败自动整批回滚（Partial Failure 防护）。支持 4 种 op：edit_file、edit_symbol、move_file（必用 source/destination）、delete_file（必用 path）。
-     batch_edit(dry_run=true, edits=[
-       {"op":"edit_file", "path":"pkg/a.go", "old_string":"旧", "new_string":"新"},
-       {"op":"move_file", "source":"pkg/old.go", "destination":"pkg/new.go"},
-       {"op":"delete_file", "path":"pkg/del.go"}
-     ])
-   - 符号物理重构：
-     rename_symbol(id, new_name, dry_run=true)（联动更新全图谱所有引用点）。
-     move_symbol(id, target_file, dry_run=true)。[*] safe_delete_symbol(id, dry_run=true, propagate=true)。
-4. 幂等与重试规范：Windows 下底层已内置 3 秒有界指数退避重试（平滑吸收语言服务、杀毒软件或索引器瞬态句柄占用）。若写入仍因共享冲突（sharing violation）或权限拒绝报错，表明存在持续性硬占用，切勿盲目重复调用写工具，优先通过 detect_changes() 核验状态并向用户说明。严禁未重新阅读最新内容前盲目重写。
+   - 文件局部替换：edit(operation="file", target:{file:"pkg/a.go"}, match="旧", replacement="新", dry_run:false)（Core: edit_file，传 expected_occurrences=1 防误覆盖）。
+   - 符号精确修改：edit(operation="symbol", target:{symbol:"pkg/a.go::Bar"}, match="旧", replacement="新", dry_run:false)（Core: edit_symbol）。
+   - 全量覆盖写入：edit(operation="write", target:{file:"pkg/a.go"}, content="全量内容", dry_run:false)（Core: write_file）。
+   - 批量事务修改（edit(batch) / batch_edit）：原子执行多文件/符号混合变更，单项失败整批回滚。支持 4 种 op：edit_file（支持 replace_all:true）、edit_symbol、move_file、delete_file。
+     edit(operation="batch", changes:[{"op":"edit_file","path":"pkg/a.go","old_string":"旧","new_string":"新"},{"op":"move_file","source":"pkg/old.go","destination":"pkg/new.go"},{"op":"delete_file","path":"pkg/del.go"}], dry_run:true)
+   - 符号重构：refactor(operation="rename", target:{symbol:"id"}, new_name="NewName", dry_run:true)；refactor(operation="move", target:{symbol:"id"}, destination="pkg/b.go", dry_run:true)；refactor(operation="delete"|"inline", target:{symbol:"id"}, dry_run:true)。
+4. 幂等与重试规范：内置 3 秒指数退避重试。若写入因共享冲突报错，切勿盲目重复调用，优先 change(operation="detect") 核验状态。未重新阅读最新内容前严禁重写。
 
 5.2 修改后全栈闭环验证
-修改完成后必须严格按序执行闭环验证，严禁草率结案：
-1. detect_changes()：核验未提交改动符号范围是否符合预期。
-2. get_test_targets(ids="id1,id2")：精确定位受波及单测集合。
-3. check_guards(ids="id1,id2")：评估是否触犯架构守护规则与分层违规。
-4. verify_change(changes='[{"symbol_id":"sym_id","new_signature":"新签名"}]')：校验函数签名是否破坏下游调用契约。
-5. [*] change_contract(diff="...")：预测变更风险等级（固定 ack=false；risk_level="high" 必须显式确认）。
-6. 真实测试执行：宿主运行测试命令（go test / npm test / pytest）。配置 gortex githook 时可用 --hook-timeout=30 防挂死。
+修改后严格按序闭环验证，严禁草率结案：
+1. change(operation="detect")（Core: detect_changes()）：核验未提交改动符号范围。
+2. change(operation="tests", target:{symbols:["id1","id2"]})（Core: get_test_targets）：定位受波及单测。
+3. change(operation="guards", target:{symbols:["id1","id2"]})（Core: check_guards）：评估是否触犯架构守护规则。
+4. change(operation="verify", source:{changes:[{"symbol_id":"sym_id","new_signature":"新签名"}]})（Core: verify_change）：校验函数签名契约。
+5. change(operation="contract", source:{scope:"unstaged"})（Core: change_contract）：预测变动风险（固定 ack=false；risk_level="high" 须由 remember(operation="risk_ack", arguments:{source:"symbols", symbols:"id"}) 显式确认）。
+6. 真实测试执行：宿主运行测试命令（go test / npm test / cargo test / pytest）。配置 githook 可用 --hook-timeout=30 防挂死。
 
 6. 虚拟图层、状态机与持久化记忆
 
 6.1 overlay 虚拟图层体系
-Gortex 原生提供内存级虚拟图层机制，在不污染物理磁盘前提下推演与对比方案：
-- 图层管理：overlay_register（注册句柄）、overlay_push（推送内存变更）、overlay_keepalive（维持心跳租约）、overlay_merge（合入落盘传 to_disk=true）、overlay_switch（切换分支）、overlay_fork（派生新分支）、overlay_delete（销毁句柄）、overlay_drop / overlay_drop_branch（丢弃临时修改或分支）。
-- 比对与推演：compare_branches(a, b, kind, id, depth, limit) 比对分支依赖差异；compare_with_overlay(kind, id, depth, limit) 比对内存修改与磁盘基线差异；simulate_chain(steps, keep=false) 沙箱推演连续修改影响（固定 keep=false）。
+在不污染物理磁盘前提下推演与对比方案：
+- 图层管理：overlay(operation="register"|"switch"|"fork"|"drop"|"delete")。
+- 图层推送：overlay(operation="push", arguments:{path:"文件路径", content:"修改代码"})。
+- 图层合入与落盘：overlay(operation="merge") 默认 to_disk=false（仅合入主图谱内存）；持久化落盘必须由 edit(operation="apply_overlay") 执行（Core: overlay_merge(to_disk=true)）。
+- 比对与推演：change(operation="compare_branches", target:{symbol:"id"}, options:{a:"b1", b:"b2", kind:"get_callers"}) 比对分支依赖差异；change(operation="compare_overlay", target:{symbol:"id"}, options:{kind:"get_callers"}) 比对内存修改与基线差异；change(operation="simulate", source:{steps:"[...]"}) 沙箱推演连续修改影响（固定 keep=false，保留推演图层传 overlay(operation="simulate")）。
 
 6.2 记忆系统与决策笔记
-1. store_memory(kind="invariant", title="标题", body="内容")：持久化记录跨会话关键架构规约。
-2. surface_memories(task="...", symbol_ids="id")：召回历史沉淀的规约与决策（固定 mark_accessed=false）。
-3. save_note(file_path="pkg/util.go", body="理由", tags="t1,t2")：为特定文件保存决策笔记（参数严格为 file_path）。
-4. query_notes(file_path, symbol_id) / query_memories(query)：检索绑定的决策笔记或架构记忆。
-5. distill_session()：阶段性任务完成时自动提炼固化本次会话核心上下文。
+行为关键机制，须在对应触发点执行：
+1. 会话初始与压缩后：启动或 Compaction 后首动执行 recall(operation="distill")（Core: distill_session()），提前建立上下文。
+2. 上下文装配后召回：在 context 后立即执行 recall(operation="surface", arguments:{task:"任务描述", symbol_ids:"id1,id2"})（Core: surface_memories，固定 mark_accessed=false），召回规约约束。
+3. 产生决策即时保存：否定方案或触及非显式约束时，调用 remember(operation="note", arguments:{file_path:"pkg/u.go", body:"理由", pinned:true})（Core: save_note）。正文提及符号 ID 自动关联图谱。
+4. 固化持久规约：需团队继承的事实，调用 remember(operation="memory", arguments:{kind:"invariant", title:"标题", body:"内容", symbol_ids:"id", importance:5})（Core: store_memory）。废弃旧规约传 arguments:{supersedes:"旧ID"}。
+5. 修改前复查：编辑高危符号前，调阅 recall(operation="notes"|"memories", arguments:{symbol_id:"id", text:"关键词"}) 历史预警。
 
 6.3 代码审查与响应塑形
-1. 代码审查工具集：review(scope="unstaged")（代码审查引擎）、diff_context(scope="unstaged")（diff 审查拓扑）、pr_review_context（PR 审查拓扑）、post_review(pr=123, body="...")（提交评审报告）。
+1. 代码审查工具集：review(operation="run", options:{scope:"unstaged"})（审查引擎）、review(operation="diff_context", options:{scope:"unstaged"})（diff 拓扑）、review(operation="pr_context")（PR 审查拓扑）、publish_review(operation="post", arguments:{pr:123, body:"..."})（提交评审报告）。
 2. 响应塑形规范：全查询/分析工具支持 max_bytes、limit/cursor、format（推荐 "gcx"）、fields 稀疏列投影。
 
 7. 冲突裁决优先级与分支视图（View）治理
 
 7.1 路径机制与分支视图治理
-1. 平台路径规范：Gortex 内部图谱 ID 严格采用正斜杠 `/`（如 "pkg/foo.go::Bar"），与操作系统物理分隔符彻底解耦。物理文件操作路径在 Windows 下底层自动进行路径规范化，透明兼容 `/` 与 `\`。严禁在符号 ID 或路径中包含 `<>` 等占位字符。
-2. 多分支与工作树（View）治理：
-   - 当前工作区由 session/CWD 决定视图，显式检出分支构成自动 Overlay。CWD 位于自动 worktree 且路由未就绪时写操作硬拒绝抛 view_building 防主库串写，读操作降级附 rider；拒绝歧义路径推断。
-   - 跨分支只读审计传 view={kind:"worktree",checkout_id:"..."} 或 view={kind:"git_ref",value:"refs/heads/release"}。
-   - 强一致性查询传 require_exact=true 与 require_fresh=true。
-   - 视图异常诊断：若视图解析异常或需查明路径归属，调用 explain_view(path="path/to/file") 诊断底层 checkout 路由链与代际 Generation。
+1. 平台路径：图谱 ID 严格用正斜杠 /（如 "pkg/foo.go::Bar"）；物理路径底层自动规范化，兼容 / 与 \。严禁尖括号占位符。
+2. 分支路由与 Worktree：
+   - 自动 Overlay 禁重复 track：由 session/CWD 决定视图，linked worktree 均为自动 Overlay，严禁重复 track 或重启 daemon。
+   - 拓扑语义：选定 overlay + Git 家族精确指定单一 primary；同名逻辑标识以 overlay 为准，tombstone 遮盖基线。
+   - 降级只读：Freshness exact:false 时 fallback 视图一律只读！强一致传 require_exact:true，等待文件系统传 require_fresh:true。
+   - 静态快照不可变：Inactive ref/commit 视图为不可变快照，不支持 LSP 与编辑。
+   - 视图诊断：路由异常调用 workspace(operation="checkouts") 或 explain_view(path="path/to/file") 诊断 Generation。
 
 7.2 自顶向下裁决优先级
 当规则、源码实现与运行时表现出现歧义时，严格按以下层级自顶向下裁决：
-1. 当前工具返回的真实响应（error、completion、view、guard、effect 信息）。
+1. 当前工具返回真实响应（error、completion、view、guard、effect 信息）。
 2. 当前运行时 capabilities 与 Schema 规范（request_shape、fixed_arguments、available）。
 3. 真实文件系统与代码仓库状态（workspace、index、repository 物理状态）。
 4. 当前 Gortex 运行时源码实现。
 5. 本规范文档。
 
-多仓库全图谱终极铁律：已 track 仓库统一托管于全局图谱。严禁未经穿透检索断定未索引并退回原生工具。全流程由 Gortex 原生 MCP 闭环，严禁读写割裂与调用宿主工具。严禁跨客户端规则漂移，以当前 Core 扁平工具集为准。仅当 query_project 与路径均证实未 track 且用户明确要求时，方可报告未 track。
+多仓库全图谱终极铁律：已 track 仓库统一托管于全局图谱。严禁未经穿透检索断定未索引并退回原生工具。全流程由 Gortex 原生 MCP 闭环，严禁读写割裂与调用宿主工具。严禁跨客户端规则漂移，以当前环境暴露的工具集为准。仅当 query_project 与路径均证实未 track 且用户明确要求时方可报告未 track。
