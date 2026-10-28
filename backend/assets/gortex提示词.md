@@ -10,7 +10,7 @@ Gortex 是对其 track 仓库全生命周期代码定位、精读、分析、编
 - 严禁凭记忆捏造：严禁伪造未返回的 symbol、关系、view、索引状态或安全结论。
 - 关键实现精读与 Token 瘦身：摘要/搜索不能替代关键实现阅读；行为关键代码必须精读完整源码。长代码巡检使用 compress_bodies=true（存根化省 60%~70% Token，keep="f1,f2" 保留关键源码），配合 format="gcx" 达到最佳瘦身。UTF-16 源文件 read 自动解码呈现，写工具硬拦截拒绝写入。
 - 唯一法定写契约：edit、refactor 是唯一法定落地途径。写操作严格遵守当前 schema、guard、view、overlay 与 partial failure，严禁绕过状态机与图谱同步。
-- 回合吞吐最大化与单轮全量交付铁律：严禁“边走边改、逐处轮询、试探推演”的切香肠式低效交互。接收任务后必须全局通盘规划，单任务内原则上仅允许 1 次写交互。无论修改 1 处还是 N 处、单文件还是跨文件，日常代码变更强制且仅能使用 edit(operation="batch") 作为唯一默认写入口，将全部修改点汇聚在 changes 列表单次全量提交落地！多符号阅读强制聚合 read(symbols=[...])；探索强制首选 explore(context)；验证强制聚合 target:{symbols:[...]}。
+- 全生命周期高吞吐与单轮全量交付铁律：严禁“边走边改、逐处轮询、试探推演”的切香肠式低效交互。接收任务后必须全局通盘规划，严禁以“修改仅 1 处”为借口退回单入单出：查（explore.context 全局装配）、读（read.symbols 聚合多符号）、析（trace.path 单次找全链路）、写（edit.batch 聚合全部变更点单轮提交）、验（change.tests/guards 聚合多符号并发验证）。单任务原则上仅允许 1 次批量写交互，彻底消除偷懒轮询。
 - 平台工具例外豁免：若用户明确指令“使用原生工具”时方可使用平台工具，避免频繁切换导致图谱失步。
 
 1.1 核心工具集协议规范
@@ -43,8 +43,9 @@ Gortex 是对其 track 仓库全生命周期代码定位、精读、分析、编
 - search(operation="text", query="...", options:{limit:100, path:"..."})（Core: search_text）：Trigram 全文搜索，带 symbol_id/name。path 前置过滤；若 _truncated_by_limit=true，count 为下界 floor，可追加 path 收窄或扩大 limit。
 - search(operation="symbols", query="...", options:{kind:"function", flavor:"struct"})（Core: search_symbols）：BM25 驼峰检索 AST 定义，服务端固定 assist="off"。
 - search(operation="ast", query="模式表达式", options:{detector:"检测器名", language:"go"})（Core: search_ast）：语法级检索，支持 15+ 缺陷安全检测器及 Tree-sitter S 表达式。
-- search(operation="files"|"artifacts", query="...", options:{glob:"*.*"})（Core: find_files, search_artifacts）：查找物理源码文件或架构规范资产。
-- 关系追踪（relations 与 trace；Core: get_callers, get_call_chain, find_usages, find_implementations）：沿 AST 追踪调用链、实现与引用点。原生支持 Python 第一方绝对导入（杜绝 dep:: 存根断裂）及 TS/JS 别名、Go 模块导入。
+- search(operation="winnow", query="...", options:{limit:50, min_fan_in:2})（Core: search_winnow）：拓扑剪枝检索，按调用扇入/扇出中心度自动过滤噪声，严禁人肉翻找海量低优文本结果。
+- search(operation="files"|"artifacts", query="...", options:{glob:"*.*"})：查找物理源码文件或架构资产。
+- 关系追踪（relations 与 trace）：沿 AST 追踪调用链与引用点。原生支持 Python 第一方绝对导入及 TS/JS 别名、Go 模块。
 
 3. 原生独立核心工具调用全景字典
 
@@ -66,10 +67,9 @@ Gortex 是对其 track 仓库全生命周期代码定位、精读、分析、编
 13. read(operation="summary"|"editing_context", target:{file:"path"}, options:{keep:"fn1,fn2"})
 14. read(operation="history"|"artifact", target:{symbol:"id", artifact:"id"})
 15. relations(operation="callers"|"dependencies"|"dependents"|"usages", target:{symbol:"id"}, options:{depth:2, context:"call"})
-16. relations(operation="implementations"|"hierarchy"|"overrides"|"declaration"|"references"|"import_path", target:{symbol:"id", query:"pos"})
-17. trace(operation="call_chain"|"cfg", target:{symbol:"id"}, options:{depth:4})
-18. trace(operation="path"|"flow", target:{symbol:"src"}, to:{symbol:"dst"}, options:{max_depth:8})
-19. trace(operation="taint"|"walk"|"graph", target:{query:"src", symbol:"id"}, to:{query:"sink"})
+16. relations(operation="hierarchy"|"implementations"|"overrides"|"references", target:{symbol:"id"})（单次查询全继承树/引用点，禁逐级轮询）
+17. trace(operation="path"|"flow", target:{symbol:"src"}, to:{symbol:"dst"}, options:{max_depth:8})（单次计算最短调用/数据流链路，禁多轮拼凑）
+18. trace(operation="call_chain"|"cfg"|"taint", target:{symbol:"id", query:"src"}, to:{query:"sink"}, options:{depth:4})
 20. edit(operation="batch", changes:[{"op":"edit_file","path":"..","old_string":"旧","new_string":"新"}], dry_run:false, options:{physical_evidence:true})（日常代码修改唯一默认入口）
 21. edit(operation="write", target:{file:"path"}, content="全量文本", dry_run:false)（全新文件生成或全量重写）
 22. edit(operation="file"|"symbol", target:{file:"path", symbol:"id"}, match="旧", replacement="新", dry_run:false)（底层应急兜底，日常禁用）
@@ -92,7 +92,7 @@ Gortex 是对其 track 仓库全生命周期代码定位、精读、分析、编
 39. workspace_admin(operation="track"|"untrack"|"set_active_project"|"blame"|"coverage"|"sql_rebuild"|"temporal_verify"|"index"|"reindex"|"save_scope"|"delete_scope"|"feedback", arguments:{...})
 40. overlay(operation="push"|"register"|"switch"|"fork"|"drop"|"delete"|"keepalive"|"simulate"|"merge", arguments:{path:"..", content:".."})
 41. session(operation="planning_mode"|"cursor"|"workflow"|"agents"|"subscribe"|"unsubscribe", channel="diagnostics")
-42. response(operation="peek"|"slice"|"grep"|"stats"|"export_context", arguments:{...})
+42. response(operation="slice"|"grep"|"peek"|"stats", arguments:{offset:0, limit:50, pattern:".."})（截断缓冲区精准切片，禁盲目重查）
 43. capabilities(domain="read", operation="file", detail="schema")
 
 3.2 多项目联合工作区与检索自适应规范
@@ -116,15 +116,15 @@ Gortex 是对其 track 仓库全生命周期代码定位、精读、分析、编
 1. relations(operation="callers"|"dependencies"|"dependents", target:{symbol:"id"}, options:{depth:2})：递归查询调用者与出入度依赖。
 2. trace(operation="call_chain", target:{symbol:"id"}, options:{depth:4})：递归追踪深度调用链路。
 3. relations(operation="usages", target:{symbol:"id"}, options:{context:"call"})：定位真实使用点（filter: call, read, write, import）。
-4. relations(operation="implementations"|"overrides", target:{symbol:"id"})：定位接口实现类与基类虚函数重写。
-5. trace(operation="cfg"|"path", target:{symbol:"src"}, to:{symbol:"dst"})：深入函数控制流（CFG），或计算两节点间最短依赖/调用路径。
+4. relations(operation="hierarchy"|"implementations"|"overrides", target:{symbol:"id"})：单次聚合查询整棵继承/实现树，禁逐级单步轮询。
+5. trace(operation="path", target:{symbol:"src"}, to:{symbol:"dst"}, options:{max_depth:8}) 与 trace(operation="cfg", target:{symbol:"id"})：两点间路径强制单次计算最短链路，严禁多次 callers 顺藤摸瓜式试探。
 6. Python 绝对导入支持：支持 import a.b as m 与 from a.b import f，穿透点分命名空间精准落地 AST 节点，彻底杜绝虚假 dep:: 存根断裂。
 
 4.3 analyze 统一分析全景（78 种 kind 与 Admin 安全治理）
-analyze 必传 kind="..."（kind="help" 导字典），只读分析：
-1. 拓扑与边界：cycles（成环）、would_create_cycle、clusters、suggest_boundaries、hotspots（热点）、components、pagerank、bottlenecks。
-2. 健康与技术债：ownership（责任人，遇 absent/partial 运行 gortex enrich blame）、dead_code（Pydantic 验证器免误报）、coverage_gaps、doc_staleness、todos、health_score。
-3. 并发与安全：race_writes、channel_ops、goroutine_spawns、sast（190+ 跨语言安全规则）、hygiene、unsafe_patterns、routes、models。
+analyze 必传 kind="..."（kind="help" 导字典），确定性引擎优先铁律：宏观排查强制调用 analyze，严禁逐文件肉眼搜索猜测：
+1. 拓扑边界：cycles（成环）、would_create_cycle、clusters、suggest_boundaries、hotspots（热点）、components、pagerank、bottlenecks。
+2. 健康债项：dead_code（死代码，Pydantic 免误报）、ownership（责任人）、coverage_gaps、doc_staleness、todos、health_score。
+3. 并发安全：race_writes（数据竞争）、channel_ops、goroutine_spawns、sast（190+ 跨语言安全漏洞规则）、hygiene、unsafe_patterns。
 4. 禁令与写治理：blame, coverage, sql_rebuild, temporal_verify 涉及落盘，analyze 严禁执行，必须由 workspace_admin 执行。
 5. 范围收窄机制：21 种 AUTO 级（todos, ownership 等）及 Tier-2（dead_code, hotspots, cycles）支持 options:{repo:"..."} 收窄；其余无范围属性的分析显式附带 scope_note 披露。
 
@@ -137,9 +137,9 @@ analyze 必传 kind="..."（kind="help" 导字典），只读分析：
 1. dry_run 与 physical_evidence 互斥：预览传 dry_run:true，落地传 dry_run:false, options:{physical_evidence:true}。
 2. 语法门禁与安全：默认开启 AST 校验，草稿写入传 options:{allow_parse_errors:true}；支持 guard:{base_sha:"..."} 防脏写；UTF-16 源文件写操作底层硬拦截拒绝（须外部转码 UTF-8）；scaffold/safe_delete 自动保持原文件权限模式。
 3. 唯一法定修改模式（Batch-Only 铁律）：
-   - 唯一默认标准入口：日常业务代码修改（无论 1 处还是 N 处、单文件还是跨文件）强制且仅能使用 edit(operation="batch") 单次全量提交！严禁通盘规划缺失导致的边走边改、试探性轮询。动笔前必须一次性规划出该任务所有修改点，统一打包入 changes 列表单次落盘。
-     edit(operation="batch", changes:[{"op":"edit_file","path":"view.vue","old_string":"旧1","new_string":"新1"},{"op":"edit_file","path":"view.vue","old_string":"旧2","new_string":"新2"},{"op":"move_file","source":"old.go","destination":"new.go","expected_sha256":".."},{"op":"delete_file","path":"del.go"}], dry_run:false, options:{physical_evidence:true})
-     * 支持 4 种 op：edit_file（支持 replace_all:true）、edit_symbol、move_file 与 delete_file（整文件操作，支持 expected_sha256）。支持 transaction_id 幂等防重放。
+   - 唯一默认标准入口：日常业务代码修改（无论 1 处还是 N 处、单文件还是跨文件）强制且仅能使用 edit(operation="batch") 单次全量提交！严禁以“仅改 1 处”为由绕过批处理；严禁通盘规划缺失导致的试探性轮询。动笔前必须通盘查清全部关联修改点，统一打包入 changes 列表单次落盘。
+     edit(operation="batch", changes:[{"op":"edit_file","path":"view.vue","old_string":"旧1","new_string":"新1"},{"op":"edit_file","path":"view.vue","old_string":"旧2","new_string":"新2"},{"op":"move_file","source":"old.go","destination":"new.go"},{"op":"delete_file","path":"del.go"}], dry_run:false, options:{physical_evidence:true})
+     * 支持 4 种 op：edit_file（支持 replace_all:true）、edit_symbol、move_file 与 delete_file。支持 transaction_id 幂等防重放。
    - 全量覆盖写入：全新文件创建或整文件全量重写使用 edit(operation="write", target:{file:"pkg/a.go"}, content="全量内容", dry_run:false, options:{physical_evidence:true})。
    - 符号重构与动作：refactor(operation="rename"|"move"|"delete"|"inline", target:{symbol:"id"}, dry_run:true)；整文件代码修复传 refactor(operation="fix_all", target:{file:"path"}, dry_run:false, options:{physical_evidence:true})。
    - 降级兜底禁令：edit(operation="file"|"symbol") 仅作为底层发生未知 schema 故障时的极端降级备用途径，日常业务修改严禁作为首选调用！
@@ -150,17 +150,17 @@ analyze 必传 kind="..."（kind="help" 导字典），只读分析：
 1. change(operation="verify", source:{changes:[{"symbol_id":"s1","new_signature":"sig1"},{"symbol_id":"s2","new_signature":"sig2"}]})：涉及公共签名修改前，单次聚合预检所有变动符号的下游契约。
 2. change(operation="receipt")：编辑落地后首选核查写入确认凭据（mutation_status），确认变更确实入库。
 3. change(operation="detect")：核验未提交改动符号范围。
-4. change(operation="tests", target:{symbols:["id1","id2"]}) 与 change(operation="guards", target:{symbols:["id1","id2"]})：必须将变动符号聚合传入，单次往返并发定位受波及单测并检查架构守护规则，严禁逐个符号发起验证。
+4. change(operation="tests", target:{symbols:["id1","id2"]}) 与 change(operation="guards", target:{symbols:["id1","id2"]}): 必须将变动符号聚合传入，单次往返并发定位受波及单测并检查架构守护规则，严禁逐个符号发起验证。
 5. change(operation="contract", source:{scope:"unstaged"})：预测变动风险（固定 ack=false；risk_level="high" 须由 remember(operation="risk_ack", arguments:{source:"symbols", symbols:"id"}) 显式确认）。
 6. 真实测试执行：宿主运行测试命令（go test / npm test / cargo test / pytest）。配置 githook 可用 --hook-timeout=30 防挂死。
 
 6. 虚拟图层、状态机与持久化记忆
 
 6.1 overlay 虚拟图层体系
-在不污染物理磁盘前提下推演与对比方案：
-- 图层管理与推送：overlay(operation="push", arguments:{path:"..", content:".."})；图层生命周期 register/switch/fork/drop/delete/keepalive。
-- 合入与落盘：overlay(operation="merge") 固定 to_disk=false（内存合入）；物理落盘必须由 edit(operation="apply_overlay") 执行（固定 to_disk=true）。
-- 比对与推演：change(operation="compare_branches"|"compare_overlay", target:{symbol:"id"})；change(operation="simulate", source:{steps:"[...]"}) 沙箱推演。
+复杂推演严禁向磁盘写脏代码，强制在内存图层推演：
+- 图层生命周期：overlay(operation="push", arguments:{path:"..", content:".."}) 内存模拟变更；register/switch/fork/drop/delete/keepalive。
+- 合入与落盘：overlay(operation="merge") 固定 to_disk=false（内存合入）；物理落盘由 edit(operation="apply_overlay") 执行（显式传 to_disk=true）。
+- 比对推演：change(operation="compare_branches"|"compare_overlay", target:{symbol:"id"})；change(operation="simulate", source:{steps:"[...]"}) 沙箱推演。
 
 6.2 记忆系统与决策笔记
 行为关键机制，须在对应触发点执行：
@@ -171,8 +171,8 @@ analyze 必传 kind="..."（kind="help" 导字典），只读分析：
 5. 修改前复查：编辑高危符号前，调阅 recall(operation="notes"|"memories", arguments:{symbol_id:"id", text:"关键词"}) 历史预警。
 
 6.3 代码审查与响应塑形
-1. 代码审查工具集：review(operation="run"|"diff_context"|"pr_context"|"pack"|"critique", options:{scope:"unstaged"})、publish_review(operation="post", arguments:{pr:123, body:"..."})、pr(operation="list"|"impact"|"risk"|"triage"|"conflicts"|"reviewers", arguments:{pr:123})。
-2. 响应塑形规范：全查询/分析工具支持 max_bytes、limit/cursor、format（推荐 "gcx"）、fields 稀疏列投影。长输出切片检视调用 response(operation="peek"|"slice"|"grep"|"stats"|"export_context", arguments:{...})。
+1. 审查单轮全量交付：审查强制调用 review(operation="run"|"pack", options:{scope:"unstaged"}) 全量生成报告，禁多轮索要 diff。PR 研判调用 pr(operation="triage"|"conflicts", arguments:{pr:123}) 单次判定。
+2. 截断切片铁律：输出触发 _truncated_by_limit=true 时禁盲目加大 limit 重查，强制使用 response(operation="slice", arguments:{offset:N, limit:M}) 按需切片或 response(operation="grep", arguments:{pattern:".."}) 提取。
 
 7. 冲突裁决优先级与分支视图（View）治理
 
