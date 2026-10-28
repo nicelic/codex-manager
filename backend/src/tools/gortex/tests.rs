@@ -197,5 +197,20 @@ sandbox = "elevated"
         assert!(!content.contains("[mcp_servers.gortex]"));
         assert!(!content.contains("[mcp_servers.gortex.env]"));
     }
+
+    #[test]
+    fn test_gortex_runtime_state_deserialization() {
+        let sample = r#"{
+            "pid": 11360,
+            "backend_path": "C:\\test\\store.sqlite",
+            "startup_phase": "migrating",
+            "startup_started_at": 1793187091083,
+            "startup_updated_at": 1793187578145
+        }"#;
+        let st: GortexRuntimeState = serde_json::from_str(sample).expect("parse runtime state");
+        assert_eq!(st.pid, Some(11360));
+        assert_eq!(st.startup_phase.as_deref(), Some("migrating"));
+        assert_eq!(st.startup_started_at, Some(1793187091083));
+    }
 }
 

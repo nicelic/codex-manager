@@ -11,6 +11,10 @@ pub struct GortexStatusResponse {
     pub managed_installed: bool,
     pub installing: bool,
     pub running: bool,
+    #[serde(default)]
+    pub starting: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_phase: Option<String>,
     pub any_process_running: bool,
     pub unmanaged_process_running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +96,26 @@ pub struct GortexStatusResponse {
 pub struct GortexActiveTask {
     pub path: String,
     pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GortexRuntimeState {
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub backend_path: Option<String>,
+    #[serde(default)]
+    pub startup_phase: Option<String>,
+    #[serde(default)]
+    pub startup_started_at: Option<i64>,
+    #[serde(default)]
+    pub startup_updated_at: Option<i64>,
+    #[serde(default)]
+    pub migration_version: Option<i32>,
+    #[serde(default)]
+    pub migration_name: Option<String>,
+    #[serde(default)]
+    pub startup_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

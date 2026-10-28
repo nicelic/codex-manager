@@ -180,32 +180,67 @@ impl GortexService {
         }
     }
 
-    pub fn get_daemon_status() -> (bool, Option<u32>) {
+    pub fn read_daemon_state() -> Option<GortexRuntimeState> {
+        let install_root = Self::get_install_dir();
+        let state_file = install_root.join("run").join("daemon.state.json");
+        if let Ok(content) = fs::read_to_string(&state_file) {
+            if let Ok(st) = serde_json::from_str::<GortexRuntimeState>(&content) {
+                return Some(st);
+            }
+        }
+        None
+    }
+
+    pub fn get_daemon_detailed_status() -> (bool, bool, Option<u32>, Option<String>) {
         let install_root = Self::get_install_dir();
         let pid_file = install_root.join("run").join("daemon.pid");
         let sock_file = install_root.join("run").join("daemon.sock");
 
-        if !sock_file.exists() && !pid_file.exists() {
-            return (false, None);
-        }
-
-        if let Ok(pid_str) = fs::read_to_string(&pid_file) {
-            if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                if is_pid_alive(pid) {
-                    return (true, Some(pid));
+        // 1. 优先校验正式就绪标志：daemon.pid 和 daemon.sock
+        if pid_file.exists() {
+            if let Ok(pid_str) = fs::read_to_string(&pid_file) {
+                if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                    if is_pid_alive(pid) {
+                        return (true, false, Some(pid), Some("serving".to_string()));
+                    }
                 }
             }
         }
 
-        // Check if any process matches daemon pattern
         if sock_file.exists() {
             let pids = find_all_process_ids(GORTEX_EXECUTABLE_NAME);
-            if !pids.is_empty() {
-                return (true, pids.first().copied());
+            if let Some(&pid) = pids.first() {
+                return (true, false, Some(pid), Some("serving".to_string()));
             }
         }
 
-        (false, None)
+        // 2. 检查 daemon.state.json，感知启动中阶段（如 opening_store、migrating）
+        if let Some(state) = Self::read_daemon_state() {
+            if let Some(pid) = state.pid {
+                if is_pid_alive(pid) {
+                    let phase = state.startup_phase.unwrap_or_else(|| "starting".to_string());
+                    if phase == "serving" {
+                        return (true, false, Some(pid), Some(phase));
+                    }
+                    if phase == "opening_store" || phase == "migrating" || phase == "starting" {
+                        return (false, true, Some(pid), Some(phase));
+                    }
+                }
+            }
+        }
+
+        // 3. 兜底检查：若操作系统已有 gortex.exe 进程在运行
+        let pids = find_all_process_ids(GORTEX_EXECUTABLE_NAME);
+        if let Some(&pid) = pids.first() {
+            return (false, true, Some(pid), Some("starting".to_string()));
+        }
+
+        (false, false, None, None)
+    }
+
+    pub fn get_daemon_status() -> (bool, Option<u32>) {
+        let (running, _, pid, _) = Self::get_daemon_detailed_status();
+        (running, pid)
     }
 
     pub fn query_version(executable: &Path) -> String {
@@ -365,7 +400,7 @@ impl GortexService {
         let installed = exe_path.is_file();
         let is_installing = *INSTALLING.lock().unwrap();
 
-        let (running, process_id) = Self::get_daemon_status();
+        let (running, starting, process_id, startup_phase) = Self::get_daemon_detailed_status();
         let any_process_running = is_process_running(GORTEX_EXECUTABLE_NAME);
         let unmanaged_process_running = any_process_running && !managed_installed;
 
@@ -502,6 +537,8 @@ impl GortexService {
 
         let activation_state = if running {
             "running".to_string()
+        } else if starting {
+            "starting".to_string()
         } else if managed_installed {
             "installed_stopped".to_string()
         } else {
@@ -510,6 +547,12 @@ impl GortexService {
 
         let message = if running {
             "Gortex daemon 正在运行。".to_string()
+        } else if starting {
+            match startup_phase.as_deref() {
+                Some("migrating") => "Gortex daemon 正在迁移与优化数据库，请稍候...".to_string(),
+                Some("opening_store") => "Gortex daemon 正在打开并校验数据存储，请稍候...".to_string(),
+                _ => "Gortex daemon 正在启动准备中，请稍候...".to_string(),
+            }
         } else if managed_installed {
             "Gortex 已安装，daemon 处于停止状态。".to_string()
         } else if any_process_running {
@@ -531,6 +574,8 @@ impl GortexService {
             managed_installed,
             installing: is_installing,
             running,
+            starting,
+            startup_phase,
             any_process_running,
             unmanaged_process_running,
             process_id,
@@ -817,25 +862,40 @@ impl GortexService {
             return Err("gortex.exe 不存在，请先安装 Gortex".to_string());
         }
 
-        let mut cmd = new_silent_command(&exe);
-        cmd.args(["daemon", "start", "--detach"]);
-        for (k, v) in Self::get_managed_env_vars(&exe) {
-            cmd.env(k, v);
+        // 1. 防重入 / 幂等检查：避免重复启动导致 "the store is already owned by another gortex process" 冲突
+        let (running, starting, current_pid, _) = Self::get_daemon_detailed_status();
+        if running {
+            return Ok(());
         }
 
-        cmd.spawn().map_err(|e| format!("启动 Gortex daemon 失败: {}", e))?;
+        if starting {
+            info!("检测到已有 Gortex 守护进程正在初始化中 (PID: {:?})，无需重复启动，进入就绪等待...", current_pid);
+        } else {
+            let mut cmd = new_silent_command(&exe);
+            cmd.args(["daemon", "start", "--detach"]);
+            for (k, v) in Self::get_managed_env_vars(&exe) {
+                cmd.env(k, v);
+            }
+            cmd.spawn().map_err(|e| format!("启动 Gortex daemon 失败: {}", e))?;
+        }
 
-        // Wait up to 15 seconds for socket/pid
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // 2. 超时放宽至 60 秒，自适应等待后台数据库迁移与索引检查
+        let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
-            let (running, _) = Self::get_daemon_status();
-            if running {
+            let (is_running, _, _, _) = Self::get_daemon_detailed_status();
+            if is_running {
                 return Ok(());
             }
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(250));
         }
 
-        Ok(())
+        // 3. 再次确认：若仍在 starting 阶段（大型既有数据库可能需要更久），返回 Ok 让前端过渡轮询接管
+        let (is_running, is_starting, _, _) = Self::get_daemon_detailed_status();
+        if is_running || is_starting {
+            Ok(())
+        } else {
+            Err("启动 Gortex daemon 超时，请检查 run/daemon.log 或 run/daemon.stderr.log".to_string())
+        }
     }
 
     pub fn stop_daemon() -> Result<(), String> {

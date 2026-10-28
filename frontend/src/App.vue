@@ -103,7 +103,7 @@ const selectedSnipVersion = ref('')
 const snipInstallWorking = ref(false)
 const snipDeleteWorking = ref(false)
 const snipTrustWorking = ref(false)
-const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', activeTask: null, statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
+const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, starting: false, startupPhase: '', anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', activeTask: null, statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
 const gortexDiagnostics = reactive({ loading: false, doctorOk: false, doctorOutput: '', doctorError: '', statusOk: false, statusOutput: '', statusError: '' })
 const gortexProjectPath = ref('')
 const gortexReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
@@ -248,6 +248,7 @@ function activationLabel(tool, activeLabel = '已安装/运行中') {
   if (tool.loading) return '读取中'
   if (tool.activationState === 'attention') return '需要处理'
   if (tool.activationState === 'conflict') return '冲突'
+  if (tool.activationState === 'starting') return '启动/整理中…'
   if (tool.running) return activeLabel
   if (tool.installed) return '已安装/已停止'
   return '未安装'
@@ -586,6 +587,8 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.installed = Boolean(data.installed)
   gortex.installing = Boolean(data.installing)
   gortex.running = Boolean(data.running)
+  gortex.starting = Boolean(data.starting)
+  gortex.startupPhase = data.startup_phase || ''
   gortex.anyProcessRunning = Boolean(data.any_process_running)
   gortex.unmanagedProcessRunning = Boolean(data.unmanaged_process_running)
   gortex.integrationPresent = Boolean(data.integration_present)
@@ -1174,6 +1177,28 @@ async function loadGortexStatus({ silent = false } = {}) {
   }
 }
 
+let gortexPollTimer = null
+function pollGortexUntilReady(maxSeconds = 60) {
+  if (gortexPollTimer) {
+    window.clearTimeout(gortexPollTimer)
+    gortexPollTimer = null
+  }
+  const startTime = Date.now()
+  const poll = async () => {
+    if (gortex.running || Date.now() - startTime > maxSeconds * 1000) {
+      gortexPollTimer = null
+      return
+    }
+    await loadGortexStatus({ silent: true })
+    if (gortex.running) {
+      gortexPollTimer = null
+      return
+    }
+    gortexPollTimer = window.setTimeout(poll, 1500)
+  }
+  gortexPollTimer = window.setTimeout(poll, 1500)
+}
+
 async function controlGortex(action) {
   if (gortexBusy.value || !gortex.managedInstalled) return
   gortex.working = true
@@ -1191,6 +1216,9 @@ async function controlGortex(action) {
   } finally {
     gortex.working = false
     await loadGortexStatus({ silent: true })
+    if (action === 'start' && !gortex.running && (gortex.activationState === 'starting' || gortex.starting || gortex.anyProcessRunning)) {
+      pollGortexUntilReady()
+    }
   }
 }
 
@@ -2433,11 +2461,11 @@ onBeforeUnmount(() => {
             <h2 id="gortex-title">Gortex 管理</h2>
           </div>
           <div class="llmtrim-actions">
-            <span class="daemon-badge" :class="{ running: gortex.running, attention: gortex.activationState === 'attention' }">
+            <span class="daemon-badge" :class="{ running: gortex.running, attention: gortex.activationState === 'attention' || gortex.activationState === 'starting' }">
               {{ activationLabel(gortex, 'daemon 运行中') }}
             </span>
-            <button type="button" :class="{ stop: gortex.running }" :disabled="gortex.loading || gortexBusy || !gortex.managedInstalled" @click="controlGortex(gortex.running ? 'stop' : 'start')">
-              {{ gortex.working ? ('处理中' + rotatingDots) : (!gortex.managedInstalled ? '仅检测' : (gortex.running ? '停止 daemon' : '启动 daemon')) }}
+            <button type="button" :class="{ stop: gortex.running }" :disabled="gortex.loading || gortexBusy || !gortex.managedInstalled || gortex.activationState === 'starting'" @click="controlGortex(gortex.running ? 'stop' : 'start')">
+              {{ gortex.working ? ('处理中' + rotatingDots) : (gortex.activationState === 'starting' ? ('启动中' + rotatingDots) : (!gortex.managedInstalled ? '仅检测' : (gortex.running ? '停止 daemon' : '启动 daemon'))) }}
             </button>
             <button type="button" :disabled="gortex.loading || gortexBusy" @click="loadGortexStatus">
               {{ gortex.loading ? '读取中…' : '刷新状态' }}
@@ -2476,7 +2504,7 @@ onBeforeUnmount(() => {
             <span>注册和移除只处理名为 gortex 的 MCP 项，不会删除其他 MCP。track 需要 daemon 建图，若 daemon 已停止会按需启动；不会在后台自动深度审查所有函数。</span>
           </label>
           <p class="daemon-meta version-meta">当前版本 {{ gortex.version || '未记录' }}</p>
-           <p class="daemon-meta">daemon {{ gortex.managedInstalled ? (gortex.running ? '受管运行中' : '受管已停止') : '未安装受管版本' }}<span v-if="gortex.processId"> · PID {{ gortex.processId }}</span> · Gortex 进程 {{ gortex.anyProcessRunning ? (gortex.unmanagedProcessRunning ? '有外部/旧路径进程' : '有受管 MCP 或 daemon 进程') : '无' }}</p>
+           <p class="daemon-meta">daemon {{ gortex.managedInstalled ? (gortex.running ? '受管运行中' : (gortex.activationState === 'starting' ? (gortex.startupPhase === 'migrating' ? '受管数据库迁移中' : (gortex.startupPhase === 'opening_store' ? '受管数据校验中' : '受管启动初始化中')) : '受管已停止')) : '未安装受管版本' }}<span v-if="gortex.processId"> · PID {{ gortex.processId }}</span> · Gortex 进程 {{ gortex.anyProcessRunning ? (gortex.unmanagedProcessRunning ? '有外部/旧路径进程' : '有受管 MCP 或 daemon 进程') : '无' }}</p>
           <p class="daemon-meta">PATH 用户 {{ gortex.userPath ? '已配置' : '未配置' }} · 系统 {{ gortex.systemPath ? '已配置' : '未配置' }}</p>
            <p class="daemon-meta">Codex {{ gortex.codexAvailable ? (gortex.codexConfigured ? (gortex.codexComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.codexPrompt, gortex.codexPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.codexHook, gortex.codexHookComplete) }}</p>
            <p class="daemon-meta">Claude Code {{ gortex.claudeAvailable ? (gortex.claudeConfigured ? (gortex.claudeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.claudePrompt, gortex.claudePromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.claudeHook, gortex.claudeHookComplete) }}</p>
