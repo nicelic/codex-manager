@@ -1,7 +1,8 @@
 更新说明：
-1. 版本升级至 v1.0.10，同步更新前后端与 vision 配置。
-2. 升级 Gortex 统一架构全景全生命周期规范契约（Unified Gortex MCP Specification）：
-   - 全面规范检索枢纽双轨自适应检索（中文字面量物理探针 vs 纯英文机制拓扑雷达）；
-   - 强化 10KB 连续流物理视窗与反压阻断收敛，彻底杜绝超限磁盘转储；
-   - 确立单轮全量交付高吞吐批处理（edit.batch）与落盘状态凭据核验流水线。
+1. 版本升级至 v1.0.11，同步更新前后端与 vision 配置。
+2. 同步与强化 Gortex 统一架构全景全生命周期规范契约（Unified Gortex MCP Specification）：
+   - 全面落地连续物理流 10KB 视窗双保险与防切香肠靶向精读契约；
+   - 强化宿主环境通信反压阻断与严禁顺从脱轨铁律（Anti-Spill Guard）；
+   - 完善宏观分析 analyze 零落盘预算（repo + limit 双限）与写治理硬隔离；
+   - 确立 edit.batch 单次输入输出多处聚合原子提交与 compact_diff 轻量凭据核验流水线。
 3. 全量重新编译与打包最新二进制可执行产物，同步生成完整离线 Git bundle 及带 .git 源码归档并发布至 GitHub 远端。

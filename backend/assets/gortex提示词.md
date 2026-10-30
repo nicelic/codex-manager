@@ -13,8 +13,10 @@ Gortex 是对其 track 仓库全生命周期代码探测、定位、精读、分
 4. 【全局技能只读豁免】（Global Skills Read Exemption）：read 门面放行对全局技能资产的只读访问（~/.agents/skills/*/SKILL.md、~/.config/opencode/skills/、~/.copilot/skills/、~/.claude/skills/ 及 Pi 包生态），用于对齐宿主环境已挂载的全局工作流，严禁对技能目录执行任何形式的写操作。
 5. 【顶层先探测后分析代码铁律】（Probe-Before-Analyze Mandate）：进入新任务或跨模块分析前，必须首先调用 workspace 门面执行环境边界、主场工程与索引健康度前置探测，严禁盲目直接读搜；未明确仓库归属前严禁注入 repo 选择器（防范 no_repository_selector 拦截）。
 6. 【全生命周期高吞吐与单轮全量交付铁律】（Full-Lifecycle Single-Turn High-Throughput Mandate）：严禁“边走边改、逐处轮询、试探推演”的切香肠式低效交互。接收任务后必须全局通盘规划，严禁以“修改仅 1 处”为借口退回单入单出轮询。必须严格执行“查-读-析-写-验”五步单轮交付流水线（“查-读-析-写-验”具体门面与参数在后续章节中有详细规范）。单任务全流程原则上仅允许 1 次批量写交互，彻底消除偷懒式碎片轮询。若“验”阶段发现单测或架构守卫失败，必须通盘汇总全部报错点，发起第 2 次单轮批量修复，严禁退化为零散试探修改。
-7. 截断自愈后置切片契约：单次响应超限截断时（_truncated_by_limit=true），严禁调大 limit 盲目重查，必须调用 response.slice / response.grep 原地切片，杜绝触发 20KB 磁盘转储 (output.txt) 诱发脱轨。
-8. 【严禁调用 explore 全景探索门面】（Absolute Ban on Explore Facade）：严禁发起 explore 门面的任何操作调用。该门面默认携带 12,000 Tokens 巨量泛洪，且在受限预算下会强行触发底层 Shedding 算法剥离实现代码（将函数体掏空为签名存根），必然导致 20KB 磁盘转储截断或分析残缺，诱发退回宿主工具。
+7. 【连续物理流 10KB 视窗定界与轮廓先行铁律】（Universal 10KB Bounded Stream & Summary-First Mandate）：全栈工程中，代码资产在物理上分为“语法闭合实体（函数/类/接口）”与“连续物理流容器（物理文件/配置体/脚本）”两类通用形态。语法闭合实体必须且仅能通过 `read.symbols` / `read.source` 读取；连续物理流容器属于无自然边界的线性字节流，绝对严禁无参数发起全量裸读！凡调用 `read.file`，视窗参数 `options: {offset: 起始行, limit: 80~100, max_bytes: 10240}` 属于绝对法定必填元数据，单次物理体积硬性锁死在 10KB 以内（为 JSON 传输转义预留绝对安全余量，彻底消灭 16KB 磁盘转储）；严禁盲目从第 1 行切香肠式逐屏翻页（如 1~80, 81~160）！面对大文件，第一法定入口必须且仅能是 `read(operation="summary")` 获取结构与行号地图，随后直接以已知行号发起单次精准视窗狙击切片。
+8. 【宿主环境反压阻断与严禁顺从脱轨铁律】（Host Backpressure & Anti-Spill Guard）：当工具响应中出现 `The output was large and was saved to: .../output.txt` 或界面提示 `Full output written to output.txt` 时，该信号属于宿主环境发出的【通信反压拒绝凭据】。绝对严禁顺从调用宿主工具（read_file、view_file）去读取该 output.txt！绝对严禁顺着该路径扩散调用任何系统命令行工具（findstr、grep、dir、Get-ChildItem）！违者直接判定为最高级脱轨违规。唯一法定自愈动作：必须在 Gortex 体系内执行【原点收敛】：若由 `read.file` 触发，立即将视窗减半（`limit: 40~50, max_bytes: 5120`）带精准 offset 重新下发；若由检索或分析门面触发，必须且仅能调用 `response(operation="slice")` 或 `response(operation="grep")` 对内存环形缓冲区原地后置提取，彻底切断外部扩散。
+9. 【严禁调用 explore 全景探索门面】（Absolute Ban on Explore Facade）：严禁发起 explore 门面的任何操作调用。该门面默认携带 12,000 Tokens 巨量泛洪，且在受限预算下会强行触发底层 Shedding 算法剥离实现代码（将函数体掏空为签名存根），必然导致 20KB 磁盘转储截断或分析残缺，诱发退回宿主工具。
+10. 【全门面 10KB 物理通信硬顶与反降级替代铁律】（Universal 10KB Ceiling & Anti-Substitution Mandate）：Gortex 暴露的所有只读、精读、检索与追踪门面，在单次交互中必须遵循全生命周期两大约束：① 全门面 10KB 通信物理硬锁：单次纯文本承载上限绝对锁死在 10KB 以内（为 JSON 传输转义保留 4KB~5KB 绝对安全裕度，彻底阻断 16KB 宿主磁盘转储 output.txt）。无论是物理文件切片、AST 符号实现、局部装配上下文还是调用网络树，凡涉及体积展开的工具必须显式携带安全预算（max_bytes: 10240 与紧凑 limit）；② 严禁降级等价逃逸（Anti-Substitution）：当某一核心路径（如 winnow 拓扑分析或单次批量写）面临规则门禁时，严禁使用功能相近但缺乏架构约束的次级工具（如以 search.symbols 代替 search.winnow、以 relations.usages 探听全局结构、以 editing_context 偷窥未裁剪源码）进行暗度陈仓式降级规避。
 
 ---
 
@@ -473,18 +475,33 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
 * **雷达通道（search.winnow）**：以归一化的紧凑实体词元作为 `query`，显式添加 `options: {min_fan_in: 2, limit: 15}` 与 `output: {format: "gcx"}`，负责扫描 AST 语法树，锁定核心中枢控制器与数据结构。
 * **时延与预算双赢**：两通道在第 1 轮同批下发、同批返回，0 额外轮次开销，单轮响应体积严格控制在 10KB ~ 15KB 安全线内。
 
-#### 准则四：【防短路拓扑升格绝对死锁】（Anti-Shortcut Escalation Hard Lock）
-大模型天生具有“文本贪婪短路偏好（Grep Bias）”，一旦 `search.text` 抓到了物理行号，极易自作聪明跳过架构分析直接盲目修改代码。为此设立最高不可逾越的硬性死锁：
+#### 准则四：【防短路拓扑升格绝对死锁 与 检索位阶显式宣告】（Anti-Shortcut Escalation & Explicit Declaration）
+大模型天生具有“文本贪婪短路偏好（Grep Bias）”，一旦 `search.text` 或 `search.files` 抓到了物理行号或路径，极易自作聪明跳过架构分析直接盲目读写代码。为此设立最高不可逾越的硬性死锁：
+* **禁以文件名代替架构检索令（严禁跳步）**：
+  无论用户需求中是否包含了看似文件名、组件名的词汇（如 multiplex / singbox_inbound），严禁首动调用 `search.files` 投机取巧！所有新任务的第一动作，唯一法定入口必须且仅能是 P0 级单轮并发双探（`search.text` 负责锁定物理字面量具体所在行号；`search.winnow` 负责锁定 AST 拓扑中枢，query 强制归一化为 1~2 个核心词元，如 "multiplex"）。
+* **界面可观测性硬锁（必须前置打印执行位阶）**：
+  为消除宿主 UI 工具卡片折叠导致的感知混淆，模型在发起任何 search 调用前，必须在其回复的思考或第一行文本中显式打印当前执行的操作位阶标记：
+  - 执行文本探针时必须输出：`[SEARCH.TEXT: 正在物理扫描字面量行号]`
+  - 执行拓扑升格时必须输出：`[SEARCH.WINNOW: 正在升格扫描 AST 拓扑中枢]`
 * **绝对禁令**：**严禁在仅获得 `search.text` 的行号结果后，直接对目标文件发起 `read.file` 精读或直接进入 `edit.batch` 落地修改！违者直接判定为高危违规脏写！**
 * **拓扑升格门禁**：
   * 若首轮并发中 `search.winnow` 成功命中了对应模块中枢，拓扑已完备，准许进入精读；
   * 若首轮 `search.winnow` 因词元猜测偏差未命中目标，模型**必须且仅能从 `search.text` 命中的物理行中穿透提取外层真实 AST 声明符号**（即包裹该行的函数名、结构体名、接口名，例如提取出 `wnd_proc`、`forward_handler`、`CertificatePushRequest`）；
   * **强制发起第二轮定向拓扑定界**：`search.winnow(query="真实符号名", options:{min_fan_in:0})`，获取该符号在图谱中的扇入扇出、调用度与中枢权重。拿到拓扑凭据后，方可合法进入 `read.symbols` 与后续写闭环！
+* **Files 定位后的收敛死锁**：
+  仅当纯粹排查文件存在性而必须使用 `search.files` 时，拿到文件路径后的下一动作**绝对严禁直接调用 `read.file` 全量读文件**！必须严格经由 `read.summary` 大纲提取后方可按需切片。
 
 #### 准则五：【物理数据值 vs 语法树符号本质分工】（Literal Value vs AST Symbol Division）
 * **宇宙二元法则**：
   * 寻找任何出现在双引号内的字符串、国际化资源、日志模板、UI 菜单、报错常量、配置键名、错误码十六进制 $\rightarrow$ **必须且仅能由 `search.text` 捕获**；
   * 寻找函数、结构体、类、接口等语法声明与拓扑中枢 $\rightarrow$ **必须且仅能由 `search.winnow` 裁决**。
+
+#### 准则六：【search.symbols 定位限定与严禁替代 winnow 铁律】（Symbols Def-Only Invariant）
+1. **核心定位与单一职责**：`search(operation="symbols")` 的唯一法定功能是【已知确切符号唯一全名时，查找单一定义点】，其返回结果零调用拓扑、零扇入扇出、零中枢权重。
+2. **绝对禁令（严禁作为 winnow 降级替代品）**：严禁使用 `search.symbols` 代替 `search.winnow` 作为架构分析依据！严禁向 `search.symbols` 输入无限定的通用词元（如 Config, Handler, State, Service, new）发起全局泛洪。
+3. **空间收敛双重约束**：凡调用 `search.symbols`，必须同时在 `options` 中显式指定 `path`（限定单仓或子模块）并传入 `limit: 20`，严禁发起无仓库限定的全图谱符号检索。
+- 违规反例（严禁）：`search({ "operation": "symbols", "query": "Handler" })`（全图泛洪）
+- 合规正例（法定）：`search({ "operation": "symbols", "query": "TcpHandler", "options": {"path": "core/net", "limit": 10}, "output": {"format": "gcx"} })`
 
 ---
 
@@ -713,16 +730,40 @@ search({
 * **硬性门禁**：**无论宿主操作系统为何（包括 Windows），所有 `symbol` 与 `symbols` 属性中的符号 ID，其路径分隔符必须且仅能使用正斜杠 `/`，格式严格统一为 `"仓库标识/相对路径::符号名"`**；
 * **违规后果**：在 Windows 环境下若误传反斜杠 `\`（如 `"Project-A\src\net\tcp.rs::handshake"`），由于图谱底层节点索引键统一注册为正斜杠，会导致字符串比对失败，抛出 `symbol not found` 错误。
 
-#### 准则五：【`read.symbols` 数量上限与单轮聚合契约】（Batch Quantity Ceiling & Anti-Chop）
-* **硬性上限门禁**：单次调用 `read(operation="symbols")` 时，`target.symbols` 数组长度**强制锁定为 2 ~ 4 个**（严禁一次性灌入 5 个以上符号）；
-  * 候选符号超标时仅筛选核心 2~3 个符号下发，防止代码量超 600 行突破 20KB 触发 output.txt 磁盘转储；
-* **单轮全量抓齐（Anti-Chop）**：严禁对多个已知函数发起单步轮询（读一个等一轮）；必须在单次调用中一次性打包读取；
-* **源码必填开关**：**必须显式声明 `options: {include_source: true}`**（锁定返回源码实现体，杜绝版本升级导致的默认值漂移）。
+#### 准则五：【巨型符号 10KB 物理拦截与 editing_context 安全预算】（Giant Symbol Guard & Safe Context）
+* **`read.symbols` 数组上限与防爆门禁**：
+  单次调用 `read(operation="symbols")` 时，`target.symbols` 数组长度**强制锁定为 2 ~ 3 个核心符号**（严禁一次性灌入 4 个以上符号）；必须显式声明 `options: {include_source: true}`，单轮全量抓齐，严禁单步轮询；
+* **`read.source` 巨型函数 10KB 物理截断**：
+  “符号语法自然闭合”不等于“体积天然安全”。当目标函数属于巨型长函数（单体 > 200 行）或数据结构时，为防范打爆 16KB 转储，单符号深入精读必须显式附加安全上限：`options: {max_bytes: 10240}`，防止单个巨型 God Method 瞬间打爆通信通道；
+* **`read.editing_context` 拓扑装配绝对收敛契约**：
+  `read(operation="editing_context")` 默认会级联拉取相邻符号与依赖声明，体积极易雪崩。因此：
+  - 必须显式声明 `options: {keep: "单一核心目标函数", max_bytes: 10240}`；
+  - 严禁省略 `keep` 泛装配整个模块上下文；若目标文件总行数 > 300 行，禁止调用 `editing_context`，必须降维使用精准行号视窗切片 `read.file`；
+  - 违规反例（严禁）：`read({ "operation": "editing_context", "target": {"file": "large_view.ext"} })`
+  - 合规正例（法定）：`read({ "operation": "editing_context", "target": {"file": "core/router.ext"}, "options": {"keep": "dispatch_packet", "max_bytes": 10240} })`
 
-#### 准则六：【AST 符号精读与物理行切片分工铁律】（AST Completeness vs Physical Window）
+#### 准则六：【物理文件 10KB 视窗双保险与防切香肠靶向精读契约】（10KB Dual-Ceiling & Anti-Chop Target Guard）
 * **代码阅读分工铁律**：
   * 研读函数/结构体强制调用 `read.symbols` 或 `read.source`（保证 100% 语法闭合）；`read.file` 行号切片仅适用于非 AST 符号（UI 模板、配置、特定报错行）；
-* **物理文件切片硬门禁**：调用 `read.file` 时，单次读取行数上限 `limit: 100`，且必须显式传入 `options: {offset: 起始行, limit: 80~100}`。严禁对 > 150 行的物理文件发起无参数的全量盲读。
+* **10KB 双保险参数锁（行数与字节数强制双限）**：
+  凡调用 `read(operation="file")`，必须且仅能同时附带行数上限与字节上限，严禁单限裸奔：
+  - 必须传入：`options: { offset: 起始行, limit: 80~100, max_bytes: 10240 }`
+  - 物理防爆指标：单次响应体积绝对锁定在 10KB 以内，加上 JSON 传输报文后稳定在 12KB~13KB，彻底消灭触发宿主 16KB 磁盘转储 (`output.txt`) 的任何物理可能性。
+* **唯一法定单构容器（彻底消灭 arguments 混用）**：
+  `read` 门面严禁使用 `arguments` 容器！目标文件必须且仅能封装于 `target.file` 对象内，严禁容器层级错位导致 options 参数被底层忽略：
+  - 唯一法定标准调用模板：
+    ```json
+    read({
+      "operation": "file",
+      "target": { "file": "相对路径/文件名.ext" },
+      "options": { "offset": 120, "limit": 80, "max_bytes": 10240 }
+    })
+    ```
+* **防切香肠式翻页三大法定靶向法则（Anti-Chop Targeting Invariants）**：
+  严禁在未定位目标行号前，从第 1 行开始盲目连续分页读取（严禁 1~80, 81~160, 161~240 循环轮询）！长文件阅读必须且仅能采用以下三种单次收敛机制：
+  - **法则 A（大纲靶向狙击）**：未知目标位置的大文件，必须先执行 `read(operation="summary", target: {file: "..."})` 提取行号大纲地图，直接跳至目标函数/属性对应行号下发单次视窗读取；
+  - **法则 B（语法存根化全景）**：需要纵览千行大文件全局骨架并研读某核心函数时，强制开启语法压缩：`read(operation="file", target: {file: "..."}, context: {compress_bodies: true}, options: {keep: "核心函数名", max_bytes: 10240})`，单次调用全景获取；
+  - **法则 C（逆向探针定界）**：先由 `search.text` 命中精确行号（如第 142 行），再直接以 `options: {offset: 130, limit: 30, max_bytes: 10240}` 狙击读取上下文，一次性交付！
 
 #### 准则七：【长文件存根化巡检契约】（AST Compress Protocol）
 * **触发条件**：需要了解某个大文件（> 150 行）的内部全貌、成员变量和主要函数骨架；
@@ -744,8 +785,8 @@ search({
 | **`search` 命中 2 ~ 4 个关联函数/结构体** | `read(operation="symbols")` | `target: {symbols: ["id1","id2"]}`, `options: {include_source: true}`, `context: {context_lines: 3}`, 数组长度 2~4 | **严禁 gcx**（保留 callers 列表） |
 | **明确研读某 1 个具体函数/结构体** | `read(operation="source")` | `target: {symbol: "id"}`, `context: {context_lines: 3}` | **严禁 gcx**（保证函数完整语法闭合） |
 | **未知代码文件，需快速掌握符号大纲与依赖** | `read(operation="summary")` | `target: {file: "path"}` | **严禁 gcx**（极低 Token 提取类型分布与顶级符号） |
-| **已知非代码文件明确行号（UI组件/配置/报错行）** | `read(operation="file")` | `target: {file: "path"}`, `options: {offset: 起始行, limit: 80~100}` | **严禁 gcx**（严格限制 <= 100 行） |
-| **长文件（>150行）结构巡检与骨架研判** | `read(operation="file")` | `target: {file: "path"}`, `context: {compress_bodies: true}`, `options: {keep: "核心函数"}` | **严禁 gcx**（语法级存根化瘦身70%） |
+| **已知非代码文件明确行号（UI组件/配置/报错行）** | `read(operation="file")` | `target: {file: "path"}`, `options: {offset: 起始行, limit: 80~100, max_bytes: 10240}` | **严禁 gcx**（硬锁 <= 10KB 阻断 output.txt） |
+| **长文件（>150行）结构巡检与骨架研判** | `read(operation="file")` | `target: {file: "path"}`, `context: {compress_bodies: true}`, `options: {keep: "核心函数", max_bytes: 10240}` | **严禁 gcx**（语法级存根化瘦身70%） |
 | **落笔修改前装配相邻符号与导入依赖** | `read(operation="editing_context")` | `target: {file: "path"}`, `options: {keep: "目标修改函数"}` | **严禁 gcx**（装配局部编辑拓扑） |
 | **追溯某特定符号演化历史与提交记录** | `read(operation="history")` | `target: {symbol: "id"}` | **严禁 gcx**（获取符号级提交追溯） |
 
@@ -802,7 +843,7 @@ read({
 read({
   "operation": "file",
   "target": {"file": "Project-A/frontend/src/views/Settings.vue"},
-  "options": {"offset": 80, "limit": 80}
+  "options": {"offset": 80, "limit": 80, "max_bytes": 10240}
 })
 ```
 
@@ -812,7 +853,7 @@ read({
   "operation": "file",
   "target": {"file": "Project-A/src/server.rs"},
   "context": {"compress_bodies": true},
-  "options": {"keep": "start_listen,reload_config"}
+  "options": {"keep": "start_listen,reload_config", "max_bytes": 10240}
 })
 ```
 
@@ -863,12 +904,14 @@ read({
 * **缺省保护机理**：若未传入 `kind` 或 `kind` 为空，底层默认执行 `kind="help"`，返回全量 94 种可用分析种类字典；
 * **反向禁令**：`analyze` 门面不支持 `operation` 参数，**严禁向 `analyze` 传入 `operation`**（会被底层自动剥离）。
 
-#### 准则三：【零落盘预算与范围收窄门禁】（Zero Spill Budget for Analyze）
-* **高危场景**：在大中型工程中，全图分析（如 `dead_code`、`hotspots`、`sast`、`todos`）直接全量输出会产生数千条结果，体积极易突破 20KB 触发 Antigravity 磁盘转储 `output.txt`；
-* **唯一法定收窄动作**：
-  * **单仓收窄**：必须在 `options` 容器中传入 `repo: "Project-A"`，触发 `analyzeScopeAwareKinds` central 过滤机制；
-  * **条数硬顶**：产生列表的分析种类必须显式传入 `limit: 30`（锁定在 10 ~ 30 条以内），确保单次响应体积严格锁定在 5KB ~ 9KB 黄金内存区间；
-  * **稀疏投影**：必须配合 `fields: "..."` 过滤冗余字段，严禁全量转储。
+#### 准则三：【零落盘预算与报表条数硬顶铁律】（Zero Spill Budget for Analyze）
+* **高危场景**：在大中型工程中，全图分析（如 `dead_code`、`hotspots`、`sast`、`todos`、`bottlenecks`）直接全量输出会产生数千条结果，体积极易突破 20KB 触发 Antigravity 磁盘转储 `output.txt`；
+* **唯一法定收窄动作（绝对必填双参数）**：
+  * **单仓收窄**：必须在 `options` 容器中传入 `repo: "Project-A"`，触发 `analyzeScopeAwareKinds` central 过滤机制，严禁跨库全量扫；
+  * **条数硬顶**：产生列表的分析种类必须显式传入 `limit: 30`（严格锁定在 10 ~ 30 条以内），确保单次响应体积锁定在 5KB ~ 9KB 黄金内存区间；
+  * **稀疏投影**：必须配合 `fields: "..."` 过滤冗余字段，严禁全量转储；
+  * ❌ 违规反例（严禁，必触发转储）：`analyze({ "kind": "dead_code", "options": {"repo": "Project-A"} })`（缺省 limit 裸奔）
+  *  合规正例（法定）：`analyze({ "kind": "dead_code", "options": {"repo": "Project-A", "limit": 30, "fields": "symbol,file,line"} })`
 
 #### 准则四：【写治理与管理操作绝对物理隔离】（Write Isolation Mandate）
 * **底层事实**：`analyze` 门面声明为只读模式（`readOnly: true`）；
@@ -1305,6 +1348,7 @@ refactor (语义重构门面) ──┼── 4. inline (简单单行/单返回�
   - `delete_file`：`{"op": "delete_file", "path": "...", "expected_sha256": "..."}`（用于原子删除废弃物理文件）。
 - **ACID 锁定快照预检（Locked Snapshot Preflight）**：底层在统一静态快照上对全量待替换文本和哈希进行一次性预检。只要批次中任意一处旧文本不匹配或哈希校验失败，整个批次 100% 拒绝，零脏写；发生提交故障时自动还原所有触碰文件。
 - **幂等事务锁 (`transaction_id`)**：支持传入调用方稳定业务标识 `transaction_id`。重试时复用相同 `transaction_id` 自动去重，杜绝二次重复写入。
+- **反向返回防爆与轻量凭据锁（Compact Diff & Receipt Handoff）**：单次批量写入不受只读 10KB 限制（受模型自身 8K 输出 Token 带宽自然支撑），鼓励单轮交付多处改动。但为杜绝写入成功后服务端返回的巨型 Unified Diff 报文超过 16KB 触发宿主 `output.txt` 转储，批量写操作必须显式传入 `options: {compact_diff: true, physical_evidence: true}`。严禁依赖写操作返回的长篇 Diff 文本进行肉眼核验；写操作提交后，唯一法定状态核验是交接给 `change(operation="receipt")` 获取单行提交凭据，再行推进至测试验证。
 
 #### 准则二：【全量文件生成与覆盖重写契约 (`edit.write`)】
 - **触发条件**：创建全新源文件，或者文件结构发生彻底重构需要整文件单次全量重写时。
@@ -1384,7 +1428,7 @@ edit({
   ],
   "transaction_id": "tx_update_user_api_001",
   "dry_run": false,
-  "options": {"physical_evidence": true}
+  "options": {"compact_diff": true, "physical_evidence": true}
 })
 ```
 
@@ -1395,7 +1439,7 @@ edit({
   "target": {"file": "Project-A/src/models/user.rs"},
   "content": "use serde::{Deserialize, Serialize};\n\n#[derive(Debug, Serialize, Deserialize)]\npub struct UserProfile {\n    pub id: u64,\n    pub username: String,\n}\n",
   "dry_run": false,
-  "options": {"physical_evidence": true}
+  "options": {"compact_diff": true, "physical_evidence": true}
 })
 ```
 
@@ -1461,7 +1505,7 @@ edit({
     }
   ],
   "dry_run": false,
-  "options": {"physical_evidence": true}
+  "options": {"compact_diff": true, "physical_evidence": true}
 })
 ```
 
@@ -1471,7 +1515,7 @@ refactor({
   "operation": "fix_all",
   "target": {"file": "Project-A/src/services/payment.rs"},
   "dry_run": false,
-  "options": {"physical_evidence": true}
+  "options": {"compact_diff": true, "physical_evidence": true}
 })
 ```
 
