@@ -44,6 +44,15 @@ impl GortexService {
         strip_windows_verbatim_prefix(get_user_profile_dir()).join(".gortex")
     }
 
+    pub fn ensure_prompt_document(install_root: &Path) -> PathBuf {
+        let prompt_path = install_root.join("gortex提示词.md");
+        if !prompt_path.is_file() {
+            let _ = fs::create_dir_all(install_root);
+            let _ = fs::write(&prompt_path, GORTEX_PROMPT_DOC);
+        }
+        strip_windows_verbatim_prefix(&prompt_path)
+    }
+
     pub fn get_managed_executable_path() -> Option<PathBuf> {
         let managed = Self::get_install_dir().join("bin").join(GORTEX_EXECUTABLE_NAME);
         if managed.is_file() {
@@ -457,12 +466,13 @@ impl GortexService {
         let (gemini_configured, gemini_complete) = check_json_mcp("gemini");
 
         // Prompts
+        let prompt_doc_exists = install_root.join("gortex提示词.md").is_file();
         let check_prompt = |agent: &str| -> (bool, bool) {
             for p in gortex_prompt_paths(agent) {
                 if p.is_file() {
                     if let Ok(data) = fs::read(&p) {
                         if gortex_marked_block(&data).is_some() {
-                            return (true, true);
+                            return (true, prompt_doc_exists);
                         }
                     }
                 }
@@ -924,8 +934,9 @@ impl GortexService {
 
         let mut warnings = Vec::new();
 
-        // 1. Release prompt document
-        let _ = fs::write(install_root.join("gortex提示词.md"), GORTEX_PROMPT_DOC);
+        // 1. 探测并确保 Gortex 目录下的提示词文档存在，生成外挂引导提示词
+        let prompt_doc_path = Self::ensure_prompt_document(&install_root);
+        let delegated_prompt = gortex_delegated_prompt_body(&prompt_doc_path);
 
         let available = gortex_detected_mcp_agents();
 
@@ -955,11 +966,11 @@ impl GortexService {
             }
         }
 
-        // 6. Register Prompts
+        // 6. Register Prompts (写入外挂引导提示词，精简轻量)
         for agent in GORTEX_AGENTS {
             if available.get(*agent).copied().unwrap_or(false) {
                 for p in gortex_prompt_paths(agent) {
-                    if let Err(e) = upsert_gortex_prompt(&p, GORTEX_PROMPT_DOC) {
+                    if let Err(e) = upsert_gortex_prompt(&p, &delegated_prompt) {
                         warnings.push(format!("{} 提示词: {}", agent, e));
                     }
                 }
@@ -1020,7 +1031,7 @@ impl GortexService {
             warnings.extend(gortex_register_project_mcp_for_project(proj, &exe_str, &install_root, Some(&available)));
             if available.get("cursor").copied().unwrap_or(false) {
                 let rule_path = gortex_cursor_rule_path(proj);
-                if let Err(e) = upsert_gortex_cursor_prompt(&rule_path, GORTEX_PROMPT_DOC) {
+                if let Err(e) = upsert_gortex_cursor_prompt(&rule_path, &delegated_prompt) {
                     warnings.push(format!("Cursor 项目规则: {}", e));
                 }
             }
@@ -1089,6 +1100,12 @@ impl GortexService {
         let mut ownership = read_gortex_ownership(&install_root).unwrap_or_default();
         ownership.project_mcp_enabled = false;
         let _ = write_gortex_ownership(&install_root, &ownership);
+
+        // 7. 物理删除 Gortex 目录下的提示词文档（按文件名强力删除）
+        let prompt_doc = install_root.join("gortex提示词.md");
+        if prompt_doc.is_file() {
+            let _ = fs::remove_file(&prompt_doc);
+        }
 
         Ok(warnings)
     }
@@ -1202,7 +1219,9 @@ impl GortexService {
 
         if available.get("cursor").copied().unwrap_or(false) {
             let rule_path = gortex_cursor_rule_path(clean_path);
-            if let Err(e) = upsert_gortex_cursor_prompt(&rule_path, GORTEX_PROMPT_DOC) {
+            let prompt_doc_path = Self::ensure_prompt_document(&install_root);
+            let delegated_prompt = gortex_delegated_prompt_body(&prompt_doc_path);
+            if let Err(e) = upsert_gortex_cursor_prompt(&rule_path, &delegated_prompt) {
                 warnings.push(format!("Cursor 项目规则: {}", e));
             }
         }

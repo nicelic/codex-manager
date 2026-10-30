@@ -477,53 +477,137 @@ pub fn upsert_gortex_prompt(path: &Path, body: &str) -> Result<(bool, String), S
     Ok((true, fp))
 }
 
-pub fn remove_gortex_prompt(path: &Path, fingerprint: &str) -> Result<bool, String> {
+/// 生成指向实际物理文件的精简外挂引导提示词
+pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
+    let clean_path = strip_windows_verbatim_prefix(prompt_file)
+        .to_string_lossy()
+        .replace('/', "\\");
+    format!(
+        "为方便接下来工作的展开，你必须先全量读取“{}”，并首先严格遵循文档的规范。",
+        clean_path
+    )
+}
+
+// =========================================================================
+// [LEGACY-COMPAT] 旧版提示词兼容清理专区
+// -------------------------------------------------------------------------
+// 历史背景：
+// 在 v1.0.8 及之前版本中，提示词以 24KB 完整文本直接内联写入各平台配置，
+// 且旧版 remove_gortex_prompt 依赖严格的 SHA-256 指纹校验，导致用户在
+// 升级新版后点击“移除 MCP”时无法清理旧版遗留的内联提示词。
+// 此外，部分旧配置可能残留单边未闭合标记或旧格式。
+//
+// 职责定位：
+// 1. 无视 SHA-256 指纹比对，只要含有旧版特征或旧版标记，无条件安全摘除；
+// 2. 识别并清理未完全闭合的破损单边标记块（如只有 start 没有 end）；
+// 3. 识别旧版特征词并剥离孤立遗留段落。
+//
+// 废弃规划：
+// 待后续版本（如 v1.2.0）用户全部迁移完成后，可将本模块代码及对应调用整体删除。
+// =========================================================================
+pub mod legacy_prompt_compat {
+    use super::*;
+
+    pub const LEGACY_KEYWORD_SYNTAX: &str = "【语法说明】";
+    pub const LEGACY_KEYWORD_PRINCIPLE: &str = "Gortex 是对其 track 仓库全生命周期";
+
+    pub fn is_legacy_prompt_content(content: &str) -> bool {
+        content.contains(LEGACY_KEYWORD_SYNTAX) || content.contains(LEGACY_KEYWORD_PRINCIPLE)
+    }
+
+    pub fn clean_dangling_markers(text: &str) -> (bool, String) {
+        let has_start = text.contains(GORTEX_RULES_START_MARKER);
+        let has_end = text.contains(GORTEX_RULES_END_MARKER);
+
+        if has_start && !has_end {
+            if let Some(idx) = text.find(GORTEX_RULES_START_MARKER) {
+                let cleaned = text[..idx].trim_end().to_string();
+                let result = if cleaned.is_empty() { String::new() } else { format!("{}\n", cleaned) };
+                return (true, result);
+            }
+        } else if !has_start && has_end {
+            if let Some(idx) = text.find(GORTEX_RULES_END_MARKER) {
+                let mut after = idx + GORTEX_RULES_END_MARKER.len();
+                if after < text.len() && text.as_bytes()[after] == b'\n' {
+                    after += 1;
+                }
+                let cleaned = format!("{}{}", &text[..idx], &text[after..]).trim_end().to_string();
+                let result = if cleaned.is_empty() { String::new() } else { format!("{}\n", cleaned) };
+                return (true, result);
+            }
+        }
+        (false, text.to_string())
+    }
+
+    pub fn cleanup_legacy_prompt_fallback(path: &Path, raw_text: &str) -> Result<bool, String> {
+        let (dangling_cleaned, text_after_dangling) = clean_dangling_markers(raw_text);
+        if dangling_cleaned {
+            if text_after_dangling.trim().is_empty() {
+                let _ = fs::remove_file(path);
+            } else {
+                fs::write(path, text_after_dangling)
+                    .map_err(|e| format!("写入清理后的提示词文件失败: {}", e))?;
+            }
+            return Ok(true);
+        }
+
+        if is_legacy_prompt_content(raw_text) && !raw_text.contains(GORTEX_RULES_START_MARKER) {
+            if let Some(start_idx) = raw_text.find(LEGACY_KEYWORD_SYNTAX).or_else(|| raw_text.find(LEGACY_KEYWORD_PRINCIPLE)) {
+                let remaining = raw_text[..start_idx].trim_end().to_string();
+                if remaining.is_empty() {
+                    let _ = fs::remove_file(path);
+                } else {
+                    fs::write(path, format!("{}\n", remaining))
+                        .map_err(|e| format!("清理旧版特征提示词失败: {}", e))?;
+                }
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+}
+
+pub fn remove_gortex_prompt(path: &Path, _fingerprint: &str) -> Result<bool, String> {
     if !path.is_file() {
         return Ok(false);
     }
     let data = fs::read(path).map_err(|e| format!("读取提示词失败: {}", e))?;
-    let block = match gortex_marked_block(&data) {
-        Some(b) => b,
-        None => return Ok(false),
-    };
-
-    let canonical_fp = gortex_artifact_fingerprint(gortex_prompt_block(GORTEX_PROMPT_DOC).as_bytes());
-    let current_fp1 = gortex_artifact_fingerprint(format!("{}\n", block).as_bytes());
-    let current_fp2 = gortex_artifact_fingerprint(block.as_bytes());
-
-    let match_fp = if fingerprint.is_empty() {
-        canonical_fp
-    } else {
-        fingerprint.to_string()
-    };
-
-    if current_fp1 != match_fp && current_fp2 != match_fp {
-        return Err(format!("提示词文件 {} 已被修改，已保留", path.display()));
-    }
-
     let text = String::from_utf8_lossy(&data);
-    let start = text.find(GORTEX_RULES_START_MARKER).unwrap_or(0);
-    let end_marker = text.rfind(GORTEX_RULES_END_MARKER).unwrap_or(0);
-    let mut end = end_marker + GORTEX_RULES_END_MARKER.len();
-    if end < text.len() && text.as_bytes()[end] == b'\n' {
-        end += 1;
+
+    let start = text.find(GORTEX_RULES_START_MARKER);
+    let end_marker = text.rfind(GORTEX_RULES_END_MARKER);
+
+    // 标准闭合标记块移除（无论内部是新版外挂引导词还是旧版 24KB 内联长文，解除指纹死锁）
+    if let (Some(s), Some(e)) = (start, end_marker) {
+        if e >= s {
+            let mut end = e + GORTEX_RULES_END_MARKER.len();
+            if end < text.len() && text.as_bytes()[end] == b'\n' {
+                end += 1;
+            }
+
+            let mut next = format!("{}{}", &text[..s], &text[end..]);
+            next = next.trim_end_matches('\n').to_string();
+            if !next.is_empty() {
+                next.push('\n');
+            }
+
+            if path.extension().map(|e| e.eq_ignore_ascii_case("mdc")).unwrap_or(false)
+                && (next.trim().is_empty()
+                    || normalize_gortex_line_endings(&next).trim()
+                        == normalize_gortex_line_endings(GORTEX_CURSOR_FRONTMATTER).trim())
+            {
+                let _ = fs::remove_file(path);
+                return Ok(true);
+            }
+
+            fs::write(path, next).map_err(|e| format!("更新提示词文件失败: {}", e))?;
+            return Ok(true);
+        }
     }
 
-    let mut next = format!("{}{}", &text[..start], &text[end..]);
-    next = next.trim_end_matches('\n').to_string();
-    if !next.is_empty() {
-        next.push('\n');
-    }
-
-    if path.extension().map(|e| e.eq_ignore_ascii_case("mdc")).unwrap_or(false)
-        && normalize_gortex_line_endings(&next).trim() == normalize_gortex_line_endings(GORTEX_CURSOR_FRONTMATTER).trim()
-    {
-        let _ = fs::remove_file(path);
-        return Ok(true);
-    }
-
-    fs::write(path, next).map_err(|e| format!("更新提示词文件失败: {}", e))?;
-    Ok(true)
+    // [LEGACY-COMPAT] 若未能按标准双标记块剥离，调用旧版兼容清理模块进行破损标记与孤立旧文兜底
+    legacy_prompt_compat::cleanup_legacy_prompt_fallback(path, &text)
 }
 
 pub fn gortex_cursor_frontmatter_info(value: &str) -> (usize, bool, bool) {
