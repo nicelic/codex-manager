@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -927,7 +928,189 @@ impl GortexService {
         Ok(())
     }
 
-    pub fn register_mcp() -> Result<Vec<String>, String> {
+    fn remove_single_platform_internal(
+        agent: &str,
+        install_root: &Path,
+        exe_str: &str,
+        warnings: &mut Vec<String>,
+    ) {
+        let tracked = Self::get_tracked_projects();
+        for proj in &tracked {
+            warnings.extend(gortex_remove_project_mcp_for_single_agent(exe_str, proj, agent, install_root));
+            if agent == "cursor" {
+                let rule_path = gortex_cursor_rule_path(proj);
+                let _ = remove_gortex_prompt(&rule_path, "");
+            }
+        }
+
+        match agent {
+            "codex" => {
+                if let Err(e) = update_codex_mcp_config_owned("", install_root, true) {
+                    warnings.push(format!("Codex: {}", e));
+                }
+            }
+            "opencode" => {
+                if let Err(e) = update_opencode_mcp_config_owned("", install_root, true) {
+                    warnings.push(format!("OpenCode: {}", e));
+                }
+            }
+            _ => {
+                if let Err(e) = update_json_mcp_config_owned(agent, "", install_root, true) {
+                    warnings.push(format!("{}: {}", agent, e));
+                }
+                if agent == "antigravity" {
+                    let _ = remove_legacy_antigravity_mcp(install_root);
+                }
+            }
+        }
+
+        for p in gortex_prompt_paths(agent) {
+            let _ = remove_gortex_prompt(&p, "");
+        }
+
+        match agent {
+            "claude" => {
+                if let Some(p) = gortex_hook_path("claude") {
+                    let _ = remove_claude_hooks(&p);
+                }
+            }
+            "codex" => {
+                if let Some(p) = gortex_hook_path("codex") {
+                    let _ = remove_codex_hooks(&p);
+                }
+            }
+            "copilot" => {
+                if let Some(p) = gortex_hook_path("copilot") {
+                    let _ = remove_copilot_hooks(&p);
+                }
+            }
+            "opencode" => {
+                if let Some(p) = gortex_hook_path("opencode") {
+                    let _ = remove_opencode_plugin(&p);
+                }
+            }
+            "antigravity" => {
+                if let Some(p) = gortex_hook_path("antigravity") {
+                    let _ = remove_gemini_hooks(&p);
+                }
+            }
+            "gemini" => {
+                if let Some(p) = gortex_hook_path("gemini") {
+                    let _ = remove_gemini_hooks(&p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn register_single_platform_internal(
+        agent: &str,
+        install_root: &Path,
+        exe_str: &str,
+        delegated_prompt: &str,
+        available: &BTreeMap<String, bool>,
+        warnings: &mut Vec<String>,
+    ) {
+        if !available.get(agent).copied().unwrap_or(false) {
+            warnings.push(format!("{} 未检测到可用配置目录，跳过注册", agent));
+            return;
+        }
+
+        // 先检测再移除，再执行注册写入
+        Self::remove_single_platform_internal(agent, install_root, exe_str, warnings);
+
+        match agent {
+            "codex" => {
+                if let Err(e) = update_codex_mcp_config_owned(exe_str, install_root, false) {
+                    warnings.push(format!("Codex MCP: {}", e));
+                }
+            }
+            "opencode" => {
+                if let Err(e) = update_opencode_mcp_config_owned(exe_str, install_root, false) {
+                    warnings.push(format!("OpenCode MCP: {}", e));
+                }
+            }
+            _ => {
+                if let Err(e) = update_json_mcp_config_owned(agent, exe_str, install_root, false) {
+                    warnings.push(format!("{} MCP: {}", agent, e));
+                }
+                if agent == "antigravity" {
+                    let _ = remove_legacy_antigravity_mcp(install_root);
+                }
+            }
+        }
+
+        for p in gortex_prompt_paths(agent) {
+            if let Err(e) = upsert_gortex_prompt(&p, delegated_prompt) {
+                warnings.push(format!("{} 提示词: {}", agent, e));
+            }
+        }
+
+        match agent {
+            "claude" => {
+                if let Some(p) = gortex_hook_path("claude") {
+                    if let Err(e) = upsert_claude_hooks(&p, exe_str) {
+                        warnings.push(format!("Claude Hook: {}", e));
+                    }
+                }
+            }
+            "codex" => {
+                if let Some(p) = gortex_hook_path("codex") {
+                    if let Err(e) = upsert_codex_hooks(&p, exe_str) {
+                        warnings.push(format!("Codex Hook: {}", e));
+                    }
+                }
+            }
+            "copilot" => {
+                if let Some(p) = gortex_hook_path("copilot") {
+                    if let Err(e) = upsert_copilot_hooks(&p, exe_str) {
+                        warnings.push(format!("Copilot Hook: {}", e));
+                    }
+                }
+            }
+            "opencode" => {
+                if let Some(p) = gortex_hook_path("opencode") {
+                    if let Err(e) = upsert_opencode_plugin(&p, exe_str) {
+                        warnings.push(format!("OpenCode Hook: {}", e));
+                    }
+                }
+            }
+            "antigravity" => {
+                if let Some(p) = gortex_hook_path("antigravity") {
+                    if let Err(e) = upsert_gemini_hooks(&p, "antigravity", exe_str) {
+                        warnings.push(format!("Antigravity Hook: {}", e));
+                    }
+                }
+            }
+            "gemini" => {
+                if let Some(p) = gortex_hook_path("gemini") {
+                    if let Err(e) = upsert_gemini_hooks(&p, "gemini", exe_str) {
+                        warnings.push(format!("Gemini Hook: {}", e));
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let tracked = Self::get_tracked_projects();
+        for proj in &tracked {
+            warnings.extend(gortex_register_project_mcp_for_single_agent(
+                proj,
+                agent,
+                exe_str,
+                install_root,
+                Some(available),
+            ));
+            if agent == "cursor" {
+                let rule_path = gortex_cursor_rule_path(proj);
+                if let Err(e) = upsert_gortex_cursor_prompt(&rule_path, delegated_prompt) {
+                    warnings.push(format!("Cursor 项目规则: {}", e));
+                }
+            }
+        }
+    }
+
+    pub fn register_mcp(platform: Option<&str>) -> Result<Vec<String>, String> {
         let exe = Self::get_executable_path();
         let exe_str = exe.to_string_lossy().to_string();
         let install_root = Self::get_install_dir();
@@ -941,99 +1124,51 @@ impl GortexService {
 
         let available = gortex_detected_mcp_agents();
 
-        // 2. Register Codex (.codex/config.toml)
-        if available.get("codex").copied().unwrap_or(false) {
-            if let Err(e) = update_codex_mcp_config_owned(&exe_str, &install_root, false) {
-                warnings.push(format!("Codex MCP: {}", e));
+        if let Some(agent) = platform {
+            let agent_clean = agent.trim().to_lowercase();
+            if !GORTEX_AGENTS.contains(&agent_clean.as_str()) {
+                return Err(format!("未知的平台标识: {}", agent));
             }
-        }
-
-        // 3. Register JSON configs (Claude, Cursor, Copilot, Antigravity, Gemini)
-        for agent in &["claude", "cursor", "copilot", "antigravity", "gemini"] {
-            if available.get(*agent).copied().unwrap_or(false) {
-                if let Err(e) = update_json_mcp_config_owned(agent, &exe_str, &install_root, false) {
-                    warnings.push(format!("{} MCP: {}", agent, e));
+            Self::register_single_platform_internal(
+                &agent_clean,
+                &install_root,
+                &exe_str,
+                &delegated_prompt,
+                &available,
+                &mut warnings,
+            );
+        } else {
+            // 全局注册：先检测哪些平台已有，先移除再注册
+            for agent in GORTEX_AGENTS {
+                if available.get(*agent).copied().unwrap_or(false) {
+                    Self::register_single_platform_internal(
+                        agent,
+                        &install_root,
+                        &exe_str,
+                        &delegated_prompt,
+                        &available,
+                        &mut warnings,
+                    );
                 }
             }
-        }
 
-        // 4. Clean legacy Antigravity
-        let _ = remove_legacy_antigravity_mcp(&install_root);
+            let mut ownership = read_gortex_ownership(&install_root)?;
+            ownership.project_mcp_enabled = true;
+            let _ = write_gortex_ownership(&install_root, &ownership);
 
-        // 5. Register OpenCode
-        if available.get("opencode").copied().unwrap_or(false) {
-            if let Err(e) = update_opencode_mcp_config_owned(&exe_str, &install_root, false) {
-                warnings.push(format!("OpenCode MCP: {}", e));
-            }
-        }
-
-        // 6. Register Prompts (写入外挂引导提示词，精简轻量)
-        for agent in GORTEX_AGENTS {
-            if available.get(*agent).copied().unwrap_or(false) {
-                for p in gortex_prompt_paths(agent) {
-                    if let Err(e) = upsert_gortex_prompt(&p, &delegated_prompt) {
-                        warnings.push(format!("{} 提示词: {}", agent, e));
+            let tracked = Self::get_tracked_projects();
+            for proj in &tracked {
+                warnings.extend(gortex_register_project_mcp_for_project(
+                    proj,
+                    &exe_str,
+                    &install_root,
+                    Some(&available),
+                ));
+                if available.get("cursor").copied().unwrap_or(false) {
+                    let rule_path = gortex_cursor_rule_path(proj);
+                    if let Err(e) = upsert_gortex_cursor_prompt(&rule_path, &delegated_prompt) {
+                        warnings.push(format!("Cursor 项目规则: {}", e));
                     }
-                }
-            }
-        }
-
-        // 7. Register Hooks
-        if available.get("claude").copied().unwrap_or(false) {
-            if let Some(p) = gortex_hook_path("claude") {
-                if let Err(e) = upsert_claude_hooks(&p, &exe_str) {
-                    warnings.push(format!("Claude Hook: {}", e));
-                }
-            }
-        }
-        if available.get("codex").copied().unwrap_or(false) {
-            if let Some(p) = gortex_hook_path("codex") {
-                if let Err(e) = upsert_codex_hooks(&p, &exe_str) {
-                    warnings.push(format!("Codex Hook: {}", e));
-                }
-            }
-        }
-        if available.get("copilot").copied().unwrap_or(false) {
-            if let Some(p) = gortex_hook_path("copilot") {
-                if let Err(e) = upsert_copilot_hooks(&p, &exe_str) {
-                    warnings.push(format!("Copilot Hook: {}", e));
-                }
-            }
-        }
-        if available.get("opencode").copied().unwrap_or(false) {
-            if let Some(p) = gortex_hook_path("opencode") {
-                if let Err(e) = upsert_opencode_plugin(&p, &exe_str) {
-                    warnings.push(format!("OpenCode Hook: {}", e));
-                }
-            }
-        }
-        if available.get("antigravity").copied().unwrap_or(false) {
-            if let Some(p) = gortex_hook_path("antigravity") {
-                if let Err(e) = upsert_gemini_hooks(&p, "antigravity", &exe_str) {
-                    warnings.push(format!("Antigravity Hook: {}", e));
-                }
-            }
-        }
-        if available.get("gemini").copied().unwrap_or(false) {
-            if let Some(p) = gortex_hook_path("gemini") {
-                if let Err(e) = upsert_gemini_hooks(&p, "gemini", &exe_str) {
-                    warnings.push(format!("Gemini Hook: {}", e));
-                }
-            }
-        }
-
-        // 8. Enable project MCP and register for all tracked projects
-        let mut ownership = read_gortex_ownership(&install_root)?;
-        ownership.project_mcp_enabled = true;
-        let _ = write_gortex_ownership(&install_root, &ownership);
-
-        let tracked = Self::get_tracked_projects();
-        for proj in &tracked {
-            warnings.extend(gortex_register_project_mcp_for_project(proj, &exe_str, &install_root, Some(&available)));
-            if available.get("cursor").copied().unwrap_or(false) {
-                let rule_path = gortex_cursor_rule_path(proj);
-                if let Err(e) = upsert_gortex_cursor_prompt(&rule_path, &delegated_prompt) {
-                    warnings.push(format!("Cursor 项目规则: {}", e));
                 }
             }
         }
@@ -1041,71 +1176,41 @@ impl GortexService {
         Ok(warnings)
     }
 
-    pub fn remove_mcp() -> Result<Vec<String>, String> {
+    pub fn remove_mcp(platform: Option<&str>) -> Result<Vec<String>, String> {
         let exe = Self::get_executable_path();
         let exe_str = exe.to_string_lossy().to_string();
         let install_root = Self::get_install_dir();
 
         let mut warnings = Vec::new();
 
-        // 1. Remove project-level MCP from all tracked projects
-        let tracked = Self::get_tracked_projects();
-        for proj in &tracked {
-            warnings.extend(gortex_remove_project_mcp(&exe_str, proj, &install_root));
-            let rule_path = gortex_cursor_rule_path(proj);
-            let _ = remove_gortex_prompt(&rule_path, "");
-        }
-
-        // 2. Remove Codex MCP
-        if let Err(e) = update_codex_mcp_config_owned("", &install_root, true) {
-            warnings.push(format!("Codex: {}", e));
-        }
-
-        // 3. Remove JSON MCPs
-        for agent in &["claude", "cursor", "copilot", "antigravity", "gemini"] {
-            if let Err(e) = update_json_mcp_config_owned(agent, "", &install_root, true) {
-                warnings.push(format!("{}: {}", agent, e));
+        if let Some(agent) = platform {
+            let agent_clean = agent.trim().to_lowercase();
+            if !GORTEX_AGENTS.contains(&agent_clean.as_str()) {
+                return Err(format!("未知的平台标识: {}", agent));
             }
-        }
-        let _ = remove_legacy_antigravity_mcp(&install_root);
-
-        // 4. Remove OpenCode MCP
-        if let Err(e) = update_opencode_mcp_config_owned("", &install_root, true) {
-            warnings.push(format!("OpenCode: {}", e));
-        }
-
-        // 5. Remove Prompts
-        for agent in GORTEX_AGENTS {
-            for p in gortex_prompt_paths(agent) {
-                let _ = remove_gortex_prompt(&p, "");
+            Self::remove_single_platform_internal(&agent_clean, &install_root, &exe_str, &mut warnings);
+        } else {
+            // 全局移除
+            for agent in GORTEX_AGENTS {
+                Self::remove_single_platform_internal(agent, &install_root, &exe_str, &mut warnings);
             }
-        }
 
-        // 6. Remove Hooks
-        if let Some(p) = gortex_hook_path("claude") {
-            let _ = remove_claude_hooks(&p);
-        }
-        if let Some(p) = gortex_hook_path("codex") {
-            let _ = remove_codex_hooks(&p);
-        }
-        if let Some(p) = gortex_hook_path("copilot") {
-            let _ = remove_copilot_hooks(&p);
-        }
-        if let Some(p) = gortex_hook_path("opencode") {
-            let _ = remove_opencode_plugin(&p);
-        }
-        if let Some(p) = gortex_hook_path("antigravity") {
-            let _ = remove_gemini_hooks(&p);
-        }
+            let tracked = Self::get_tracked_projects();
+            for proj in &tracked {
+                warnings.extend(gortex_remove_project_mcp(&exe_str, proj, &install_root));
+                let rule_path = gortex_cursor_rule_path(proj);
+                let _ = remove_gortex_prompt(&rule_path, "");
+            }
 
-        let mut ownership = read_gortex_ownership(&install_root).unwrap_or_default();
-        ownership.project_mcp_enabled = false;
-        let _ = write_gortex_ownership(&install_root, &ownership);
+            let mut ownership = read_gortex_ownership(&install_root).unwrap_or_default();
+            ownership.project_mcp_enabled = false;
+            let _ = write_gortex_ownership(&install_root, &ownership);
 
-        // 7. 物理删除 Gortex 目录下的提示词文档（按文件名强力删除）
-        let prompt_doc = install_root.join("gortex提示词.md");
-        if prompt_doc.is_file() {
-            let _ = fs::remove_file(&prompt_doc);
+            // 全局物理删除 Gortex 目录下的提示词文档
+            let prompt_doc = install_root.join("gortex提示词.md");
+            if prompt_doc.is_file() {
+                let _ = fs::remove_file(&prompt_doc);
+            }
         }
 
         Ok(warnings)
@@ -1309,7 +1414,7 @@ impl GortexService {
         let mut warnings = Vec::new();
 
         // 1. Remove all MCP and hook integrations
-        if let Ok(w) = Self::remove_mcp() {
+        if let Ok(w) = Self::remove_mcp(None) {
             warnings.extend(w);
         }
 

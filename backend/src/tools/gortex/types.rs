@@ -118,6 +118,12 @@ pub struct GortexRuntimeState {
     pub startup_error: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct GortexPlatformActionRequest {
+    #[serde(default)]
+    pub platform: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GortexOperationRequest {
     pub path: String,

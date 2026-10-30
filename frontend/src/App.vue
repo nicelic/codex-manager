@@ -1326,12 +1326,17 @@ function handleGortexVersionChange() {
   }
 }
 
-async function registerGortex() {
+async function registerGortex(platform = null) {
   if (gortexBusy.value || !gortex.managedInstalled) return
   gortex.working = true
   gortex.notice = ''
   try {
-    const response = await fetch('/api/gortex/register', { method: 'POST' })
+    const payload = platform ? { platform } : {}
+    const response = await fetch('/api/gortex/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
     const responseText = await response.text()
     let data = {}
     try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 注册接口返回了无效响应') }
@@ -1388,12 +1393,17 @@ async function runGortexDiagnostics() {
   }
 }
 
-async function removeGortex() {
+async function removeGortex(platform = null) {
   if (gortexBusy.value) return
   gortex.working = true
   gortex.notice = ''
   try {
-    const response = await fetch('/api/gortex/remove', { method: 'POST' })
+    const payload = platform ? { platform } : {}
+    const response = await fetch('/api/gortex/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
     const responseText = await response.text()
     let data = {}
     try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 移除接口返回了无效响应') }
@@ -2541,16 +2551,72 @@ onBeforeUnmount(() => {
           <p class="daemon-meta version-meta">当前版本 {{ gortex.version || '未记录' }}</p>
            <p class="daemon-meta">daemon {{ gortex.managedInstalled ? (gortex.running ? '受管运行中' : (gortex.activationState === 'starting' ? (gortex.startupPhase === 'migrating' ? '受管数据库迁移中' : (gortex.startupPhase === 'opening_store' ? '受管数据校验中' : '受管启动初始化中')) : '受管已停止')) : '未安装受管版本' }}<span v-if="gortex.processId"> · PID {{ gortex.processId }}</span> · Gortex 进程 {{ gortex.anyProcessRunning ? (gortex.unmanagedProcessRunning ? '有外部/旧路径进程' : '有受管 MCP 或 daemon 进程') : '无' }}</p>
           <p class="daemon-meta">PATH 用户 {{ gortex.userPath ? '已配置' : '未配置' }} · 系统 {{ gortex.systemPath ? '已配置' : '未配置' }}</p>
-           <p class="daemon-meta">Codex {{ gortex.codexAvailable ? (gortex.codexConfigured ? (gortex.codexComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.codexPrompt, gortex.codexPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.codexHook, gortex.codexHookComplete) }}</p>
-           <p class="daemon-meta">Claude Code {{ gortex.claudeAvailable ? (gortex.claudeConfigured ? (gortex.claudeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.claudePrompt, gortex.claudePromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.claudeHook, gortex.claudeHookComplete) }}</p>
-          <div class="gortex-platform-list">
-            <p class="daemon-meta">Cursor {{ gortex.cursorAvailable ? (gortex.cursorConfigured ? (gortex.cursorComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 项目规则 {{ gortexArtifactLabel(gortex.cursorPrompt, gortex.cursorPromptComplete) }}</p>
-            <p class="daemon-meta">GitHub Copilot CLI {{ gortex.copilotAvailable ? (gortex.copilotConfigured ? (gortex.copilotComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 提示词 {{ gortexArtifactLabel(gortex.copilotPrompt, gortex.copilotPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.copilotHook, gortex.copilotHookComplete) }}</p>
-            <p class="daemon-meta">OpenCode {{ gortex.openCodeAvailable ? (gortex.openCodeConfigured ? (gortex.openCodeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.openCodePrompt, gortex.openCodePromptComplete) }} · Hook {{ gortex.openCodeAvailable ? (gortex.openCodeHook ? (gortex.openCodeHookComplete ? '插件已注册' : '插件配置残缺') : '插件未注册') : '未检测到' }}</p>
-            <p class="daemon-meta">Google Antigravity {{ gortex.antigravityAvailable ? (gortex.antigravityConfigured ? (gortex.antigravityComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.antigravityPrompt, gortex.antigravityPromptComplete) }} · Hook {{ gortex.antigravityAvailable ? (gortex.antigravityHook ? (gortex.antigravityHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
-            <p class="daemon-meta">Gemini CLI {{ gortex.geminiAvailable ? (gortex.geminiConfigured ? (gortex.geminiComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.geminiPrompt, gortex.geminiPromptComplete) }} · Hook {{ gortex.geminiAvailable ? (gortex.geminiHook ? (gortex.geminiHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
+          <div class="gortex-platform-rows">
+            <div class="gortex-platform-item">
+              <div class="gortex-platform-item-info">
+                <p class="daemon-meta">Codex {{ gortex.codexAvailable ? (gortex.codexConfigured ? (gortex.codexComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.codexPrompt, gortex.codexPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.codexHook, gortex.codexHookComplete) }}<span v-if="gortex.codexTrustRequired || gortex.codexTrustStatus === 'trusted'"> · Hook 信任：{{ gortex.codexTrustStatus === 'trusted' ? '已信任' : '需要在 /hooks 中审核' }}</span></p>
+              </div>
+              <div class="gortex-platform-item-actions">
+                <button v-if="gortex.codexTrustRequired" type="button" :disabled="gortexBusy" @click="trustGortexCodex">信任审核</button>
+                <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.codexAvailable" @click="registerGortex('codex')">注册 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.codexConfigured || gortex.codexPrompt || gortex.codexHook)" @click="removeGortex('codex')">移除 MCP</button>
+              </div>
+            </div>
+            <div class="gortex-platform-item">
+              <div class="gortex-platform-item-info">
+                <p class="daemon-meta">Claude Code {{ gortex.claudeAvailable ? (gortex.claudeConfigured ? (gortex.claudeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.claudePrompt, gortex.claudePromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.claudeHook, gortex.claudeHookComplete) }}</p>
+              </div>
+              <div class="gortex-platform-item-actions">
+                <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.claudeAvailable" @click="registerGortex('claude')">注册 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.claudeConfigured || gortex.claudePrompt || gortex.claudeHook)" @click="removeGortex('claude')">移除 MCP</button>
+              </div>
+            </div>
+            <div class="gortex-platform-item">
+              <div class="gortex-platform-item-info">
+                <p class="daemon-meta">Cursor {{ gortex.cursorAvailable ? (gortex.cursorConfigured ? (gortex.cursorComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 项目规则 {{ gortexArtifactLabel(gortex.cursorPrompt, gortex.cursorPromptComplete) }}</p>
+              </div>
+              <div class="gortex-platform-item-actions">
+                <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.cursorAvailable" @click="registerGortex('cursor')">注册 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.cursorConfigured || gortex.cursorPrompt)" @click="removeGortex('cursor')">移除 MCP</button>
+              </div>
+            </div>
+            <div class="gortex-platform-item">
+              <div class="gortex-platform-item-info">
+                <p class="daemon-meta">GitHub Copilot CLI {{ gortex.copilotAvailable ? (gortex.copilotConfigured ? (gortex.copilotComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 提示词 {{ gortexArtifactLabel(gortex.copilotPrompt, gortex.copilotPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.copilotHook, gortex.copilotHookComplete) }}</p>
+              </div>
+              <div class="gortex-platform-item-actions">
+                <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.copilotAvailable" @click="registerGortex('copilot')">注册 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.copilotConfigured || gortex.copilotPrompt || gortex.copilotHook)" @click="removeGortex('copilot')">移除 MCP</button>
+              </div>
+            </div>
+            <div class="gortex-platform-item">
+              <div class="gortex-platform-item-info">
+                <p class="daemon-meta">OpenCode {{ gortex.openCodeAvailable ? (gortex.openCodeConfigured ? (gortex.openCodeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.openCodePrompt, gortex.openCodePromptComplete) }} · Hook {{ gortex.openCodeAvailable ? (gortex.openCodeHook ? (gortex.openCodeHookComplete ? '插件已注册' : '插件配置残缺') : '插件未注册') : '未检测到' }}</p>
+              </div>
+              <div class="gortex-platform-item-actions">
+                <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.openCodeAvailable" @click="registerGortex('opencode')">注册 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.openCodeConfigured || gortex.openCodePrompt || gortex.openCodeHook)" @click="removeGortex('opencode')">移除 MCP</button>
+              </div>
+            </div>
+            <div class="gortex-platform-item">
+              <div class="gortex-platform-item-info">
+                <p class="daemon-meta">Google Antigravity {{ gortex.antigravityAvailable ? (gortex.antigravityConfigured ? (gortex.antigravityComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.antigravityPrompt, gortex.antigravityPromptComplete) }} · Hook {{ gortex.antigravityAvailable ? (gortex.antigravityHook ? (gortex.antigravityHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
+              </div>
+              <div class="gortex-platform-item-actions">
+                <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.antigravityAvailable" @click="registerGortex('antigravity')">注册 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.antigravityConfigured || gortex.antigravityPrompt || gortex.antigravityHook)" @click="removeGortex('antigravity')">移除 MCP</button>
+              </div>
+            </div>
+            <div class="gortex-platform-item">
+              <div class="gortex-platform-item-info">
+                <p class="daemon-meta">Gemini CLI {{ gortex.geminiAvailable ? (gortex.geminiConfigured ? (gortex.geminiComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.geminiPrompt, gortex.geminiPromptComplete) }} · Hook {{ gortex.geminiAvailable ? (gortex.geminiHook ? (gortex.geminiHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
+              </div>
+              <div class="gortex-platform-item-actions">
+                <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.geminiAvailable" @click="registerGortex('gemini')">注册 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.geminiConfigured || gortex.geminiPrompt || gortex.geminiHook)" @click="removeGortex('gemini')">移除 MCP</button>
+              </div>
+            </div>
           </div>
-          <p v-if="gortex.codexTrustRequired || gortex.codexTrustStatus === 'trusted'" class="daemon-meta">Codex Hook 信任：{{ gortex.codexTrustStatus === 'trusted' ? '已信任' : '需要在 /hooks 中审核' }} <button v-if="gortex.codexTrustRequired" type="button" :disabled="gortexBusy" @click="trustGortexCodex">打开信任审核</button></p>
           <p class="daemon-meta">项目级 MCP {{ gortex.projectMCPEnabled ? '已启用' : '未启用' }} · 已绑定 {{ gortex.projectMCPProjects.length }} 个项目</p>
         </div>
         <div class="llmtrim-install-control">

@@ -316,6 +316,55 @@ pub fn update_project_codex_mcp_config_owned(
     Ok(true)
 }
 
+pub fn gortex_register_project_mcp_for_single_agent(
+    project: &str,
+    agent: &str,
+    executable: &str,
+    install_root: &Path,
+    available: Option<&BTreeMap<String, bool>>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let p = Path::new(project);
+    if !p.is_dir() {
+        return vec![format!("项目级 MCP: 项目目录不存在，已跳过 {}", project)];
+    }
+
+    let is_avail = available
+        .and_then(|a| a.get(agent).copied())
+        .unwrap_or_else(|| gortex_agent_available(agent));
+    if !is_avail {
+        return warnings;
+    }
+
+    let res = match agent {
+        "codex" => update_project_codex_mcp_config_owned(project, executable, install_root, false),
+        "opencode" => update_project_opencode_mcp_config_owned(project, executable, install_root, false),
+        _ => update_project_json_mcp_config_owned(agent, project, executable, install_root, false),
+    };
+    if let Err(e) = res {
+        warnings.push(format!("{} 项目级 MCP: {}", agent, e));
+    }
+    warnings
+}
+
+pub fn gortex_remove_project_mcp_for_single_agent(
+    executable: &str,
+    project: &str,
+    agent: &str,
+    install_root: &Path,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let res = match agent {
+        "codex" => update_project_codex_mcp_config_owned(project, executable, install_root, true),
+        "opencode" => update_project_opencode_mcp_config_owned(project, executable, install_root, true),
+        _ => update_project_json_mcp_config_owned(agent, project, executable, install_root, true),
+    };
+    if let Err(e) = res {
+        warnings.push(format!("{} 项目级 MCP: {}", agent, e));
+    }
+    warnings
+}
+
 pub fn gortex_register_project_mcp_for_project(
     project: &str,
     executable: &str,
@@ -329,21 +378,13 @@ pub fn gortex_register_project_mcp_for_project(
     }
 
     for agent in GORTEX_AGENTS {
-        let is_avail = available
-            .and_then(|a| a.get(*agent).copied())
-            .unwrap_or_else(|| gortex_agent_available(agent));
-        if !is_avail {
-            continue;
-        }
-
-        let res = match *agent {
-            "codex" => update_project_codex_mcp_config_owned(project, executable, install_root, false),
-            "opencode" => update_project_opencode_mcp_config_owned(project, executable, install_root, false),
-            _ => update_project_json_mcp_config_owned(agent, project, executable, install_root, false),
-        };
-        if let Err(e) = res {
-            warnings.push(format!("{} 项目级 MCP: {}", agent, e));
-        }
+        warnings.extend(gortex_register_project_mcp_for_single_agent(
+            project,
+            agent,
+            executable,
+            install_root,
+            available,
+        ));
     }
     warnings
 }
@@ -355,14 +396,12 @@ pub fn gortex_remove_project_mcp(
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     for agent in GORTEX_AGENTS {
-        let res = match *agent {
-            "codex" => update_project_codex_mcp_config_owned(project, executable, install_root, true),
-            "opencode" => update_project_opencode_mcp_config_owned(project, executable, install_root, true),
-            _ => update_project_json_mcp_config_owned(agent, project, executable, install_root, true),
-        };
-        if let Err(e) = res {
-            warnings.push(format!("{} 项目级 MCP: {}", agent, e));
-        }
+        warnings.extend(gortex_remove_project_mcp_for_single_agent(
+            executable,
+            project,
+            agent,
+            install_root,
+        ));
     }
     warnings
 }

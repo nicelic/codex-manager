@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 use crate::state::AppState;
 use super::service::GortexService;
-use super::types::{GortexInstallRequest, GortexTrackRequest};
+use super::types::{GortexInstallRequest, GortexPlatformActionRequest, GortexTrackRequest};
 
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
@@ -94,16 +94,24 @@ pub async fn stop() -> impl IntoResponse {
     }
 }
 
-pub async fn register() -> impl IntoResponse {
-    match GortexService::register_mcp() {
-        Ok(warnings) => (
-            StatusCode::OK,
-            Json(json!({
-                "message": "Gortex 平台集成配置已注册",
-                "warnings": warnings,
-                "success": true
-            })),
-        ),
+pub async fn register(payload: Option<Json<GortexPlatformActionRequest>>) -> impl IntoResponse {
+    let platform = payload.and_then(|p| p.0.platform).filter(|s| !s.trim().is_empty());
+    let platform_ref = platform.as_deref();
+    match GortexService::register_mcp(platform_ref) {
+        Ok(warnings) => {
+            let msg = match platform_ref {
+                Some(p) => format!("Gortex {} 平台集成配置已注册", p),
+                None => "Gortex 平台集成配置已注册".to_string(),
+            };
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "message": msg,
+                    "warnings": warnings,
+                    "success": true
+                })),
+            )
+        }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "message": err, "success": false })),
@@ -111,16 +119,24 @@ pub async fn register() -> impl IntoResponse {
     }
 }
 
-pub async fn remove() -> impl IntoResponse {
-    match GortexService::remove_mcp() {
-        Ok(warnings) => (
-            StatusCode::OK,
-            Json(json!({
-                "message": "Gortex 平台集成配置已安全移除",
-                "warnings": warnings,
-                "success": true
-            })),
-        ),
+pub async fn remove(payload: Option<Json<GortexPlatformActionRequest>>) -> impl IntoResponse {
+    let platform = payload.and_then(|p| p.0.platform).filter(|s| !s.trim().is_empty());
+    let platform_ref = platform.as_deref();
+    match GortexService::remove_mcp(platform_ref) {
+        Ok(warnings) => {
+            let msg = match platform_ref {
+                Some(p) => format!("Gortex {} 平台集成配置已安全移除", p),
+                None => "Gortex 平台集成配置已安全移除".to_string(),
+            };
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "message": msg,
+                    "warnings": warnings,
+                    "success": true
+                })),
+            )
+        }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "message": err, "success": false })),
