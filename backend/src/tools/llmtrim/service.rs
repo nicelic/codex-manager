@@ -22,7 +22,7 @@ use super::windows::{
     remove_llmtrim_user_trust, verify_llmtrim_windows_setup,
 };
 use crate::common::process::{
-    find_process_id, is_process_running, kill_process_by_name,
+    find_process_id, kill_process_by_name,
 };
 use crate::common::windows::{get_user_profile_dir, open_log_viewer};
 
@@ -152,13 +152,13 @@ impl LlmtrimService {
         let directory_exists = install_dir.is_dir();
         let state_dir_exists = state_dir.is_dir();
 
-        let proc_running = is_process_running(LLMTRIM_EXECUTABLE_NAME);
-        let port_listening = Self::is_port_open();
         let pid = find_process_id(LLMTRIM_EXECUTABLE_NAME).unwrap_or(0);
-        let running = (proc_running || pid != 0) && port_listening;
+        let proc_running = pid != 0;
+        let port_listening = Self::is_port_open();
+        let running = proc_running && port_listening;
 
-        let tray_running = is_process_running(LLMTRIM_TRAY_EXECUTABLE_NAME);
         let tray_pid = find_process_id(LLMTRIM_TRAY_EXECUTABLE_NAME).unwrap_or(0);
+        let tray_running = tray_pid != 0;
 
         let (state, state_read_err) = match read_managed_tool_state(&install_dir) {
             Ok(s) => (s, false),

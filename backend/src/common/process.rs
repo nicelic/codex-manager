@@ -14,6 +14,73 @@ pub fn new_silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process
     cmd
 }
 
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+static PROCESS_CACHE: Mutex<Option<(Instant, Vec<(String, u32)>)>> = Mutex::new(None);
+
+pub fn invalidate_process_cache() {
+    if let Ok(mut guard) = PROCESS_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+fn fetch_all_processes_snapshot() -> Vec<(String, u32)> {
+    let mut list = Vec::new();
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+            return list;
+        }
+
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                list.push((exe_name, entry.th32ProcessID));
+
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+
+        CloseHandle(snapshot);
+    }
+    list
+}
+
+pub fn get_running_processes_cached() -> Vec<(String, u32)> {
+    let now = Instant::now();
+    if let Ok(guard) = PROCESS_CACHE.lock() {
+        if let Some((ts, ref list)) = *guard {
+            if now.duration_since(ts) < Duration::from_millis(1500) {
+                return list.clone();
+            }
+        }
+    }
+
+    let list = fetch_all_processes_snapshot();
+    if let Ok(mut guard) = PROCESS_CACHE.lock() {
+        *guard = Some((now, list.clone()));
+    }
+    list
+}
+
 fn matches_process_name(exe_name: &str, target: &str) -> bool {
     if exe_name.eq_ignore_ascii_case(target) {
         return true;
@@ -36,85 +103,22 @@ pub fn is_process_running(name: &str) -> bool {
 }
 
 pub fn find_process_id(name: &str) -> Option<u32> {
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-            TH32CS_SNAPPROCESS,
-        };
-
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
-            return None;
+    let list = get_running_processes_cached();
+    for (exe_name, pid) in list {
+        if matches_process_name(&exe_name, name) {
+            return Some(pid);
         }
-
-        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                let len = entry
-                    .szExeFile
-                    .iter()
-                    .position(|&c| c == 0)
-                    .unwrap_or(entry.szExeFile.len());
-                let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
-
-                if matches_process_name(&exe_name, name) {
-                    CloseHandle(snapshot);
-                    return Some(entry.th32ProcessID);
-                }
-
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
-        }
-
-        CloseHandle(snapshot);
     }
     None
 }
 
 pub fn find_all_process_ids(name: &str) -> Vec<u32> {
+    let list = get_running_processes_cached();
     let mut pids = Vec::new();
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-            TH32CS_SNAPPROCESS,
-        };
-
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
-            return pids;
+    for (exe_name, pid) in list {
+        if matches_process_name(&exe_name, name) {
+            pids.push(pid);
         }
-
-        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                let len = entry
-                    .szExeFile
-                    .iter()
-                    .position(|&c| c == 0)
-                    .unwrap_or(entry.szExeFile.len());
-                let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]);
-
-                if matches_process_name(&exe_name, name) {
-                    pids.push(entry.th32ProcessID);
-                }
-
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
-        }
-
-        CloseHandle(snapshot);
     }
     pids
 }
@@ -191,13 +195,18 @@ pub fn kill_process_by_pid(pid: u32) -> bool {
         // 3. 等待并确认进程已彻底销毁（最多 500ms）
         for _ in 0..10 {
             if !is_pid_alive(pid) {
+                invalidate_process_cache();
                 return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
-    !is_pid_alive(pid)
+    let dead = !is_pid_alive(pid);
+    if dead {
+        invalidate_process_cache();
+    }
+    dead
 }
 
 pub fn kill_process_by_name(name: &str) -> bool {

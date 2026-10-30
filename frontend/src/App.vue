@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
-const statusPollInterval = 1000
+const statusPollInterval = 3000
 const managementWebSocketConnectTimeout = 2500
 const llmtrimCommandTimeout = 50000
 let statusPollTimer = 0
@@ -150,6 +150,20 @@ const isGortexTracking = computed(() => {
   if (gortex.activeTask && gortex.activeTask.action === 'track') return true
   return Boolean(gortex.working && gortexProjectPath.value)
 })
+
+function arraysEqual(a, b) {
+  if (a === b) return true
+  if (!Array.isArray(a) || !Array.isArray(b)) return false
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (typeof a[i] === 'object' && a[i] !== null && typeof b[i] === 'object' && b[i] !== null) {
+      if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) return false
+    } else if (a[i] !== b[i]) {
+      return false
+    }
+  }
+  return true
+}
 
 function cleanPathDisplay(p) {
   if (!p) return ''
@@ -549,7 +563,10 @@ function applyRTKStatus(data, { silent = false } = {}) {
   rtk.activationState = data.activation_state || 'not_installed'
 	rtk.blockedBy = data.blocked_by || ''
 	rtk.trustNotice = data.trust_notice || ''
-	rtk.modifiedAgents = Array.isArray(data.modified_agents) ? data.modified_agents : []
+  const incomingModified = Array.isArray(data.modified_agents) ? data.modified_agents : []
+  if (!arraysEqual(rtk.modifiedAgents, incomingModified)) {
+    rtk.modifiedAgents = incomingModified
+  }
 	rtk.loading = false
 	if (!silent && data.message) rtkNotice.value = data.message
 }
@@ -570,10 +587,19 @@ function applySnipStatus(data, { silent = false } = {}) {
   snip.trustStatus = data.trust_status || 'not_applicable'
   snip.trustCommand = data.trust_command || ''
   snip.trustRequired = Boolean(data.trust_required)
-  snip.trustSteps = Array.isArray(data.trust_steps) ? data.trust_steps : []
+  const incomingSteps = Array.isArray(data.trust_steps) ? data.trust_steps : []
+  if (!arraysEqual(snip.trustSteps, incomingSteps)) {
+    snip.trustSteps = incomingSteps
+  }
 	snip.trustShellOpen = Boolean(data.trust_shell_open)
-	snip.modifiedAgents = Array.isArray(data.modified_agents) ? data.modified_agents : []
-	snip.agents = Array.isArray(data.agents) ? data.agents : []
+  const incomingModified = Array.isArray(data.modified_agents) ? data.modified_agents : []
+  if (!arraysEqual(snip.modifiedAgents, incomingModified)) {
+    snip.modifiedAgents = incomingModified
+  }
+  const incomingAgents = Array.isArray(data.agents) ? data.agents : []
+  if (!arraysEqual(snip.agents, incomingAgents)) {
+    snip.agents = incomingAgents
+  }
 	snip.loading = false
 	if (!silent && data.message) snipNotice.value = data.message
 }
@@ -647,9 +673,15 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.codexTrustRequired = Boolean(data.codex_trust_required)
   gortex.codexTrustNotice = data.codex_trust_notice || ''
   gortex.codexTrustSteps = Array.isArray(data.codex_trust_steps) ? data.codex_trust_steps : []
-  gortex.trackedProjects = (Array.isArray(data.tracked_projects) ? data.tracked_projects : []).map(cleanPathDisplay)
+  const incomingTracked = (Array.isArray(data.tracked_projects) ? data.tracked_projects : []).map(cleanPathDisplay)
+  if (!arraysEqual(gortex.trackedProjects, incomingTracked)) {
+    gortex.trackedProjects = incomingTracked
+  }
   gortex.projectMCPEnabled = Boolean(data.project_mcp_enabled)
-  gortex.projectMCPProjects = (Array.isArray(data.project_mcp_projects) ? data.project_mcp_projects : []).map(cleanPathDisplay)
+  const incomingMcpProjects = (Array.isArray(data.project_mcp_projects) ? data.project_mcp_projects : []).map(cleanPathDisplay)
+  if (!arraysEqual(gortex.projectMCPProjects, incomingMcpProjects)) {
+    gortex.projectMCPProjects = incomingMcpProjects
+  }
   gortex.defaultProject = cleanPathDisplay(data.default_project || '')
   if (data.active_task && data.active_task.path) {
     gortex.activeTask = { ...data.active_task, path: cleanPathDisplay(data.active_task.path) }
@@ -668,7 +700,10 @@ function applyGortexStatus(data, { silent = false } = {}) {
 function applyManagementStatusEvent(event) {
   if (!event || event.type !== 'status') return
   online.value = true
-  checkedAt.value = new Date().toLocaleTimeString()
+  if (event.timestamp) {
+    const formatted = new Date(event.timestamp).toLocaleTimeString()
+    if (checkedAt.value !== formatted) checkedAt.value = formatted
+  }
   if (event.proxy) applyProxyStatus(event.proxy, { silent: true })
   if (event.logs) applyLogStatus(logViewer, logNotice, event.logs, { silent: true })
   if (event.llmtrim_logs) applyLogStatus(llmtrimLogViewer, llmtrimLogNotice, event.llmtrim_logs, { silent: true })

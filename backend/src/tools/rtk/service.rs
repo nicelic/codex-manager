@@ -129,8 +129,7 @@ impl RtkService {
         let cursor_configured = query_cursor_configured(&exe_path);
 
         // 互斥冲突检查
-        let snip_status = SnipService::get_status();
-        let snip_running = snip_status.running;
+        let snip_running = SnipService::is_active();
 
         let mut activation_state = "not_installed".to_string();
         let mut blocked_by = String::new();

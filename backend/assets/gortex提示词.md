@@ -326,37 +326,165 @@ forget_checkout({
 
 ## 一、 最高检索准则与硬性门禁 (Search Hub)
 
-### 1. 【代码位置未知双轨判定心智】（Dual-Track Location Mandates）
+### 0. 检索中枢双核自适应架构全景导图 (Scout-and-Radar Architecture)
 
-当用户提出需求且未提供具体文件路径时，模型严禁凭借语言惯性盲目调用 `search.text`，**必须强制执行【代码物理字面量判据】（Literal Existence Criterion）进行场景裁决**：
+#### 导图 1：编译系统眼中的“二元宇宙”本质分类与工具映射全景图 (Code Data Literal vs AST Symbol Node)
+```text
+                                全球任意字符集 (UTF-8)
+                                         │
+            ┌────────────────────────────┴────────────────────────────┐
+            ▼                                                         ▼
+【宇宙的第一半：数据值与字面量 (Data & Literal)】         【宇宙的第二半：语法树结构符号 (AST Symbol Node)】
+  (物理字符序列 / 被程序操作的数据对象)                     (代码的骨架与骨骼 / 程序的执行实体)
+  ──────────────────────────────────────────               ───────────────────────────────────
+  1. 字符串字面量 (引号内一切文本):                         1. 语法声明标识符 (Declaration Identifiers):
+     - 日语: "ウェブページを開く"                             - 函数/方法名: fn handle_tray_open(), pub fn wnd_proc()
+     - 德语: "Verbindung fehlgeschlagen"                     - 结构体/类: struct CertPushPayload, class ProxyHandler
+     - 英文: "Failed to read request body"                   - 接口/特征: trait ConnectionPool, interface Session
+     - 中文: "打开网页"、"读取请求体失败"                     - 枚举/类型: enum NetworkProtocol, type HandlerFunc
+  2. 运行日志、报错、异常格式化模板字符串                   2. 模块与命名空间 (Modules & Namespaces):
+  3. 配置项常量、环境变量键名、UUID、十六进制错误码           - package, module, crate, namespace
+  4. 行内注释与多行文档说明内容                             3. 图谱拓扑指标 (Graph Centrality):
+     - 不具备 AST 语法节点身份，仅为文件物理字符流            - 拥有扇入 (fan-in)、扇出 (fan-out)、调用度、PageRank
+            │                                                         │
+            ▼                                                         ▼
+  唯一抓取工具: search.text (物理 Trigram 探针)              唯一抓取工具: search.winnow (拓扑剪枝雷达)
+  (不管何种自然语言，原样字符流精确匹配抓行号)               (严禁传自然语言长句！归一化为代码实体词元扫中枢)
+```
 
-* **状态机决策流**：
-  * 需求含屏幕可见文案/标签/中文报错 $\rightarrow$ **【轨道 A：search.text】**（保留中文原词，严禁翻译）
-  * 需求含底层机制/算法/动作动词 $\rightarrow$ **【轨道 B：search.winnow】**（提炼英文特征词，严禁搜中文）
+#### 导图 2：全语种中立“双核并发双探 + 拓扑升格硬锁”全生命周期状态机 (Universal Dual-Probe & Anti-Shortcut Escalation Lifecycle)
+```text
+                  用户输入自然语言需求 / 业务口水话 (包含 1~N 个关键词，任意语种/缩写/错误码)
+                                                    │
+                                                    ▼
+      ┌─────────────────────────────────────────────────────────────────────────────┐
+      │   【全语种自然语言特征降维形态解构三步法】                                    │
+      │   1. 剔除无信息量泛词与虚词 (页面/操作/功能/page/action/view/的/for/to)        │
+      │   2. 提炼物理字面量候选 (引号文本/文案标签/报错日志/错误码，保留原样字符流)      │
+      │   3. 归一化代码符号实体词元 (映射为标识符命名惯例的【实体+动作】紧凑词元)         │
+      └─────────────────────────────────────────────────────────────────────────────┘
+                                                    │
+                                                    ▼
+      ┌─────────────────────────────────────────────────────────────────────────────┐
+      │   【第 1 轮：B 战术 —— 单轮多维并发双探 (Turn-1 Concurrent Dual-Probe)】        │
+      │   同时下发 2 个调用 (同轮返回，0 轮次额外时延，< 15KB 安全内存防爆):              │
+      │   1. search.text(query="原样字面量", output:{format:"gcx"})                   │
+      │   2. search.winnow(query="实体 动作", options:{min_fan_in:2}, output:{...})   │
+      └─────────────────────────────────────────────────────────────────────────────┘
+                                                    │
+                                                    ▼
+      ┌─────────────────────────────────────────────────────────────────────────────┐
+      │   【核验与裁决网关：A 战略 —— 防偷懒拓扑升格硬门禁】                            │
+      └─────────────────────────────────────────────────────────────────────────────┘
+                                                    │
+       ┌────────────────────┬───────────────────────┴───────────────────────┬───────────────────┐
+       ▼                    ▼                                               ▼                   ▼
+【分支 1: 双命中/完美收敛】 【分支 2: ST 命中，SW 猜偏/未中】               【分支 3: 纯机制无字面量】 【分支 4: 双 0 命中降级】
+ST 锁定了物理代码行        ST 找到了具体代码 (如 wnd_proc)，              代码中绝无特定字符串字面量 ST 与 SW 首轮均无果
+SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中                 ST 命中为 0 (符合预期)    │
+       │                    │ (命中代码，但致命缺失架构拓扑！)             SW 精准命中 AST 骨架中枢  │ (启动自愈降级阶梯)
+       │                    ▼                                               │                   ▼
+       │             【A 宪法绝对硬性拦截 (Hard Block)】                    │            1. SW 解除扇入门槛:
+       │             ⚠️ 严禁直接发起 read.file！严禁直接进入 edit.batch！   │               min_fan_in: 0 覆盖叶子
+       │             (严惩短路盲改，杜绝退化为人肉 grep 脏写破坏上下游)     │            2. ST 缩短短语重试:
+       │                    │                                               │               拆分为单一核心词
+       │                    ▼                                               │                   │
+       │             【穿透提取外层真实 AST 声明符号】                      │                   │
+       │             从 ST 物理行穿透提取包裹该行的外层函数名/结构体名      │                   │
+       │             (如 wnd_proc / forward_handler / CertManager)          │                   │
+       │                    │                                               │                   │
+       │                    ▼                                               │                   │
+       │             【第 2 轮：定向 search.winnow 升格】                   │                   │
+       │             search.winnow(query="真实符号名", min_fan_in:0)        │                   │
+       │             (100% 获取扇入/扇出依赖定界与波及面评估)               │                   │
+       │                    │                                               │                   │
+       └────────────────────┼───────────────────────────────────────────────┴───────────────────┘
+                            │
+                            ▼
+              【合法进入源码精读与批量修改阶段】
+               禁止全文件盲读！严格按需执行精读闭环：
+               - AST 符号精读: read.symbols(symbols: ["id1", "id2"]) (严禁 gcx)
+               - 局部拓扑装配: read.editing_context(target: {file:"..."}, options:{keep:"..."})
+                            │
+                            ▼
+              【唯一法定落地修改: edit.batch 单轮批量提交】
+```
 
-#### 判据一：代码中存在物理中文字面量 $\rightarrow$ 强制执行【轨道 A】
-* **判定特征**：用户提到**界面可见文字**（如“多路复用”、“自动重连”）、**按钮与表单标签**（如“保存配置”、“节点列表”）、**国际化文案**或**确切的中文报错提示语**；
-* **唯一法定动作**：**严禁翻译为英文！必须保留中文原词！** 必须且仅能调用 `search(operation="text")`；
-* **执行机理**：UI 模板与语言包直接存储中文原文字面量，`winnow` 仅索引 AST 无法检索纯文本；中文原词信噪比极高（命中 1~3 处，<1KB），可精准锚定前端组件。
-* **UI 牵引后台穿透契约（UI-to-Backend Reverse Tracing）**：
-  * 若任务最终涉及修改后台逻辑，**第一步必须调用 `search.text` 检索中文 UI 文案**；
-  * 在命中的前端组件代码中，**直接读取绑定的真实英文变量名、字段名或接口名**（例如在 `<el-switch v-model="form.smux" />` 中查明真实字段为 `smux`）；
-  * **第二步**以该真实代码标识符为线索，发起后台检索，**严禁模型自行盲猜英文翻译**。
+#### 导图 3：检索中枢与“查-读-析-写-验”全生命周期握手流水线 (Full-Lifecycle Pipeline Handshake)
+```text
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│         检索中枢与“查-读-析-写-验”全生命周期握手流水线 (Full-Lifecycle Pipeline)  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+                                         │
+    ┌────────────────────────────────────┴────────────────────────────────────┐
+    ▼                                                                         ▼
+【第一阶段：查 (Search Hub)】                                               【第二阶段：读 (Read Hub)】
+ 1. 首动并发: search.text + search.winnow (format: "gcx")                    1. 严禁 gcx 格式 (保全 callers/callees 上下文)
+ 2. 拓扑升格: 穿透真实符号名定向 winnow 补齐拓扑                            2. 严禁 read.file 全量盲读 (>150行必开存根化)
+ 3. 产出物: 确定性候选 AST 符号 ID 数组 (2 ~ 4 个) ──────────► 握手交接 ─────► 3. 批量精读: read.symbols(symbols: 2~4个)
+                                                                              4. 局部拓扑: read.editing_context(keep)
+                                                                                        │
+    ┌───────────────────────────────────────────────────────────────────────────────────┘
+    ▼
+【第三阶段：析 (Analyze/Trace Hub)】
+ 1. 深度依赖追踪: relations(operation="usages"|"dependents", target:{symbol:"id"})
+ 2. 路径定界: trace(operation="path", target:{symbol:"src"}, to:{symbol:"dst"})
+ 3. 架构守护: 严禁人工盲猜调用链，单次查清全闭包
+    │
+    ▼
+【第四阶段：写 (Edit Hub)】
+ 1. 唯一默认法定入口: edit(operation="batch", changes:[...], dry_run:false, options:{physical_evidence:true})
+ 2. 单任务全生命周期原则上仅允许 1 次批量写交互，严禁切香肠式碎片轮询
+    │
+    ▼
+【第五阶段：验 (Change Hub & Verification)】
+ 1. 凭据核验: change(operation="receipt") 确认变更真实入库 (mutation_status)
+ 2. 并发验证: change.tests / change.guards 聚合变动符号并发定位单测与架构守卫
+ 3. 真实运行: 宿主测试命令闭环 (cargo test / go test / npm test)
+```
 
-#### 判据二：代码中绝无中文字面量 $\rightarrow$ 强制执行【轨道 B】
-* **判定特征**：用户描述**纯后台逻辑、网络协议、驱动算法、无界面行为或动作动词**（例如：“握手超时未退出”、“重试增加指数退避”、“断开连接未释放内存”、“心跳保活检测”）；
-* **唯一法定动作**：**必须且仅能调用 `search(operation="winnow")` 拓扑剪枝检索**；
-* **自然语言提取契约（Keyword Extraction）**：
-  * 后端源码使用英文编写，**严禁将整句中文自然语言或中文动词直接传入 `query`**（中文长句会被 BM25 虚词稀释导致查无结果）；
-  * 模型必须将需求归一化，提炼出 1 ~ 2 个代码实体核心特征词（英文标识符或领域术语，如 `handshake`、`timeout`、`retry`、`backoff`、`heartbeat`）传入 `query`。
+---
 
-#### 判据三：反向硬性禁令（Negative Constraints）
-* **严禁对“动词短语、业务动作、底层机制描述”调用 `search.text` 搜索中文**（例如：严禁执行 `search.text(query="握手超时")` 或 `search.text(query="断开连接")`，此类搜索在后端代码库中命中数必为 0，属于严重违规）；
-* **严禁对“UI 界面固定文字”脑补翻译英文执行 `search.winnow`**（例如：界面文案叫“多路复用”，严禁脑补 `query="multiplex"` 走 winnow，这会导致错失前端组件并产生命名偏差）。
+### 1. 【全语种中立双核自适应检索与拓扑升格硬门禁】（Universal Dual-Probe & Anti-Shortcut Escalation Mandates）
 
-#### 判据四：混合场景并发收敛契约（Hybrid Concurrency Mandate）
-* **判定特征**：需求同时包含界面控件与后台行为（例如：“把界面上那个【多路复用】关掉的时候，后台连接没有真正断开”）；
-* **唯一法定动作**：**强制触发单轮并发模式 A**，前端使用 `search.text` 搜中文抓组件，后台使用 `search.winnow` 搜英文抓连接中枢，单轮同时下发。
+当用户提出需求且未提供具体文件路径时，模型严禁凭借语言惯性盲目进行单入单出的切香肠式搜索，**必须强制执行【全语种中立双核自适应检索（Dual-Probe）】与【拓扑升格硬锁（Escalation Lock）】**：
+
+#### 准则一：【全语种口水话特征降维与形态解构法则】（Universal Prose Dissection）
+不管用户使用何种人类自然语言（中文、英文、日文、德文、口语俚语、缩写或十六进制错误码），模型必须执行**三步形态解构**：
+1. **剔除自然语言结构泛词与连接虚词**：
+   丢弃任何语言中的空洞结构词（如 `页面/page/view/画面`、`操作/operation/action/処理`、`功能/function/feature`、`查看/show`、`的/of/for/to/in` 等），此类词元放入 query 只会稀释权重并引入巨大噪声；
+2. **提取物理字面量候选（Physical String Literal Probe）**：
+   捕获需求中带引号的内容、屏幕标签、菜单文字、错误日志短语、机器错误码（例如 `"打开网页"`、`"Open Webpage"`、`"Failed to read request body"`、`"0xC0000005"`、`"AUTH_TOKEN_EXPIRED"`），按**原样字符序列（Exact Characters）保留**，作为 `search.text` 的精准物理探针；
+3. **归一化语法符号词元（AST Identifier Tokens）**：
+   将需求背后的业务本质抽象为编程语言命名惯例的【核心实体 + 控制动作】紧凑词元（例如 `tray web`、`cert push`、`proxy body`、`crash handler`），作为 `search.winnow` 的拓扑雷达输入。
+
+#### 准则二：【严禁向 Winnow 输入自然语言散文长句】（Absolute Ban on Natural Language Prose in Winnow）
+* **编译器级底层根因**：
+  Tree-sitter / AST 语法解析器仅为语法声明节点（函数名、类型名、接口名、枚举名）建立索引。代码中出现的所有自然语言散文（无论中、英、日、德）在 AST 中统一被视作 `string_literal` 数据值节点，**AST 符号索引表中绝无自然语言句子**；
+* **硬性红线禁令**：
+  **严禁向 `search.winnow` 传入 3 个单词以上的自然语言句子、连续短语、口水话或错误日志全句！**
+  - 违规反例（严禁）：`search.winnow(query="failed to read request body")`、`query="how to open webpage in tray"`
+  - 合规正例（法定）：`search.winnow(query="proxy body")`、`query="tray web"`
+* **法定形态**：`search.winnow` 的 query **必须且仅能由 1 ~ 2 个代码实体命名词元（Domain Entity / Action Tokens）构成**。
+
+#### 准则三：【首动单轮并发双探铁律】（Turn-1 Concurrent Dual-Probe Mandate）
+面对任何包含具体文案、标签、日志、报错或多关键词的业务需求，**第一动作强制在单轮对话中并发下发双通道检索，严禁单步往返轮询**：
+* **探针通道（search.text）**：以提取的原样字面量字符作为 `query`，显式添加 `output: {format: "gcx"}`，负责物理磁盘文件扫描，毫秒级锁定文件具体行号；
+* **雷达通道（search.winnow）**：以归一化的紧凑实体词元作为 `query`，显式添加 `options: {min_fan_in: 2, limit: 15}` 与 `output: {format: "gcx"}`，负责扫描 AST 语法树，锁定核心中枢控制器与数据结构。
+* **时延与预算双赢**：两通道在第 1 轮同批下发、同批返回，0 额外轮次开销，单轮响应体积严格控制在 10KB ~ 15KB 安全线内。
+
+#### 准则四：【防短路拓扑升格绝对死锁】（Anti-Shortcut Escalation Hard Lock）
+大模型天生具有“文本贪婪短路偏好（Grep Bias）”，一旦 `search.text` 抓到了物理行号，极易自作聪明跳过架构分析直接盲目修改代码。为此设立最高不可逾越的硬性死锁：
+* **绝对禁令**：**严禁在仅获得 `search.text` 的行号结果后，直接对目标文件发起 `read.file` 精读或直接进入 `edit.batch` 落地修改！违者直接判定为高危违规脏写！**
+* **拓扑升格门禁**：
+  * 若首轮并发中 `search.winnow` 成功命中了对应模块中枢，拓扑已完备，准许进入精读；
+  * 若首轮 `search.winnow` 因词元猜测偏差未命中目标，模型**必须且仅能从 `search.text` 命中的物理行中穿透提取外层真实 AST 声明符号**（即包裹该行的函数名、结构体名、接口名，例如提取出 `wnd_proc`、`forward_handler`、`CertificatePushRequest`）；
+  * **强制发起第二轮定向拓扑定界**：`search.winnow(query="真实符号名", options:{min_fan_in:0})`，获取该符号在图谱中的扇入扇出、调用度与中枢权重。拿到拓扑凭据后，方可合法进入 `read.symbols` 与后续写闭环！
+
+#### 准则五：【物理数据值 vs 语法树符号本质分工】（Literal Value vs AST Symbol Division）
+* **宇宙二元法则**：
+  * 寻找任何出现在双引号内的字符串、国际化资源、日志模板、UI 菜单、报错常量、配置键名、错误码十六进制 $\rightarrow$ **必须且仅能由 `search.text` 捕获**；
+  * 寻找函数、结构体、类、接口等语法声明与拓扑中枢 $\rightarrow$ **必须且仅能由 `search.winnow` 裁决**。
 
 ---
 
@@ -401,69 +529,80 @@ forget_checkout({
 
 模型面对定位诉求，必须严格匹配触发条件执行唯一对应操作，严禁主观自由裁量：
 
-| 触发场景 (Trigger) | 源码中是否有中文？ | 唯一法定操作 (Action) | 核心必填参数与规则 |
-| :--- | :---: | :--- | :--- |
-| **UI 界面文案 / 按钮标签 / 中文报错** | **必有** | `search(operation="text")` | `query: "中文原词"`（严禁翻译）, `options: {path: "Project-A", limit: 20}`, `output: {format: "gcx"}` |
-| **纯后台逻辑 / 协议算法 / 动作机制** | **绝无** | `search(operation="winnow")` | `query: "英文特征词"`（严禁中文）, `options: {min_fan_in: 2, limit: 20, path: "Project-A"}`, `output: {format: "gcx"}` |
-| **已知类型/结构体/函数名，查找定义点** | **绝无** | `search(operation="symbols")` | `query: "符号名"`, `options: {assist: "off", path: "Project-A"}`, `output: {format: "gcx"}` |
-| **查找配置Key / 错误码常量 / 环境变量** | 视配置而定 | `search(operation="text")` | `query: "字面量"`, `options: {path: "Project-A", limit: 25, fields: "path,line,text"}`, `output: {format: "gcx"}` |
-| **查找语法调用模式 / 结构级写法** | **绝无** | `search(operation="ast")` | `query: "S表达式"`, `options: {language: "rust", path: "Project-A"}`, `output: {format: "gcx"}` |
-| **查找物理文件路径 / 特定扩展名** | 视文件而定 | `search(operation="files")` | `query: "文件名"`, `options: {glob: "*.rs", path: "Project-A"}`, `output: {format: "gcx"}` |
+| 优先级位阶 | 触发场景 (Trigger) | 唯一法定操作 (Action) | 核心必填参数与规则 |
+| :---: | :--- | :--- | :--- |
+| **P0 (双核首发)** | **任意自然语言口水话 / 多关键词需求 (含可见文案/报错/菜单)** | **强制单轮并发**：<br>1. `search.text` (搜原样物理字面量)<br>2. `search.winnow` (搜归一化实体词元) | 并发 1: `query: "原样字面量"`, `options: {limit: 15, fields: "path,line,text"}`, `output: {format: "gcx"}`<br>并发 2: `query: "实体 动作词元"`, `options: {min_fan_in: 2, limit: 15}`, `output: {format: "gcx"}` |
+| **P0 (拓扑中枢)** | **纯抽象业务逻辑 / 协议算法 / 底层机制 (代码中绝无特定字符串字面量)** | `search(operation="winnow")` | `query: "代码实体词元"`, `options: {min_fan_in: 2, limit: 20}`, `output: {format: "gcx"}` |
+| **P1 (拓扑升格)** | **`search.text` 命中物理行后，强制穿透外层符号定界** | `search(operation="winnow")` | `query: "外层真实声明符号名"`, `options: {min_fan_in: 0, limit: 20}`, `output: {format: "gcx"}` |
+| **P2 (字面探针)** | **确切的错误日志、异常格式化模板、托盘菜单名、十六进制错误码、配置 Key** | `search(operation="text")` | `query: "原样字面量"`, `options: {limit: 20, fields: "path,line,text"}`, `output: {format: "gcx"}` |
+| **P3 (符号定义)** | **已知具体类型/结构体/函数全名，查找单一定义点** | `search(operation="symbols")` | `query: "精确符号名"`, `options: {assist: "off", limit: 20}`, `output: {format: "gcx"}` |
+| **P4 (语法模式)** | **查找语法调用模式 / 结构级写法 (AST Pattern)** | `search(operation="ast")` | `query: "S表达式"`, `options: {language: "rust", limit: 20}`, `output: {format: "gcx"}` |
+| **P5 (文件路径)** | **查找物理文件路径 / 特定扩展名** | `search(operation="files")` | `query: "文件名"`, `options: {glob: "*.rs", limit: 20}`, `output: {format: "gcx"}` |
 
 ---
 
-## 三、 零命中确定性降级状态机 (Zero-Hit Fallback Protocol)
+## 三、 零命中确定性降级与升格状态机 (Fallback & Escalation Protocol)
 
-当执行检索出现 0 条匹配结果时，必须严格按照以下三级阶梯执行降级，严禁停止流程或凭空臆测：
+当执行检索出现 0 条匹配结果或未完全收敛时，必须严格按照以下状态机执行，严禁停止流程或凭空臆测：
 
-* **UI 文案零命中降级阶梯**：
-  * Level 1: `search.text(query="中文原词", options:{limit:20}, output:{format:"gcx"})`
-  * Level 2 (0结果): 拆分为更短核心词重试（如 "启用多路复用" $\rightarrow$ "多路复用"）
-  * Level 3 (仍无果): 调用 `search.files` 查找相关 view/component 文件直接研读
-* **后台逻辑零命中降级阶梯**：
-  * Level 1: `search.winnow(query="英文特征词", options:{min_fan_in:2, limit:20}, output:{format:"gcx"})`
-  * Level 2 (0结果): 解除依赖门槛，执行 `search.winnow(options:{min_fan_in:0, limit:20}, output:{format:"gcx"})`
-  * Level 3 (仍无果): 单轮并发执行 `search.symbols`（查定义）与 `search.text`（搜字面量）
+* **通道 1：首轮并发后 `winnow` 未收敛降级阶梯**：
+  * Level 1 (ST 命中物理行，SW 结果为空或偏离): **触发 A 宪法升格硬锁**！严禁读写代码，穿透提取 ST 外层真实符号名（如 `wnd_proc` / `forward_handler`），执行定向 `search.winnow(query="真实符号名", options:{min_fan_in:0, limit:20})` 补齐拓扑。
+  * Level 2 (ST 与 SW 双 0 命中): 解除拓扑扇入限制，松弛执行 `search.winnow(query="核心实体词元", options:{min_fan_in:0, limit:20})` 覆盖叶子函数与入口。
+  * Level 3 (仍无果): 缩短字面量短语为单一核心词，调用 `search.text(options:{limit:20, fields:"path,line,text"})` 降维重试。
+* **通道 2：纯字面量探针零命中降级阶梯**：
+  * Level 1: `search.text(query="原样字面量", options:{limit:20, fields:"path,line,text"}, output:{format:"gcx"})`
+  * Level 2 (0 结果): 剔除外部标点与修饰词，拆分为更短核心词重试。
+  * Level 3 (仍无果): 调用 `search.files(options:{glob:"*.rs", limit:20})` 查找对应功能模块目录直接研读。
 
 ---
 
 ## 四、 检索调用标准模板 (完全脱敏规范)
 
-### 1. UI 界面中文文案定位模板 (`search.text`)
-```json
-search({
-  "operation": "text",
-  "query": "多路复用",
-  "options": {"limit": 20, "path": "Project-A/frontend", "fields": "path,line,text"},
-  "output": {"format": "gcx"}
-})
-```
-
-### 2. 纯后台业务概念拓扑检索模板 (`search.winnow`)
+### 1. 核心业务概念拓扑检索模板 (`search.winnow`)
 ```json
 search({
   "operation": "winnow",
-  "query": "multiplex",
+  "query": "certificate push",
   "options": {"limit": 20, "min_fan_in": 2, "path": "Project-A/backend"},
   "output": {"format": "gcx"}
 })
 ```
 
-### 3. 符号定义点检索模板 (`search.symbols`)
+### 2. 真实符号升格定向拓扑检索模板 (`search.winnow`)
 ```json
 search({
-  "operation": "symbols",
-  "query": "MultiplexConfig",
-  "options": {"kind": "struct", "assist": "off", "path": "Project-A"},
+  "operation": "winnow",
+  "query": "forward_handler",
+  "options": {"limit": 20, "min_fan_in": 0, "path": "Project-A"},
   "output": {"format": "gcx"}
 })
 ```
 
-### 4. 结构级语法检索模板 (`search.ast`)
+### 3. 物理字面量与报错日志探针模板 (`search.text`)
+```json
+search({
+  "operation": "text",
+  "query": "Failed to read request body",
+  "options": {"limit": 20, "path": "Project-A", "fields": "path,line,text"},
+  "output": {"format": "gcx"}
+})
+```
+
+### 4. 符号定义点检索模板 (`search.symbols`)
+```json
+search({
+  "operation": "symbols",
+  "query": "CertificatePushRequest",
+  "options": {"kind": "struct", "assist": "off", "limit": 20, "path": "Project-A"},
+  "output": {"format": "gcx"}
+})
+```
+
+### 5. 结构级语法检索模板 (`search.ast`)
 ```json
 search({
   "operation": "ast",
-  "query": "(call_expression function: (identifier) @fn (#eq? @fn \"inject_common\"))",
+  "query": "(call_expression function: (identifier) @fn (#eq? @fn \"to_wide_chars\"))",
   "options": {
     "language": "rust",
     "path": "Project-A",
@@ -473,12 +612,12 @@ search({
 })
 ```
 
-### 5. 文件路径定位模板 (`search.files`)
+### 6. 文件路径定位模板 (`search.files`)
 ```json
 search({
   "operation": "files",
-  "query": "multiplex",
-  "options": {"glob": "*.rs", "path": "Project-A"},
+  "query": "tray",
+  "options": {"glob": "*.rs", "limit": 20, "path": "Project-A"},
   "output": {"format": "gcx"}
 })
 ```
@@ -487,37 +626,37 @@ search({
 
 ## 五、 单轮并发检索实战模式 (Concurrent Search Patterns)
 
-### 模式 A：UI 文案与后台中枢前后端双向收敛 (跨模块并发)
+### 模式 A：任意自然语言口水话与多关键词【全语种双核双探并发】(首选实战模式)
 ```json
-// 并发调用 1 (前端精确捕获中文文案所在组件)
+// 并发调用 1 (探针通道: 抓取需求中任意语言的物理字面量行、报错或菜单字符串)
 search({
   "operation": "text",
-  "query": "多路复用",
-  "options": {"path": "Project-A/frontend", "limit": 15, "fields": "path,line,text"},
+  "query": "Open Webpage",
+  "options": {"path": "Project-A", "limit": 15, "fields": "path,line,text"},
   "output": {"format": "gcx"}
 })
-// 并发调用 2 (后台拓扑检索可能的架构枢纽)
+// 并发调用 2 (雷达通道: 归一化代码实体词元抓取架构拓扑中枢，严禁传自然语言长句)
 search({
   "operation": "winnow",
-  "query": "multiplex",
-  "options": {"path": "Project-A/backend", "limit": 15},
+  "query": "tray web",
+  "options": {"path": "Project-A", "limit": 15, "min_fan_in": 2},
   "output": {"format": "gcx"}
 })
 ```
 
-### 模式 B：多业务概念并发收敛 (单工程多特征词)
+### 模式 B：多符号变体并发 (全称 vs 缩写双向收敛)
 ```json
-// 并发调用 1
+// 并发调用 1 (全称实体 + 动作)
 search({
   "operation": "winnow",
-  "query": "multiplex",
+  "query": "certificate push",
   "options": {"path": "Project-A", "limit": 15},
   "output": {"format": "gcx"}
 })
-// 并发调用 2
+// 并发调用 2 (缩写实体 + 动作)
 search({
   "operation": "winnow",
-  "query": "transport",
+  "query": "cert push",
   "options": {"path": "Project-A", "limit": 15},
   "output": {"format": "gcx"}
 })
@@ -528,14 +667,14 @@ search({
 // 并发调用 1 (当前主开发项目)
 search({
   "operation": "winnow",
-  "query": "multiplex",
+  "query": "certificate",
   "options": {"path": "Project-A", "limit": 15},
   "output": {"format": "gcx"}
 })
 // 并发调用 2 (基准参考外部项目)
 search({
   "operation": "winnow",
-  "query": "multiplex",
+  "query": "certificate",
   "options": {"path": "Project-B", "limit": 15},
   "output": {"format": "gcx"}
 })
