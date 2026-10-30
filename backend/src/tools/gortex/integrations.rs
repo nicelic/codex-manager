@@ -477,15 +477,76 @@ pub fn upsert_gortex_prompt(path: &Path, body: &str) -> Result<(bool, String), S
     Ok((true, fp))
 }
 
-/// 生成指向实际物理文件的精简外挂引导提示词
+/// 计算文件分片区间（以 chunk_size 行为单位，首尾闭合）
+pub fn calculate_prompt_slices(total_lines: usize, chunk_size: usize) -> Vec<String> {
+    if total_lines == 0 {
+        return vec!["L1-1".to_string()];
+    }
+    let chunk = if chunk_size == 0 { 700 } else { chunk_size };
+    let mut slices = Vec::new();
+    let mut start = 1;
+    while start <= total_lines {
+        let end = (start + chunk - 1).min(total_lines);
+        slices.push(format!("L{}-{}", start, end));
+        start = end + 1;
+    }
+    slices
+}
+
+/// 获取提示词文件的行数与字节体积（优先从物理文件读取，若物理文件未就绪则回退至编译期内置文本）
+pub fn gortex_prompt_file_stats(prompt_file: &Path) -> (usize, u64) {
+    if prompt_file.is_file() {
+        if let Ok(content) = fs::read_to_string(prompt_file) {
+            let lines = content.lines().count();
+            let bytes = content.len() as u64;
+            return (lines, bytes);
+        }
+    }
+    let lines = GORTEX_PROMPT_DOC.lines().count();
+    let bytes = GORTEX_PROMPT_DOC.len() as u64;
+    (lines, bytes)
+}
+
+/// 生成指向实际物理文件的外挂引导提示词（包含动态统计的行数、体积及并发分片指引）
 pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
     let clean_path = strip_windows_verbatim_prefix(prompt_file)
         .to_string_lossy()
         .replace('/', "\\");
-    format!(
-        "为方便接下来工作的展开，你必须先全量读取“{}”，并首先严格遵循文档的规范。",
-        clean_path
-    )
+    let (total_lines, total_bytes) = gortex_prompt_file_stats(prompt_file);
+    let size_kb = (total_bytes as f64 / 1024.0).ceil() as u64;
+    let chunk_size = 700;
+    let slices = calculate_prompt_slices(total_lines, chunk_size);
+    let slices_str = slices.join(", ");
+    let slice_count = slices.len();
+
+    if slice_count <= 1 {
+        format!(
+            "为方便接下来工作的展开，你必须先全量读取“{}”（共 {} 行，约 {} KB），并首先严格遵循文档的规范。\n\n\
+            【前置预读与工具权责铁律】：\n\
+            1. 外部文档只读豁免：上述规范文件位于代码仓库外部系统目录，属于初始环境法定豁免文件。你必须且仅能使用当前平台的【宿主原生只读工具】（如 read_file、view_file、cat 或终端只读命令）进行读取；严禁调用 Gortex MCP 读取该外部文件（Gortex MCP 仅索引仓库内文件，访问外部绝对路径会触发安全沙箱拦截）。\n\
+            2. 读取指引：本文件体积适中，请在第 1 轮单次读取（L1-{}）载入完整内容。\n\
+            3. 后续代码闭环契约：该外部规范预读完毕后，后续对工程项目代码的所有探测、检索、阅读、修改、验证与审查，必须全面切换至 Gortex MCP 原生工具闭环。\n\
+            4. 原生工具显式跳出：在后续操作中，仅当用户输入中明确包含“使用原生工具”显式指令（如本地 Git 提交备份、外部分支管理或构建）时，方可单次跳出 Gortex MCP 执行原生操作，完成后立即重返 Gortex 闭环。",
+            clean_path,
+            total_lines,
+            size_kb,
+            total_lines
+        )
+    } else {
+        format!(
+            "为方便接下来工作的展开，你必须先全量读取“{}”（共计 {} 行，约 {} KB），并首先严格遵循文档的规范。\n\n\
+            【前置预读与工具权责铁律】：\n\
+            1. 外部文档只读豁免：上述规范文件位于代码仓库外部系统目录，属于初始环境法定豁免文件。你必须且仅能使用当前平台的【宿主原生只读工具】（如 read_file、view_file、cat 或终端只读命令）进行读取；严禁调用 Gortex MCP 读取该外部文件（Gortex MCP 仅索引仓库内文件，访问外部绝对路径会触发安全沙箱拦截）。\n\
+            2. 并发分片读取指令：受宿主终端单次读取 800 行/45KB 上限限制，必须在第 1 轮单次并发发起 {} 个切片读取（{}），严禁逐轮串行切片或全量裸读以防输出截断！\n\
+            3. 后续代码闭环契约：该外部规范预读完毕后，后续对工程项目代码的所有探测、检索、阅读、修改、验证与审查，必须全面切换至 Gortex MCP 原生工具闭环。\n\
+            4. 原生工具显式跳出：在后续操作中，仅当用户输入中明确包含“使用原生工具”显式指令（如本地 Git 提交备份、外部分支管理或构建）时，方可单次跳出 Gortex MCP 执行原生操作，完成后立即重返 Gortex 闭环。",
+            clean_path,
+            total_lines,
+            size_kb,
+            slice_count,
+            slices_str
+        )
+    }
 }
 
 // =========================================================================

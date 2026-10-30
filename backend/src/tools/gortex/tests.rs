@@ -212,5 +212,39 @@ sandbox = "elevated"
         assert_eq!(st.startup_phase.as_deref(), Some("migrating"));
         assert_eq!(st.startup_started_at, Some(1793187091083));
     }
+
+    #[test]
+    fn test_calculate_prompt_slices() {
+        use crate::tools::gortex::integrations::calculate_prompt_slices;
+
+        assert_eq!(calculate_prompt_slices(0, 700), vec!["L1-1"]);
+        assert_eq!(calculate_prompt_slices(500, 700), vec!["L1-500"]);
+        assert_eq!(calculate_prompt_slices(700, 700), vec!["L1-700"]);
+        assert_eq!(
+            calculate_prompt_slices(2429, 700),
+            vec!["L1-700", "L701-1400", "L1401-2100", "L2101-2429"]
+        );
+    }
+
+    #[test]
+    fn test_gortex_delegated_prompt_body_generation() {
+        use crate::tools::gortex::integrations::gortex_delegated_prompt_body;
+        use std::path::Path;
+
+        let dummy_path = Path::new("C:/test/gortex提示词.md");
+        let prompt = gortex_delegated_prompt_body(dummy_path);
+
+        assert!(prompt.contains("为方便接下来工作的展开，你必须先全量读取"));
+        assert!(prompt.contains("C:\\test\\gortex提示词.md"));
+        assert!(prompt.contains("共计 2429 行"));
+        assert!(prompt.contains("并发发起 4 个切片读取"));
+        assert!(prompt.contains("L1-700, L701-1400, L1401-2100, L2101-2429"));
+        assert!(prompt.contains("外部文档只读豁免"));
+        assert!(prompt.contains("宿主原生只读工具"));
+        assert!(prompt.contains("严禁调用 Gortex MCP 读取该外部文件"));
+        assert!(prompt.contains("后续代码闭环契约"));
+        assert!(prompt.contains("使用原生工具"));
+        assert!(!prompt.contains("可免除预读此文档"));
+    }
 }
 

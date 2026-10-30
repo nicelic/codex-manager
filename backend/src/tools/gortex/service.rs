@@ -937,6 +937,7 @@ impl GortexService {
         // 1. 探测并确保 Gortex 目录下的提示词文档存在，生成外挂引导提示词
         let prompt_doc_path = Self::ensure_prompt_document(&install_root);
         let delegated_prompt = gortex_delegated_prompt_body(&prompt_doc_path);
+        info!("已动态生成 Gortex 引导提示词（含统计信息与并发分片指令）");
 
         let available = gortex_detected_mcp_agents();
 
