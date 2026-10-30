@@ -163,8 +163,12 @@ function Upload-ReleaseAsset {
     }
     $existing = $release.assets | Where-Object { $_.name -eq $AssetName }
     if ($existing) {
+        if ($existing.size -eq (Get-Item $FilePath).Length -and $existing.state -eq "uploaded") {
+            Write-Host "Asset $AssetName already exists and size matches ($($existing.size) bytes), skipping upload."
+            return
+        }
         Write-Host "Asset $AssetName already exists (ID: $($existing.id)), removing to update..."
-        Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/assets/$($existing.id)" -Headers $headers -Method Delete | Out-Null
+        Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/assets/$($existing.id)" -Headers $headers -Method Delete -TimeoutSec 120 | Out-Null
     }
 
     Write-Host "Uploading asset $AssetName ($((Get-Item $FilePath).Length) bytes)..."
@@ -176,7 +180,7 @@ function Upload-ReleaseAsset {
         "Content-Type"  = "application/octet-stream"
     }
 
-    $uploaded = Invoke-RestMethod -Uri $uploadUri -Headers $uploadHeaders -Method Post -InFile $FilePath
+    $uploaded = Invoke-RestMethod -Uri $uploadUri -Headers $uploadHeaders -Method Post -InFile $FilePath -TimeoutSec 1800
     Write-Host "Asset $AssetName uploaded successfully (ID: $($uploaded.id), Size: $($uploaded.size) bytes)"
 }
 
