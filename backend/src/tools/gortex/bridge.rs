@@ -82,10 +82,18 @@ pub fn resolve_bridge_target_cwd(gortex_exe: &Path) -> Option<PathBuf> {
 
 pub fn run_gortex_bridge(args: &[String]) -> ! {
     let mut gortex_exe = String::new();
+    let mut agent = String::new();
+    let mut explicit_cwd = String::new();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--gortex" && i + 1 < args.len() {
             gortex_exe = args[i + 1].clone();
+            i += 1;
+        } else if args[i] == "--agent" && i + 1 < args.len() {
+            agent = args[i + 1].clone();
+            i += 1;
+        } else if args[i] == "--cwd" && i + 1 < args.len() {
+            explicit_cwd = args[i + 1].clone();
             i += 1;
         }
         i += 1;
@@ -115,7 +123,16 @@ pub fn run_gortex_bridge(args: &[String]) -> ! {
         std::process::exit(1);
     }
 
-    let target_cwd = resolve_bridge_target_cwd(&exe_path);
+    let target_cwd = if !explicit_cwd.is_empty() {
+        let p = PathBuf::from(&explicit_cwd);
+        if p.is_dir() {
+            canonicalize_clean(&p).ok().or_else(|| Some(strip_windows_verbatim_prefix(&p)))
+        } else {
+            resolve_bridge_target_cwd(&exe_path)
+        }
+    } else {
+        resolve_bridge_target_cwd(&exe_path)
+    };
 
     let mut cmd = Command::new(&exe_path);
     cmd.arg("mcp");
@@ -134,7 +151,14 @@ pub fn run_gortex_bridge(args: &[String]) -> ! {
     }
 
     if let Some(ref cwd) = target_cwd {
-        cmd.env("ANTIGRAVITY_WORKSPACE", clean_path_str(&cwd.to_string_lossy()));
+        let cwd_str = clean_path_str(&cwd.to_string_lossy());
+        cmd.env("ANTIGRAVITY_WORKSPACE", &cwd_str);
+        cmd.env("WORKSPACE", &cwd_str);
+        cmd.env("PROJECT_DIR", &cwd_str);
+        if !agent.is_empty() {
+            let env_key = format!("{}_WORKSPACE", agent.to_uppercase().replace('-', "_"));
+            cmd.env(env_key, &cwd_str);
+        }
     }
 
     #[cfg(target_os = "windows")]

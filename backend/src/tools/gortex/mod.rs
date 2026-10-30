@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod integrations;
+pub mod legacy_hook_cleaner;
 pub mod ownership;
 pub mod project_mcp;
 pub mod reconcile;

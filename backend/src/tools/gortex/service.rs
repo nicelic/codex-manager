@@ -488,24 +488,24 @@ impl GortexService {
         let (antigravity_prompt, antigravity_prompt_complete) = check_prompt("antigravity");
         let (gemini_prompt, gemini_prompt_complete) = check_prompt("gemini");
 
-        // Hooks
-        let codex_hook = codex_file.as_ref().map(|p| p.is_file() && fs::read_to_string(p).map(|s| s.contains("[hooks.PreToolUse]")).unwrap_or(false)).unwrap_or(false);
-        let codex_hook_complete = codex_hook;
+        // Hooks: Gortex 工具已全面脱钩 Hook，不再配置或探测 Hook，固定返回 false
+        let codex_hook = false;
+        let codex_hook_complete = false;
 
-        let claude_hook = gortex_hook_path("claude").map(|p| p.is_file() && fs::read_to_string(p).map(|s| s.contains("\"SessionStart\"")).unwrap_or(false)).unwrap_or(false);
-        let claude_hook_complete = claude_hook;
+        let claude_hook = false;
+        let claude_hook_complete = false;
 
-        let copilot_hook = gortex_hook_path("copilot").map(|p| p.is_file() && fs::read_to_string(p).map(|s| s.contains("gortex hook")).unwrap_or(false)).unwrap_or(false);
-        let copilot_hook_complete = copilot_hook;
+        let copilot_hook = false;
+        let copilot_hook_complete = false;
 
-        let opencode_hook = gortex_hook_path("opencode").map(|p| p.is_file() && fs::read_to_string(p).map(|s| s.contains(GORTEX_OPENCODE_PLUGIN_MARKER)).unwrap_or(false)).unwrap_or(false);
-        let opencode_hook_complete = opencode_hook;
+        let opencode_hook = false;
+        let opencode_hook_complete = false;
 
-        let antigravity_hook = gortex_hook_path("antigravity").map(|p| p.is_file() && fs::read_to_string(p).map(|s| s.contains("\"gortex\"")).unwrap_or(false)).unwrap_or(false);
-        let antigravity_hook_complete = antigravity_hook;
+        let antigravity_hook = false;
+        let antigravity_hook_complete = false;
 
-        let gemini_hook = antigravity_hook;
-        let gemini_hook_complete = antigravity_hook_complete;
+        let gemini_hook = false;
+        let gemini_hook_complete = false;
 
         let trust_info = query_codex_trust_status(&exe_path.to_string_lossy());
 
@@ -543,7 +543,6 @@ impl GortexService {
         let integration_present = codex_configured || claude_configured || cursor_configured || copilot_configured
             || opencode_configured || antigravity_configured || gemini_configured
             || codex_prompt || claude_prompt || cursor_prompt || copilot_prompt || opencode_prompt || antigravity_prompt || gemini_prompt
-            || codex_hook || claude_hook || copilot_hook || opencode_hook || antigravity_hook || gemini_hook
             || user_path || system_path || !tracked_projects.is_empty() || !ownership.platforms.is_empty() || !ownership.artifacts.is_empty();
 
         let activation_state = if running {
@@ -882,6 +881,9 @@ impl GortexService {
         if starting {
             info!("检测到已有 Gortex 守护进程正在初始化中 (PID: {:?})，无需重复启动，进入就绪等待...", current_pid);
         } else {
+            let install_root = Self::get_install_dir();
+            let run_dir = install_root.join("run");
+            let _ = fs::create_dir_all(&run_dir);
             let mut cmd = new_silent_command(&exe);
             cmd.args(["daemon", "start", "--detach"]);
             for (k, v) in Self::get_managed_env_vars(&exe) {
@@ -968,39 +970,8 @@ impl GortexService {
             let _ = remove_gortex_prompt(&p, "");
         }
 
-        match agent {
-            "claude" => {
-                if let Some(p) = gortex_hook_path("claude") {
-                    let _ = remove_claude_hooks(&p);
-                }
-            }
-            "codex" => {
-                if let Some(p) = gortex_hook_path("codex") {
-                    let _ = remove_codex_hooks(&p);
-                }
-            }
-            "copilot" => {
-                if let Some(p) = gortex_hook_path("copilot") {
-                    let _ = remove_copilot_hooks(&p);
-                }
-            }
-            "opencode" => {
-                if let Some(p) = gortex_hook_path("opencode") {
-                    let _ = remove_opencode_plugin(&p);
-                }
-            }
-            "antigravity" => {
-                if let Some(p) = gortex_hook_path("antigravity") {
-                    let _ = remove_gemini_hooks(&p);
-                }
-            }
-            "gemini" => {
-                if let Some(p) = gortex_hook_path("gemini") {
-                    let _ = remove_gemini_hooks(&p);
-                }
-            }
-            _ => {}
-        }
+        // 外科手术式清理旧版 Gortex Hook（若存在），精准保留用户和第三方 Hook
+        crate::tools::gortex::legacy_hook_cleaner::clean_legacy_gortex_hooks_for_agent(agent, install_root);
     }
 
     fn register_single_platform_internal(
@@ -1044,52 +1015,6 @@ impl GortexService {
             if let Err(e) = upsert_gortex_prompt(&p, delegated_prompt) {
                 warnings.push(format!("{} 提示词: {}", agent, e));
             }
-        }
-
-        match agent {
-            "claude" => {
-                if let Some(p) = gortex_hook_path("claude") {
-                    if let Err(e) = upsert_claude_hooks(&p, exe_str) {
-                        warnings.push(format!("Claude Hook: {}", e));
-                    }
-                }
-            }
-            "codex" => {
-                if let Some(p) = gortex_hook_path("codex") {
-                    if let Err(e) = upsert_codex_hooks(&p, exe_str) {
-                        warnings.push(format!("Codex Hook: {}", e));
-                    }
-                }
-            }
-            "copilot" => {
-                if let Some(p) = gortex_hook_path("copilot") {
-                    if let Err(e) = upsert_copilot_hooks(&p, exe_str) {
-                        warnings.push(format!("Copilot Hook: {}", e));
-                    }
-                }
-            }
-            "opencode" => {
-                if let Some(p) = gortex_hook_path("opencode") {
-                    if let Err(e) = upsert_opencode_plugin(&p, exe_str) {
-                        warnings.push(format!("OpenCode Hook: {}", e));
-                    }
-                }
-            }
-            "antigravity" => {
-                if let Some(p) = gortex_hook_path("antigravity") {
-                    if let Err(e) = upsert_gemini_hooks(&p, "antigravity", exe_str) {
-                        warnings.push(format!("Antigravity Hook: {}", e));
-                    }
-                }
-            }
-            "gemini" => {
-                if let Some(p) = gortex_hook_path("gemini") {
-                    if let Err(e) = upsert_gemini_hooks(&p, "gemini", exe_str) {
-                        warnings.push(format!("Gemini Hook: {}", e));
-                    }
-                }
-            }
-            _ => {}
         }
 
         let tracked = Self::get_tracked_projects();

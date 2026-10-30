@@ -139,13 +139,13 @@ pub fn gortex_opencode_entry_looks_managed(value: &Value) -> bool {
         if cmd.len() >= 2 {
             let first = cmd[0].as_str().unwrap_or("");
             let second = cmd[1].as_str().unwrap_or("");
-            if second == "mcp" {
+            if second == "mcp" || second == "gortex-bridge" {
                 let base = Path::new(first)
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                if base == "gortex" || base.contains("code-manager") {
+                if base == "gortex" || base.contains("code-manager") || base.contains("edit_rust") || base.contains("llmtrim") {
                     return true;
                 }
             }

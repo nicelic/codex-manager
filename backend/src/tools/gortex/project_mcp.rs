@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::integrations::{
-    gortex_agent_available, gortex_codex_mcp_entry, gortex_mcp_entry, gortex_opencode_mcp_entry,
+    gortex_agent_available,
     GORTEX_AGENTS,
 };
 use super::ownership::{
@@ -37,25 +37,60 @@ pub fn gortex_project_mcp_uses_cwd(agent: &str) -> bool {
 pub fn gortex_project_mcp_entry(agent: &str, executable: &str, project: &str, install_root: &Path) -> Value {
     let clean_project = clean_path_str(project);
     let clean_exe = clean_path_str(executable);
-    let mut entry = match agent {
-        "codex" => gortex_codex_mcp_entry(&clean_exe, install_root),
-        "opencode" => gortex_opencode_mcp_entry(&clean_exe, install_root),
-        _ => gortex_mcp_entry(&clean_exe, install_root, agent == "copilot"),
-    };
+    let bridge_exe = clean_path_str(&crate::tools::gortex::integrations::gortex_bridge_executable(executable));
 
-    if gortex_project_mcp_uses_cwd(agent) {
-        if let Some(obj) = entry.as_object_mut() {
-            obj.insert("cwd".to_string(), Value::String(clean_project.clone()));
-        }
+    if agent == "opencode" {
+        let mut map = serde_json::Map::new();
+        map.insert("type".to_string(), Value::String("local".to_string()));
+        map.insert("command".to_string(), Value::Array(vec![
+            Value::String(bridge_exe),
+            Value::String("gortex-bridge".to_string()),
+            Value::String("--agent".to_string()),
+            Value::String("opencode".to_string()),
+            Value::String("--cwd".to_string()),
+            Value::String(clean_project),
+            Value::String("--gortex".to_string()),
+            Value::String(clean_exe),
+        ]));
+        map.insert("enabled".to_string(), Value::Bool(true));
+        map.insert("environment".to_string(), Value::Object(crate::tools::gortex::integrations::gortex_mcp_env(install_root)));
+        return Value::Object(map);
     }
 
+    let mut map = serde_json::Map::new();
+    map.insert("command".to_string(), Value::String(bridge_exe));
+    map.insert("args".to_string(), Value::Array(vec![
+        Value::String("gortex-bridge".to_string()),
+        Value::String("--agent".to_string()),
+        Value::String(agent.to_string()),
+        Value::String("--cwd".to_string()),
+        Value::String(clean_project.clone()),
+        Value::String("--gortex".to_string()),
+        Value::String(clean_exe),
+    ]));
+    map.insert("cwd".to_string(), Value::String(clean_project.clone()));
+    let mut env = crate::tools::gortex::integrations::gortex_mcp_env(install_root);
+    env.insert("WORKSPACE".to_string(), Value::String(clean_project.clone()));
     if agent == "antigravity" {
-        if let Some(env) = entry.get_mut("env").and_then(|e| e.as_object_mut()) {
-            env.insert("ANTIGRAVITY_WORKSPACE".to_string(), Value::String(clean_project));
-        }
+        env.insert("ANTIGRAVITY_WORKSPACE".to_string(), Value::String(clean_project));
+    }
+    map.insert("env".to_string(), Value::Object(env));
+
+    if agent == "copilot" {
+        map.insert("type".to_string(), Value::String("local".to_string()));
+    }
+    if agent == "codex" {
+        map.insert("startup_timeout_sec".to_string(), Value::Number(90.into()));
     }
 
-    entry
+    entry_apply_cwd(agent, map)
+}
+
+fn entry_apply_cwd(agent: &str, mut map: serde_json::Map<String, Value>) -> Value {
+    if !gortex_project_mcp_uses_cwd(agent) {
+        map.remove("cwd");
+    }
+    Value::Object(map)
 }
 
 pub fn update_project_json_mcp_config_owned(
@@ -272,10 +307,14 @@ pub fn update_project_codex_mcp_config_owned(
         fs::write(&path, new_content).map_err(|e| format!("写入 Codex 项目 config.toml 失败: {}", e))?;
         gortex_delete_project_mcp_record(&mut ownership, "codex", project);
     } else {
-        let exe_esc = executable.replace('\\', "\\\\");
+        let bridge_exe = crate::tools::gortex::integrations::gortex_bridge_executable(executable);
+        let bridge_esc = clean_path_str(&bridge_exe).replace('\\', "\\\\");
+        let exe_esc = clean_path_str(executable).replace('\\', "\\\\");
         let proj_esc = project.replace('\\', "\\\\");
         let toml_block = format!(
-            "\r\n[mcp_servers.gortex]\r\ncommand = \"{}\"\r\nargs = [\"mcp\"]\r\ncwd = \"{}\"\r\nstartup_timeout_sec = 90\r\n[mcp_servers.gortex.env]\r\nXDG_CONFIG_HOME = \"{}\"\r\nXDG_DATA_HOME = \"{}\"\r\nXDG_CACHE_HOME = \"{}\"\r\nGORTEX_DAEMON_SOCKET = \"{}\"\r\nGORTEX_DAEMON_PIDFILE = \"{}\"\r\nGORTEX_DAEMON_LOGFILE = \"{}\"\r\nGORTEX_DAEMON_STATEFILE = \"{}\"\r\nGORTEX_INDEX_WORKERS = \"8\"\r\nGORTEX_RECONCILE_INTERVAL = \"1h\"\r\nGORTEX_DAEMON_IDLE_TIMEOUT = \"0\"\r\n",
+            "\r\n[mcp_servers.gortex]\r\ncommand = \"{}\"\r\nargs = [\"gortex-bridge\", \"--agent\", \"codex\", \"--cwd\", \"{}\", \"--gortex\", \"{}\"]\r\ncwd = \"{}\"\r\nstartup_timeout_sec = 90\r\n[mcp_servers.gortex.env]\r\nXDG_CONFIG_HOME = \"{}\"\r\nXDG_DATA_HOME = \"{}\"\r\nXDG_CACHE_HOME = \"{}\"\r\nGORTEX_DAEMON_SOCKET = \"{}\"\r\nGORTEX_DAEMON_PIDFILE = \"{}\"\r\nGORTEX_DAEMON_LOGFILE = \"{}\"\r\nGORTEX_DAEMON_STATEFILE = \"{}\"\r\nGORTEX_INDEX_WORKERS = \"8\"\r\nGORTEX_RECONCILE_INTERVAL = \"1h\"\r\nGORTEX_DAEMON_IDLE_TIMEOUT = \"0\"\r\n",
+            bridge_esc,
+            proj_esc,
             exe_esc,
             proj_esc,
             install_root.join("config").to_string_lossy().replace('\\', "\\\\"),

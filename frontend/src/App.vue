@@ -655,22 +655,22 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.antigravityPromptComplete = Object.prototype.hasOwnProperty.call(data, 'antigravity_prompt_complete') ? Boolean(data.antigravity_prompt_complete) : gortex.antigravityPrompt
   gortex.geminiPrompt = Boolean(data.gemini_prompt)
   gortex.geminiPromptComplete = Object.prototype.hasOwnProperty.call(data, 'gemini_prompt_complete') ? Boolean(data.gemini_prompt_complete) : gortex.geminiPrompt
-  gortex.codexHook = Boolean(data.codex_hook)
-  gortex.codexHookComplete = Object.prototype.hasOwnProperty.call(data, 'codex_hook_complete') ? Boolean(data.codex_hook_complete) : gortex.codexHook
-  gortex.claudeHook = Boolean(data.claude_hook)
-  gortex.claudeHookComplete = Object.prototype.hasOwnProperty.call(data, 'claude_hook_complete') ? Boolean(data.claude_hook_complete) : gortex.claudeHook
-  gortex.copilotHook = Boolean(data.copilot_hook)
-  gortex.copilotHookComplete = Object.prototype.hasOwnProperty.call(data, 'copilot_hook_complete') ? Boolean(data.copilot_hook_complete) : gortex.copilotHook
-  gortex.openCodeHook = Boolean(data.opencode_hook)
-  gortex.openCodeHookComplete = Object.prototype.hasOwnProperty.call(data, 'opencode_hook_complete') ? Boolean(data.opencode_hook_complete) : gortex.openCodeHook
-  gortex.antigravityHook = Boolean(data.antigravity_hook)
-  gortex.antigravityHookComplete = Object.prototype.hasOwnProperty.call(data, 'antigravity_hook_complete') ? Boolean(data.antigravity_hook_complete) : gortex.antigravityHook
-  gortex.geminiHook = Boolean(data.gemini_hook)
-  gortex.geminiHookComplete = Object.prototype.hasOwnProperty.call(data, 'gemini_hook_complete') ? Boolean(data.gemini_hook_complete) : gortex.geminiHook
+  gortex.codexHook = false
+  gortex.codexHookComplete = false
+  gortex.claudeHook = false
+  gortex.claudeHookComplete = false
+  gortex.copilotHook = false
+  gortex.copilotHookComplete = false
+  gortex.openCodeHook = false
+  gortex.openCodeHookComplete = false
+  gortex.antigravityHook = false
+  gortex.antigravityHookComplete = false
+  gortex.geminiHook = false
+  gortex.geminiHookComplete = false
   gortex.userPath = Boolean(data.user_path)
   gortex.systemPath = Boolean(data.system_path)
-  gortex.codexTrustStatus = data.codex_trust_status || 'not_applicable'
-  gortex.codexTrustRequired = Boolean(data.codex_trust_required)
+  gortex.codexTrustStatus = 'not_applicable'
+  gortex.codexTrustRequired = false
   gortex.codexTrustNotice = data.codex_trust_notice || ''
   gortex.codexTrustSteps = Array.isArray(data.codex_trust_steps) ? data.codex_trust_steps : []
   const incomingTracked = (Array.isArray(data.tracked_projects) ? data.tracked_projects : []).map(cleanPathDisplay)
@@ -2560,21 +2560,20 @@ onBeforeUnmount(() => {
           <div class="gortex-platform-rows">
             <div class="gortex-platform-item">
               <div class="gortex-platform-item-info">
-                <p class="daemon-meta">Codex {{ gortex.codexAvailable ? (gortex.codexConfigured ? (gortex.codexComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.codexPrompt, gortex.codexPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.codexHook, gortex.codexHookComplete) }}<span v-if="gortex.codexTrustRequired || gortex.codexTrustStatus === 'trusted'"> · Hook 信任：{{ gortex.codexTrustStatus === 'trusted' ? '已信任' : '需要在 /hooks 中审核' }}</span></p>
+                <p class="daemon-meta">Codex {{ gortex.codexAvailable ? (gortex.codexConfigured ? (gortex.codexComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.codexPrompt, gortex.codexPromptComplete) }}</p>
               </div>
               <div class="gortex-platform-item-actions">
-                <button v-if="gortex.codexTrustRequired" type="button" :disabled="gortexBusy" @click="trustGortexCodex">信任审核</button>
                 <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.codexAvailable" @click="registerGortex('codex')">注册 MCP</button>
-                <button type="button" :disabled="gortexBusy || !(gortex.codexConfigured || gortex.codexPrompt || gortex.codexHook)" @click="removeGortex('codex')">移除 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.codexConfigured || gortex.codexPrompt)" @click="removeGortex('codex')">移除 MCP</button>
               </div>
             </div>
             <div class="gortex-platform-item">
               <div class="gortex-platform-item-info">
-                <p class="daemon-meta">Claude Code {{ gortex.claudeAvailable ? (gortex.claudeConfigured ? (gortex.claudeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.claudePrompt, gortex.claudePromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.claudeHook, gortex.claudeHookComplete) }}</p>
+                <p class="daemon-meta">Claude Code {{ gortex.claudeAvailable ? (gortex.claudeConfigured ? (gortex.claudeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.claudePrompt, gortex.claudePromptComplete) }}</p>
               </div>
               <div class="gortex-platform-item-actions">
                 <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.claudeAvailable" @click="registerGortex('claude')">注册 MCP</button>
-                <button type="button" :disabled="gortexBusy || !(gortex.claudeConfigured || gortex.claudePrompt || gortex.claudeHook)" @click="removeGortex('claude')">移除 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.claudeConfigured || gortex.claudePrompt)" @click="removeGortex('claude')">移除 MCP</button>
               </div>
             </div>
             <div class="gortex-platform-item">
@@ -2588,38 +2587,38 @@ onBeforeUnmount(() => {
             </div>
             <div class="gortex-platform-item">
               <div class="gortex-platform-item-info">
-                <p class="daemon-meta">GitHub Copilot CLI {{ gortex.copilotAvailable ? (gortex.copilotConfigured ? (gortex.copilotComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 提示词 {{ gortexArtifactLabel(gortex.copilotPrompt, gortex.copilotPromptComplete) }} · Hook {{ gortexArtifactLabel(gortex.copilotHook, gortex.copilotHookComplete) }}</p>
+                <p class="daemon-meta">GitHub Copilot CLI {{ gortex.copilotAvailable ? (gortex.copilotConfigured ? (gortex.copilotComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到用户配置目录' }} · 提示词 {{ gortexArtifactLabel(gortex.copilotPrompt, gortex.copilotPromptComplete) }}</p>
               </div>
               <div class="gortex-platform-item-actions">
                 <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.copilotAvailable" @click="registerGortex('copilot')">注册 MCP</button>
-                <button type="button" :disabled="gortexBusy || !(gortex.copilotConfigured || gortex.copilotPrompt || gortex.copilotHook)" @click="removeGortex('copilot')">移除 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.copilotConfigured || gortex.copilotPrompt)" @click="removeGortex('copilot')">移除 MCP</button>
               </div>
             </div>
             <div class="gortex-platform-item">
               <div class="gortex-platform-item-info">
-                <p class="daemon-meta">OpenCode {{ gortex.openCodeAvailable ? (gortex.openCodeConfigured ? (gortex.openCodeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.openCodePrompt, gortex.openCodePromptComplete) }} · Hook {{ gortex.openCodeAvailable ? (gortex.openCodeHook ? (gortex.openCodeHookComplete ? '插件已注册' : '插件配置残缺') : '插件未注册') : '未检测到' }}</p>
+                <p class="daemon-meta">OpenCode {{ gortex.openCodeAvailable ? (gortex.openCodeConfigured ? (gortex.openCodeComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · 提示词 {{ gortexArtifactLabel(gortex.openCodePrompt, gortex.openCodePromptComplete) }}</p>
               </div>
               <div class="gortex-platform-item-actions">
                 <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.openCodeAvailable" @click="registerGortex('opencode')">注册 MCP</button>
-                <button type="button" :disabled="gortexBusy || !(gortex.openCodeConfigured || gortex.openCodePrompt || gortex.openCodeHook)" @click="removeGortex('opencode')">移除 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.openCodeConfigured || gortex.openCodePrompt)" @click="removeGortex('opencode')">移除 MCP</button>
               </div>
             </div>
             <div class="gortex-platform-item">
               <div class="gortex-platform-item-info">
-                <p class="daemon-meta">Google Antigravity {{ gortex.antigravityAvailable ? (gortex.antigravityConfigured ? (gortex.antigravityComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.antigravityPrompt, gortex.antigravityPromptComplete) }} · Hook {{ gortex.antigravityAvailable ? (gortex.antigravityHook ? (gortex.antigravityHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
+                <p class="daemon-meta">Google Antigravity {{ gortex.antigravityAvailable ? (gortex.antigravityConfigured ? (gortex.antigravityComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.antigravityPrompt, gortex.antigravityPromptComplete) }}</p>
               </div>
               <div class="gortex-platform-item-actions">
                 <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.antigravityAvailable" @click="registerGortex('antigravity')">注册 MCP</button>
-                <button type="button" :disabled="gortexBusy || !(gortex.antigravityConfigured || gortex.antigravityPrompt || gortex.antigravityHook)" @click="removeGortex('antigravity')">移除 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.antigravityConfigured || gortex.antigravityPrompt)" @click="removeGortex('antigravity')">移除 MCP</button>
               </div>
             </div>
             <div class="gortex-platform-item">
               <div class="gortex-platform-item-info">
-                <p class="daemon-meta">Gemini CLI {{ gortex.geminiAvailable ? (gortex.geminiConfigured ? (gortex.geminiComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.geminiPrompt, gortex.geminiPromptComplete) }} · Hook {{ gortex.geminiAvailable ? (gortex.geminiHook ? (gortex.geminiHookComplete ? '已注册' : '配置残缺') : '未注册') : '未检测到' }}</p>
+                <p class="daemon-meta">Gemini CLI {{ gortex.geminiAvailable ? (gortex.geminiConfigured ? (gortex.geminiComplete ? 'MCP 已注册' : 'MCP 配置残缺') : 'MCP 未注册') : '未检测到' }} · GEMINI.md {{ gortexArtifactLabel(gortex.geminiPrompt, gortex.geminiPromptComplete) }}</p>
               </div>
               <div class="gortex-platform-item-actions">
                 <button type="button" :disabled="gortexBusy || !gortex.managedInstalled || !gortex.geminiAvailable" @click="registerGortex('gemini')">注册 MCP</button>
-                <button type="button" :disabled="gortexBusy || !(gortex.geminiConfigured || gortex.geminiPrompt || gortex.geminiHook)" @click="removeGortex('gemini')">移除 MCP</button>
+                <button type="button" :disabled="gortexBusy || !(gortex.geminiConfigured || gortex.geminiPrompt)" @click="removeGortex('gemini')">移除 MCP</button>
               </div>
             </div>
           </div>

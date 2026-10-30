@@ -300,6 +300,13 @@ pub fn reconcile_gortex_workspaces(default_workspace: &str) -> Result<(), String
 }
 
 pub fn start_gortex_watch_enforcer() {
+    // 0. 启动时执行一次旧版 Hook 兼容清理（外科手术式剔除遗留的 Gortex Hook，完好保留用户自定义 Hook）
+    let install_root = GortexService::get_install_dir();
+    let logs = crate::tools::gortex::legacy_hook_cleaner::clean_all_legacy_gortex_hooks(&install_root);
+    for log in logs {
+        info!("[Gortex Legacy Hook Cleaner] {}", log);
+    }
+
     // 1. Initial reconciliation on startup
     if let Err(e) = reconcile_gortex_workspaces("default") {
         warn!("Gortex 工作区初始自愈失败: {}", e);
