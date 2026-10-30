@@ -233,12 +233,14 @@ sandbox = "elevated"
 
         let dummy_path = Path::new("C:/test/gortex提示词.md");
         let prompt = gortex_delegated_prompt_body(dummy_path);
+        let (expected_lines, _) = crate::tools::gortex::integrations::gortex_prompt_file_stats(dummy_path);
+        let expected_line_str = format!("共计 {} 行", expected_lines);
 
         assert!(prompt.contains("为方便接下来工作的展开，你必须先全量读取"));
         assert!(prompt.contains("C:\\test\\gortex提示词.md"));
-        assert!(prompt.contains("共计 2429 行"));
+        assert!(prompt.contains(&expected_line_str));
         assert!(prompt.contains("并发发起 4 个切片读取"));
-        assert!(prompt.contains("L1-700, L701-1400, L1401-2100, L2101-2429"));
+        assert!(prompt.contains(&format!("L2101-{}", expected_lines)));
         assert!(prompt.contains("外部文档只读豁免"));
         assert!(prompt.contains("宿主原生只读工具"));
         assert!(prompt.contains("严禁调用 Gortex MCP 读取该外部文件"));

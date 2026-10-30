@@ -118,9 +118,27 @@ pub struct GortexRuntimeState {
     pub startup_error: Option<String>,
 }
 
+fn deserialize_lenient_platform<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match val {
+        Some(serde_json::Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct GortexPlatformActionRequest {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_platform")]
     pub platform: Option<String>,
 }
 

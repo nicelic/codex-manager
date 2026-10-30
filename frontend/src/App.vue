@@ -1331,12 +1331,15 @@ async function registerGortex(platform = null) {
   gortex.working = true
   gortex.notice = ''
   try {
-    const payload = platform ? { platform } : {}
-    const response = await fetch('/api/gortex/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
+    const isSingle = typeof platform === 'string' && platform.trim() !== ''
+    const reqOptions = isSingle
+      ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ platform: platform.trim() })
+        }
+      : { method: 'POST' }
+    const response = await fetch('/api/gortex/register', reqOptions)
     const responseText = await response.text()
     let data = {}
     try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 注册接口返回了无效响应') }
@@ -1398,12 +1401,15 @@ async function removeGortex(platform = null) {
   gortex.working = true
   gortex.notice = ''
   try {
-    const payload = platform ? { platform } : {}
-    const response = await fetch('/api/gortex/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
+    const isSingle = typeof platform === 'string' && platform.trim() !== ''
+    const reqOptions = isSingle
+      ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ platform: platform.trim() })
+        }
+      : { method: 'POST' }
+    const response = await fetch('/api/gortex/remove', reqOptions)
     const responseText = await response.text()
     let data = {}
     try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex 移除接口返回了无效响应') }
@@ -2537,8 +2543,8 @@ onBeforeUnmount(() => {
             <button type="button" class="install-button" :disabled="gortexVersionActionBlocked || gortex.loading || !gortex.statusKnown || gortexSelectedVersionIsCurrent || !selectedGortexVersion || selectedGortexVersion === '__load_more__'" @click="requestInstallGortex">
               {{ gortexSelectedVersionIsCurrent ? '已是当前版本' : (gortex.installWorking ? '安装中…' : (gortex.managedInstalled ? '升级 ZIP' : '安装 ZIP')) }}
             </button>
-            <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="registerGortex">注册 MCP</button>
-            <button type="button" :disabled="gortexBusy || !gortex.integrationPresent" @click="removeGortex">移除 MCP</button>
+            <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="registerGortex()">注册 MCP</button>
+            <button type="button" :disabled="gortexBusy || !gortex.integrationPresent" @click="removeGortex()">移除 MCP</button>
             <button type="button" class="delete-button" :disabled="gortexUninstallBlocked || !gortex.integrationPresent" @click="requestUninstallGortex">{{ gortex.installing || gortex.installWorking ? '安装中…' : (gortex.running ? '运行中不可卸载' : ((!gortex.statusKnown || gortex.loading) ? '确认状态…' : '卸载')) }}</button>
             <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="runGortexDiagnostics">{{ gortexDiagnostics.loading ? '验证中…' : '验证 doctor/status' }}</button>
           </div>
