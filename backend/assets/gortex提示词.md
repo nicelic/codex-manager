@@ -469,27 +469,40 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
   - 合规正例（法定）：`search.winnow(query="proxy body")`、`query="tray web"`
 * **法定形态**：`search.winnow` 的 query **必须且仅能由 1 ~ 2 个代码实体命名词元（Domain Entity / Action Tokens）构成**。
 
-#### 准则三：【首动单轮并发双探铁律】（Turn-1 Concurrent Dual-Probe Mandate）
-面对任何包含具体文案、标签、日志、报错或多关键词的业务需求，**第一动作强制在单轮对话中并发下发双通道检索，严禁单步往返轮询**：
-* **探针通道（search.text）**：以提取的原样字面量字符作为 `query`，显式添加 `output: {format: "gcx"}`，负责物理磁盘文件扫描，毫秒级锁定文件具体行号；
-* **雷达通道（search.winnow）**：以归一化的紧凑实体词元作为 `query`，显式添加 `options: {min_fan_in: 2, limit: 15}` 与 `output: {format: "gcx"}`，负责扫描 AST 语法树，锁定核心中枢控制器与数据结构。
-* **时延与预算双赢**：两通道在第 1 轮同批下发、同批返回，0 额外轮次开销，单轮响应体积严格控制在 10KB ~ 15KB 安全线内。
+#### 准则三：【首动语法本体自适应检索与真双探契约】（Universal Dual-Probe Mandate）
+面对代码探测与定位需求，模型必须根据目标资产的**语法本体属性（AST 符号实体 vs 纯物理数据流）**自适应分流，严禁无差别盲目套用，严禁单入单出切香肠轮询：
 
-#### 准则四：【防短路拓扑升格绝对死锁 与 检索位阶显式宣告】（Anti-Shortcut Escalation & Explicit Declaration）
-大模型天生具有“文本贪婪短路偏好（Grep Bias）”，一旦 `search.text` 或 `search.files` 抓到了物理行号或路径，极易自作聪明跳过架构分析直接盲目读写代码。为此设立最高不可逾越的硬性死锁：
-* **禁以文件名代替架构检索令（严禁跳步）**：
-  无论用户需求中是否包含了看似文件名、组件名的词汇（如 multiplex / singbox_inbound），严禁首动调用 `search.files` 投机取巧！所有新任务的第一动作，唯一法定入口必须且仅能是 P0 级单轮并发双探（`search.text` 负责锁定物理字面量具体所在行号；`search.winnow` 负责锁定 AST 拓扑中枢，query 强制归一化为 1~2 个核心词元，如 "multiplex"）。
-* **界面可观测性硬锁（必须前置打印执行位阶）**：
-  为消除宿主 UI 工具卡片折叠导致的感知混淆，模型在发起任何 search 调用前，必须在其回复的思考或第一行文本中显式打印当前执行的操作位阶标记：
-  - 执行文本探针时必须输出：`[SEARCH.TEXT: 正在物理扫描字面量行号]`
-  - 执行拓扑升格时必须输出：`[SEARCH.WINNOW: 正在升格扫描 AST 拓扑中枢]`
-* **绝对禁令**：**严禁在仅获得 `search.text` 的行号结果后，直接对目标文件发起 `read.file` 精读或直接进入 `edit.batch` 落地修改！违者直接判定为高危违规脏写！**
-* **拓扑升格门禁**：
-  * 若首轮并发中 `search.winnow` 成功命中了对应模块中枢，拓扑已完备，准许进入精读；
-  * 若首轮 `search.winnow` 因词元猜测偏差未命中目标，模型**必须且仅能从 `search.text` 命中的物理行中穿透提取外层真实 AST 声明符号**（即包裹该行的函数名、结构体名、接口名，例如提取出 `wnd_proc`、`forward_handler`、`CertificatePushRequest`）；
-  * **强制发起第二轮定向拓扑定界**：`search.winnow(query="真实符号名", options:{min_fan_in:0})`，获取该符号在图谱中的扇入扇出、调用度与中枢权重。拿到拓扑凭据后，方可合法进入 `read.symbols` 与后续写闭环！
-* **Files 定位后的收敛死锁**：
-  仅当纯粹排查文件存在性而必须使用 `search.files` 时，拿到文件路径后的下一动作**绝对严禁直接调用 `read.file` 全量读文件**！必须严格经由 `read.summary` 大纲提取后方可按需切片。
+1. **类别 1【通用语法闭合代码实体（AST 符号逻辑与架构中枢）】（强制 P0 并发真双探）**：
+   - **适用范围**：**全语种源代码**（包含 TypeScript、JavaScript、Python、Java、Go、Rust、C/C++、C# 等任意被图谱纳管的编程语言）；
+   - **触发场景**：凡涉及业务逻辑、函数实现、类/结构体方法、接口/Trait 抽象、状态流转、服务通信与跨模块依赖分析；
+   - **唯一法定动作**：**第一动作必须且仅能在单轮中并发下发双通道工具调用**：
+     * **探针通道**：`search(operation="text", query="原样字面量", options:{limit:15, fields:"path,line,text"}, output:{format:"gcx"})`
+     * **雷达通道**：`search(operation="winnow", query="紧凑实体词元", options:{min_fan_in:2, limit:15}, output:{format:"gcx"})`
+   - **执行约束**：两通道同批并发下发、同批返回，彻底消灭“只搜文本、漏掉 winnow 拓扑”的短路违规。
+
+2. **类别 2【无 AST 符号本体的物理配置与元数据资产】（合法豁免 Winnow）**：
+   - **适用范围**：纯配置文件（JSON、TOML、YAML、INI、Properties、.env）、版本声明、构建发布脚本、环境元数据与纯说明文档（Markdown/TXT）；
+   - **本质界定**：此类资产在物理上仅为静态数据值，底层图谱绝无 AST 函数/类符号拓扑，强行调用 winnow 必然为空；
+   - **唯一法定动作**：**合法豁免 `search.winnow`**；允许直接调用 `search(operation="text", query="字面量", output:{format:"gcx"})` 锁定行号，随后以已知行号直接发起紧凑切片（`read.file` 视窗锁死 <= 10KB），严禁泛洪。
+
+3. **类别 3【混合声明标记容器（SFC 组件与声明式模板）】（大纲先行，严禁翻页）**：
+   - **适用范围**：单文件组件与视图模板（如 Vue、Svelte、HTML、XML 等多域混合文件）；
+   - **分流法则**：
+     * 若定位**视图模板/UI 控件/静态样式**：允许通过 `search.text` 命中行号直接定向狙击（如 offset: 命中行-15, limit: 60）。**绝对严禁自第 1 行起逐屏切香肠翻页盲读！**
+     * 若涉及**背后的组件脚本逻辑、数据响应式状态与 API 通信**：其底层依然是标准的 AST 符号，**必须重返类别 1 执行 `search.winnow` 锁定状态拓扑**。
+
+#### 准则四：【工具签名硬约束与防短路拓扑升格死锁】（Strict Operation Contract & Escalation Gate）
+1. **工具签名强类型容器约束（反无头调用）**：
+   - 凡调用 `search` 门面，顶层**必须且仅能显式传入 `"operation"` 字段**（如 `"operation": "winnow"` 或 `"operation": "text"`），绝对严禁省略 `operation` 发起无头请求，杜绝底层降级异常。
+2. **禁止文本伪宣告（消除形式主义）**：
+   - 模型严禁在回复中输出任何自欺欺人的静态占位标记（如 `[SEARCH.TEXT...]`、`[SEARCH.WINNOW...]`）；合规与否**唯一且仅能以当前轮次实际生成的 JSON Tool Call 调用凭据为准**。
+3. **禁以文件名代替架构检索令（严禁跳步）**：
+   - 无论用户需求中是否包含了看似文件名、组件名的词汇（如 multiplex / singbox_inbound），严禁首动调用 `search.files` 投机取巧！凡涉及代码逻辑，第一动作必须严格经由类别 1 并发双探锁定中枢。
+4. **AST 架构场景拓扑升格死锁**：
+   - 在类别 1（代码与架构逻辑）中，若首轮并发中 `search.winnow` 因词元偏差未命中，模型**绝对严禁直接进入 `read.file` 连续裸读或直接进入 `edit.batch` 盲改**！
+   - 唯一法定动作：必须从 `search.text` 命中行中穿透提取包裹该行的外层真实函数名/结构体名，强制发起第二轮定向拓扑定界：`search(operation="winnow", query="真实符号名", options:{min_fan_in:0, limit:20}, output:{format:"gcx"})`，拿到调用度与拓扑凭据后，方可合法进入精读与写闭环。
+5. **Files 定位后的收敛死锁**：
+   - 仅当纯粹排查文件存在性而必须使用 `search.files` 时，拿到文件路径后的下一动作**绝对严禁直接调用 `read.file` 全量读文件**！必须严格经由 `read.summary` 大纲提取后方可按需切片。
 
 #### 准则五：【物理数据值 vs 语法树符号本质分工】（Literal Value vs AST Symbol Division）
 * **宇宙二元法则**：
@@ -548,13 +561,13 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
 
 | 优先级位阶 | 触发场景 (Trigger) | 唯一法定操作 (Action) | 核心必填参数与规则 |
 | :---: | :--- | :--- | :--- |
-| **P0 (双核首发)** | **任意自然语言口水话 / 多关键词需求 (含可见文案/报错/菜单)** | **强制单轮并发**：<br>1. `search.text` (搜原样物理字面量)<br>2. `search.winnow` (搜归一化实体词元) | 并发 1: `query: "原样字面量"`, `options: {limit: 15, fields: "path,line,text"}`, `output: {format: "gcx"}`<br>并发 2: `query: "实体 动作词元"`, `options: {min_fan_in: 2, limit: 15}`, `output: {format: "gcx"}` |
-| **P0 (拓扑中枢)** | **纯抽象业务逻辑 / 协议算法 / 底层机制 (代码中绝无特定字符串字面量)** | `search(operation="winnow")` | `query: "代码实体词元"`, `options: {min_fan_in: 2, limit: 20}`, `output: {format: "gcx"}` |
-| **P1 (拓扑升格)** | **`search.text` 命中物理行后，强制穿透外层符号定界** | `search(operation="winnow")` | `query: "外层真实声明符号名"`, `options: {min_fan_in: 0, limit: 20}`, `output: {format: "gcx"}` |
-| **P2 (字面探针)** | **确切的错误日志、异常格式化模板、托盘菜单名、十六进制错误码、配置 Key** | `search(operation="text")` | `query: "原样字面量"`, `options: {limit: 20, fields: "path,line,text"}`, `output: {format: "gcx"}` |
-| **P3 (符号定义)** | **已知具体类型/结构体/函数全名，查找单一定义点** | `search(operation="symbols")` | `query: "精确符号名"`, `options: {assist: "off", limit: 20}`, `output: {format: "gcx"}` |
-| **P4 (语法模式)** | **查找语法调用模式 / 结构级写法 (AST Pattern)** | `search(operation="ast")` | `query: "S表达式"`, `options: {language: "rust", limit: 20}`, `output: {format: "gcx"}` |
-| **P5 (文件路径)** | **查找物理文件路径 / 特定扩展名** | `search(operation="files")` | `query: "文件名"`, `options: {glob: "*.rs", limit: 20}`, `output: {format: "gcx"}` |
+| **P0 (全语种架构双探)** | **任意语言代码逻辑 / 函数方法 / 状态链路 (含文案/报错/实体)** | **强制单轮并发**：<br>1. `search.text` (搜原样物理字面量)<br>2. `search.winnow` (搜归一化实体词元) | 并发 1: `operation: "text"`, `query: "原样字面量"`, `options: {limit: 15, fields: "path,line,text"}`, `output: {format: "gcx"}`<br>并发 2: `operation: "winnow"`, `query: "实体 动作词元"`, `options: {min_fan_in: 2, limit: 15}`, `output: {format: "gcx"}` |
+| **P0 (纯拓扑雷达)** | **抽象算法 / 底层机制 / 协议状态流 (代码中无特定字符串字面量)** | `search(operation="winnow")` | `query: "核心代码实体词元"`, `options: {min_fan_in: 2, limit: 20}`, `output: {format: "gcx"}` |
+| **P1 (拓扑升格)** | **类别 1 代码中 `search.text` 命中行后，穿透外层符号补齐拓扑** | `search(operation="winnow")` | `query: "外层真实声明符号名"`, `options: {min_fan_in: 0, limit: 20}`, `output: {format: "gcx"}` |
+| **P2 (字面探针)** | **类别 2 纯配置 / 版本号 / 确切机器错误码 / 环境变量 Key** | `search(operation="text")` | `query: "原样字面量"`, `options: {limit: 20, fields: "path,line,text"}`, `output: {format: "gcx"}` (无 AST 符号资产合法豁免 winnow) |
+| **P3 (符号定义)** | **已知具体类型/类/函数全名，跨语言查找单一定义点** | `search(operation="symbols")` | `query: "精确符号名"`, `options: {assist: "off", limit: 20}`, `output: {format: "gcx"}` (严禁代偿 winnow) |
+| **P4 (语法模式)** | **查找跨文件抽象语法调用模式 / 结构级写法 (AST Pattern)** | `search(operation="ast")` | `query: "S表达式"`, `options: {language: "指定语言", limit: 20}`, `output: {format: "gcx"}` |
+| **P5 (文件存在性)** | **纯粹排查文件路径存在性 / 目录归属** | `search(operation="files")` | `query: "文件名"`, `options: {glob: "*.*", limit: 20}`, `output: {format: "gcx"}` (拿到路径后严禁裸读翻页) |
 
 ---
 
@@ -569,7 +582,7 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
 * **通道 2：纯字面量探针零命中降级阶梯**：
   * Level 1: `search.text(query="原样字面量", options:{limit:20, fields:"path,line,text"}, output:{format:"gcx"})`
   * Level 2 (0 结果): 剔除外部标点与修饰词，拆分为更短核心词重试。
-  * Level 3 (仍无果): 调用 `search.files(options:{glob:"*.rs", limit:20})` 查找对应功能模块目录直接研读。
+  * Level 3 (仍无果): 调用 `search.files(options:{glob:"*.<目标语言扩展名>", limit:20})` 查找对应功能模块目录直接研读。
 
 ---
 
