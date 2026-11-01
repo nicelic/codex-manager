@@ -29,7 +29,7 @@ const GORTEX_PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const GORTEX_UNTRACK_TIMEOUT: Duration = Duration::from_secs(600);
 
 static CACHED_VERSION: Mutex<Option<(Instant, String)>> = Mutex::new(None);
-static CACHED_TRACKED_STATUS: Mutex<Option<(Instant, Vec<GortexProjectInfo>)>> = Mutex::new(None);
+static CACHED_TRACKED_STATUS: Mutex<Option<(Instant, Vec<GortexProjectInfo>, String, bool)>> = Mutex::new(None);
 static ACTIVE_TASK: Mutex<Option<GortexActiveTask>> = Mutex::new(None);
 static INSTALLING: Mutex<bool> = Mutex::new(false);
 
@@ -282,120 +282,109 @@ impl GortexService {
 
     pub fn query_daemon_tracked_details(executable: &str) -> (Vec<GortexProjectInfo>, String, bool) {
         let mut lock = CACHED_TRACKED_STATUS.lock().unwrap();
-        if let Some((instant, ref list)) = *lock {
-            if instant.elapsed() < Duration::from_secs(4) {
-                return (list.clone(), "serving".to_string(), true);
+        if let Some((instant, ref list, ref health, alive)) = *lock {
+            if instant.elapsed() < Duration::from_secs(3) {
+                return (list.clone(), health.clone(), alive);
             }
         }
+
+        let exe_path = Path::new(executable);
+        let env_vars = Self::get_managed_env_vars(exe_path);
 
         let mut projects = Vec::new();
         let daemon_health;
         let daemon_active;
 
-        let res = new_silent_command(executable).arg("status").output();
+        // 优先使用 Gortex 原生结构化 JSON 状态接口
+        let mut json_cmd = new_silent_command(executable);
+        json_cmd.args(["daemon", "status", "--format", "json"]);
+        for (k, v) in &env_vars {
+            json_cmd.env(k, v);
+        }
+
+        let res = json_cmd.output();
         match res {
             Ok(out) if out.status.success() => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                daemon_active = true;
-                daemon_health = if text.contains("(loading — warmup in progress)") {
-                    "indexing".to_string()
-                } else {
-                    "serving".to_string()
-                };
-
-                let mut in_tracked_repos = false;
-                for line in text.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.to_lowercase().starts_with("tracked repos:") {
-                        in_tracked_repos = true;
-                        continue;
-                    }
-                    if !in_tracked_repos {
-                        continue;
-                    }
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if trimmed.starts_with("missing repositories:") || trimmed.starts_with("warning:") {
-                        break;
-                    }
-
-                    // 寻找 Windows 路径冒号 :\ 或 :/ 或 Unix 路径 /
-                    let path_start_opt = if let Some(idx) = trimmed.find(":\\") {
-                        if idx > 0 { Some(idx - 1) } else { None }
-                    } else if let Some(idx) = trimmed.find(":/") {
-                        if idx > 0 { Some(idx - 1) } else { None }
-                    } else if trimmed.starts_with('/') {
-                        Some(0)
+                if let Ok(st) = serde_json::from_slice::<GortexDaemonStatusJsonResponse>(&out.stdout) {
+                    daemon_active = true;
+                    daemon_health = if st.ready.unwrap_or(false) {
+                        "serving".to_string()
                     } else {
-                        None
+                        "indexing".to_string()
                     };
 
-                    if let Some(path_start) = path_start_opt {
-                        let before_path = trimmed[..path_start].trim();
-                        let name = if let Some(ws_idx) = before_path.find('[') {
-                            before_path[..ws_idx].trim().to_string()
-                        } else {
-                            before_path.split_whitespace().next().unwrap_or("").to_string()
-                        };
+                    for r in st.tracked_repos {
+                        let clean = clean_path_str(&r.path);
+                        if clean.is_empty() {
+                            continue;
+                        }
+                        if !projects.iter().any(|existing: &GortexProjectInfo| existing.path.eq_ignore_ascii_case(&clean)) {
+                            let status = if r.missing {
+                                "missing".to_string()
+                            } else if r.loading {
+                                "indexing".to_string()
+                            } else if r.unloaded {
+                                "unindexed".to_string()
+                            } else {
+                                "ready".to_string()
+                            };
 
-                        let after_start = &trimmed[path_start..];
-                        // 寻找路径和 suffix 之间的双空格或分隔
-                        let (raw_path, raw_suffix) = if let Some(sep_idx) = after_start.find("  ") {
-                            (after_start[..sep_idx].trim(), after_start[sep_idx..].trim())
-                        } else {
-                            (after_start.trim(), "")
-                        };
-
-                        let clean_path = clean_path_str(raw_path);
-                        if !clean_path.is_empty() && !projects.iter().any(|existing: &GortexProjectInfo| existing.path.eq_ignore_ascii_case(&clean_path)) {
-                            let mut status = "ready".to_string();
-                            let mut files = None;
-                            let mut nodes = None;
-
-                            if raw_suffix.contains("loading — warmup in progress") {
-                                status = "indexing".to_string();
-                            } else if raw_suffix.contains("MISSING") {
-                                status = "missing".to_string();
-                            } else if raw_suffix.contains("DEGRADED") {
-                                status = "degraded".to_string();
-                            } else if raw_suffix.contains("not indexed") {
-                                status = "unindexed".to_string();
-                            } else if raw_suffix.contains("EMPTY") {
-                                status = "empty".to_string();
-                            } else if raw_suffix.starts_with('(') {
-                                status = "ready".to_string();
-                                for part in raw_suffix.trim_matches(|c| c == '(' || c == ')').split(',') {
-                                    let p_trim = part.trim();
-                                    if let Some(idx) = p_trim.find("files") {
-                                        if let Ok(num) = p_trim[..idx].trim().parse::<usize>() {
-                                            files = Some(num);
-                                        }
-                                    } else if let Some(idx) = p_trim.find("nodes") {
-                                        if let Ok(num) = p_trim[..idx].trim().parse::<usize>() {
-                                            nodes = Some(num);
-                                        }
-                                    }
-                                }
-                            }
+                            let name = r.name
+                                .filter(|s| !s.is_empty())
+                                .or(r.prefix.filter(|s| !s.is_empty()))
+                                .unwrap_or_else(|| {
+                                    Path::new(&clean)
+                                        .file_name()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("project")
+                                        .to_string()
+                                });
 
                             projects.push(GortexProjectInfo {
-                                path: clean_path,
-                                name: if name.is_empty() { "project".to_string() } else { name },
+                                path: clean,
+                                name,
                                 status,
-                                files,
-                                nodes,
+                                files: Some(r.files),
+                                nodes: Some(r.nodes),
                                 is_external: false,
                             });
                         }
                     }
+                } else {
+                    daemon_active = true;
+                    daemon_health = "serving".to_string();
                 }
             }
             Ok(out) => {
                 let err_text = String::from_utf8_lossy(&out.stderr);
-                if err_text.contains("no gortex daemon is running") {
+                if err_text.contains("daemon not reachable") || err_text.contains("no gortex daemon is running") {
                     daemon_health = "stopped".to_string();
                     daemon_active = false;
+                } else if err_text.contains("unknown --format") || err_text.contains("unknown command") {
+                    // 兜底兼容旧版 gortex：回退至 gortex status 文本解析（注入环境变量）
+                    let mut txt_cmd = new_silent_command(executable);
+                    txt_cmd.arg("status");
+                    for (k, v) in &env_vars {
+                        txt_cmd.env(k, v);
+                    }
+                    if let Ok(txt_out) = txt_cmd.output() {
+                        if txt_out.status.success() {
+                            daemon_active = true;
+                            let text = String::from_utf8_lossy(&txt_out.stdout);
+                            daemon_health = if text.contains("(loading — warmup in progress)") {
+                                "indexing".to_string()
+                            } else {
+                                "serving".to_string()
+                            };
+                            Self::parse_legacy_status_text(&text, &mut projects);
+                        } else {
+                            daemon_health = "stopped".to_string();
+                            daemon_active = false;
+                        }
+                    } else {
+                        daemon_health = "stopped".to_string();
+                        daemon_active = false;
+                    }
                 } else {
                     daemon_health = "degraded".to_string();
                     daemon_active = false;
@@ -407,8 +396,97 @@ impl GortexService {
             }
         }
 
-        *lock = Some((Instant::now(), projects.clone()));
+        *lock = Some((Instant::now(), projects.clone(), daemon_health.clone(), daemon_active));
         (projects, daemon_health, daemon_active)
+    }
+
+    fn parse_legacy_status_text(text: &str, projects: &mut Vec<GortexProjectInfo>) {
+        let mut in_tracked_repos = false;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.to_lowercase().starts_with("tracked repos:") {
+                in_tracked_repos = true;
+                continue;
+            }
+            if !in_tracked_repos {
+                continue;
+            }
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.starts_with("missing repositories:") || trimmed.starts_with("warning:") {
+                break;
+            }
+
+            // 寻找 Windows 路径冒号 :\ 或 :/ 或 Unix 路径 /
+            let path_start_opt = if let Some(idx) = trimmed.find(":\\") {
+                if idx > 0 { Some(idx - 1) } else { None }
+            } else if let Some(idx) = trimmed.find(":/") {
+                if idx > 0 { Some(idx - 1) } else { None }
+            } else if trimmed.starts_with('/') {
+                Some(0)
+            } else {
+                None
+            };
+
+            if let Some(path_start) = path_start_opt {
+                let before_path = trimmed[..path_start].trim();
+                let name = if let Some(ws_idx) = before_path.find('[') {
+                    before_path[..ws_idx].trim().to_string()
+                } else {
+                    before_path.split_whitespace().next().unwrap_or("").to_string()
+                };
+
+                let after_start = &trimmed[path_start..];
+                let (raw_path, raw_suffix) = if let Some(sep_idx) = after_start.find("  ") {
+                    (after_start[..sep_idx].trim(), after_start[sep_idx..].trim())
+                } else {
+                    (after_start.trim(), "")
+                };
+
+                let clean_path = clean_path_str(raw_path);
+                if !clean_path.is_empty() && !projects.iter().any(|existing: &GortexProjectInfo| existing.path.eq_ignore_ascii_case(&clean_path)) {
+                    let mut status = "ready".to_string();
+                    let mut files = None;
+                    let mut nodes = None;
+
+                    if raw_suffix.contains("loading — warmup in progress") {
+                        status = "indexing".to_string();
+                    } else if raw_suffix.contains("MISSING") {
+                        status = "missing".to_string();
+                    } else if raw_suffix.contains("DEGRADED") {
+                        status = "degraded".to_string();
+                    } else if raw_suffix.contains("not indexed") {
+                        status = "unindexed".to_string();
+                    } else if raw_suffix.contains("EMPTY") {
+                        status = "empty".to_string();
+                    } else if raw_suffix.starts_with('(') {
+                        status = "ready".to_string();
+                        for part in raw_suffix.trim_matches(|c| c == '(' || c == ')').split(',') {
+                            let p_trim = part.trim();
+                            if let Some(idx) = p_trim.find("files") {
+                                if let Ok(num) = p_trim[..idx].trim().parse::<usize>() {
+                                    files = Some(num);
+                                }
+                            } else if let Some(idx) = p_trim.find("nodes") {
+                                if let Ok(num) = p_trim[..idx].trim().parse::<usize>() {
+                                    nodes = Some(num);
+                                }
+                            }
+                        }
+                    }
+
+                    projects.push(GortexProjectInfo {
+                        path: clean_path,
+                        name: if name.is_empty() { "project".to_string() } else { name },
+                        status,
+                        files,
+                        nodes,
+                        is_external: false,
+                    });
+                }
+            }
+        }
     }
 
     pub fn query_daemon_tracked_projects(executable: &str) -> Vec<String> {
@@ -508,7 +586,7 @@ impl GortexService {
         let installed = exe_path.is_file();
         let is_installing = *INSTALLING.lock().unwrap();
 
-        let (running, starting, process_id, startup_phase) = Self::get_daemon_detailed_status();
+        let (proc_running, proc_starting, process_id, startup_phase) = Self::get_daemon_detailed_status();
         let any_process_running = is_process_running(GORTEX_EXECUTABLE_NAME);
         let unmanaged_process_running = any_process_running && !managed_installed;
 
@@ -609,21 +687,27 @@ impl GortexService {
 
         // 双向对账与实时 Daemon 状态探测
         let (daemon_projs, detected_health, daemon_alive) = if installed {
-            Self::query_daemon_tracked_details(&exe_path.to_string_lossy())
+            if !proc_running && !proc_starting && !any_process_running {
+                // 没有任何 Gortex 进程存在，明确为已停止，直接返回 stopped，清除缓存并避免无效探针与误报
+                Self::clear_tracked_status_cache();
+                (Vec::new(), "stopped".to_string(), false)
+            } else {
+                Self::query_daemon_tracked_details(&exe_path.to_string_lossy())
+            }
         } else {
             (Vec::new(), "not_installed".to_string(), false)
         };
 
-        // 真实运行状态判定：以 Daemon 实际响应能力为准
-        let (running, daemon_health) = if daemon_alive {
-            (true, detected_health)
-        } else if starting {
-            (false, "starting".to_string())
-        } else if running {
+        // 真实运行状态判定：严格结合操作系统进程事实与通信探针
+        let (running, starting, daemon_health) = if daemon_alive {
+            (true, false, detected_health)
+        } else if proc_starting {
+            (false, true, startup_phase.clone().unwrap_or_else(|| "starting".to_string()))
+        } else if proc_running || any_process_running {
             // 进程在但无法通过 status 响应，判定为未响应或准备中
-            (true, "unresponsive".to_string())
+            (true, false, "unresponsive".to_string())
         } else {
-            (false, "stopped".to_string())
+            (false, false, "stopped".to_string())
         };
 
         let local_tracked = Self::get_tracked_projects();
@@ -636,14 +720,19 @@ impl GortexService {
             tracked_details.push(dp);
         }
 
-        // 2. 本地已登记但 Daemon 尚未完成纳管的项目（建图中 / 排队中）
+        // 2. 本地已登记但 Daemon 尚未完成纳管或处于停止/启动阶段的项目
         for lp in &local_tracked {
             if !tracked_details.iter().any(|d| d.path.eq_ignore_ascii_case(lp)) {
                 let name = Path::new(lp).file_name().and_then(|s| s.to_str()).unwrap_or("project").to_string();
+                let status = if starting || running {
+                    "indexing".to_string()
+                } else {
+                    "unindexed".to_string()
+                };
                 tracked_details.push(GortexProjectInfo {
                     path: lp.clone(),
                     name,
-                    status: if running { "indexing".to_string() } else { "unindexed".to_string() },
+                    status,
                     files: None,
                     nodes: None,
                     is_external: false,
@@ -1290,7 +1379,14 @@ impl GortexService {
             };
         }
 
-        let doctor_res = new_silent_command(&exe).args(["doctor", "--json"]).output();
+        let env_vars = Self::get_managed_env_vars(&exe);
+
+        let mut doc_cmd = new_silent_command(&exe);
+        doc_cmd.args(["doctor", "--json"]);
+        for (k, v) in &env_vars {
+            doc_cmd.env(k, v);
+        }
+        let doctor_res = doc_cmd.output();
         let (doctor_ok, doctor_output, doctor_error) = match doctor_res {
             Ok(out) => (
                 out.status.success(),
@@ -1300,7 +1396,12 @@ impl GortexService {
             Err(e) => (false, String::new(), e.to_string()),
         };
 
-        let status_res = new_silent_command(&exe).arg("status").output();
+        let mut st_cmd = new_silent_command(&exe);
+        st_cmd.arg("status");
+        for (k, v) in &env_vars {
+            st_cmd.env(k, v);
+        }
+        let status_res = st_cmd.output();
         let (status_ok, status_output, status_error) = match status_res {
             Ok(out) => (
                 out.status.success(),

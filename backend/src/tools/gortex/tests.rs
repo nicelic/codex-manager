@@ -248,5 +248,45 @@ sandbox = "elevated"
         assert!(prompt.contains("使用原生工具"));
         assert!(!prompt.contains("可免除预读此文档"));
     }
+
+    #[test]
+    fn test_gortex_daemon_status_json_deserialization() {
+        let sample = r#"{
+            "version": "v0.64.11+c7abb9b",
+            "pid": 9796,
+            "uptime_seconds": 16,
+            "ready": true,
+            "tracked_repos": [
+                {
+                    "prefix": "edit-rust",
+                    "path": "C:\\EXEXX\\edit-rust",
+                    "files": 92,
+                    "nodes": 3186,
+                    "edges": 19331,
+                    "loading": false,
+                    "missing": false
+                },
+                {
+                    "prefix": "gortex",
+                    "path": "E:\\aex\\Downloads\\gortex-0.64.11\\gortex-0.64.11",
+                    "files": 2736,
+                    "nodes": 247533,
+                    "edges": 1482282,
+                    "loading": true,
+                    "missing": false
+                }
+            ]
+        }"#;
+
+        let st: GortexDaemonStatusJsonResponse = serde_json::from_str(sample).expect("parse daemon status json");
+        assert_eq!(st.pid, Some(9796));
+        assert_eq!(st.ready, Some(true));
+        assert_eq!(st.tracked_repos.len(), 2);
+        assert_eq!(st.tracked_repos[0].path, "C:\\EXEXX\\edit-rust");
+        assert_eq!(st.tracked_repos[0].files, 92);
+        assert_eq!(st.tracked_repos[0].nodes, 3186);
+        assert_eq!(st.tracked_repos[0].loading, false);
+        assert_eq!(st.tracked_repos[1].loading, true);
+    }
 }
 

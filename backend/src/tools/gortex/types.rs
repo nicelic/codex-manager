@@ -109,6 +109,34 @@ pub struct GortexProjectInfo {
     pub is_external: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GortexDaemonStatusJsonResponse {
+    pub version: Option<String>,
+    pub pid: Option<u32>,
+    pub ready: Option<bool>,
+    #[serde(default)]
+    pub tracked_repos: Vec<GortexDaemonTrackedRepo>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GortexDaemonTrackedRepo {
+    pub path: String,
+    pub name: Option<String>,
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub files: usize,
+    #[serde(default)]
+    pub nodes: usize,
+    #[serde(default)]
+    pub edges: usize,
+    #[serde(default)]
+    pub missing: bool,
+    #[serde(default)]
+    pub loading: bool,
+    #[serde(default)]
+    pub unloaded: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GortexActiveTask {
     pub path: String,
