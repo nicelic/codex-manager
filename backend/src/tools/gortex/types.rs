@@ -82,6 +82,10 @@ pub struct GortexStatusResponse {
     pub codex_trust_steps: Option<Vec<String>>,
 
     pub tracked_projects: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracked_details: Option<Vec<GortexProjectInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_health: Option<String>,
     pub project_mcp_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_mcp_projects: Option<Vec<String>>,
@@ -90,6 +94,19 @@ pub struct GortexStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_task: Option<GortexActiveTask>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GortexProjectInfo {
+    pub path: String,
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<usize>,
+    #[serde(default)]
+    pub is_external: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

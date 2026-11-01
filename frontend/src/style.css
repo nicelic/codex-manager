@@ -148,6 +148,14 @@ input:disabled { border-color: #243b52; color: #60738b; background: #08111c; cur
 .gortex-path { display: block; min-width: 0; margin: 0 0 12px; padding: 10px 12px; overflow-wrap: anywhere; word-break: break-word; border: 1px solid #27415e; border-radius: 8px; color: #b9dcff; background: #0b1727; font-size: 12px; line-height: 1.45; }
 .gortex-project-list { display: grid; gap: 8px; margin-top: 12px; }
 .gortex-project-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid #27415e; border-radius: 8px; background: #0b1727; }
+.gortex-project-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.gortex-project-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.project-tag { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 500; line-height: 1.4; }
+.project-tag.ready { background: rgba(72, 199, 142, 0.15); color: #48c78e; border: 1px solid rgba(72, 199, 142, 0.3); }
+.project-tag.indexing { background: rgba(255, 221, 87, 0.15); color: #ffdd57; border: 1px solid rgba(255, 221, 87, 0.3); }
+.project-tag.external { background: rgba(102, 217, 239, 0.15); color: #66d9ef; border: 1px solid rgba(102, 217, 239, 0.3); }
+.project-tag.error { background: rgba(241, 70, 104, 0.15); color: #f14668; border: 1px solid rgba(241, 70, 104, 0.3); }
+.project-tag.warning { background: rgba(255, 170, 0, 0.15); color: #ffaa00; border: 1px solid rgba(255, 170, 0, 0.3); }
 .gortex-project-item code { min-width: 0; overflow-wrap: anywhere; word-break: break-word; font-size: 12px; }
 .gortex-project-item button { padding-block: 6px; }
 .hint { margin: 26px 0 0; color: #7187a2; font-size: 13px; }

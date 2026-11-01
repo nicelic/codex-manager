@@ -103,7 +103,7 @@ const selectedSnipVersion = ref('')
 const snipInstallWorking = ref(false)
 const snipDeleteWorking = ref(false)
 const snipTrustWorking = ref(false)
-const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, starting: false, startupPhase: '', anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', activeTask: null, statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
+const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, starting: false, startupPhase: '', anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', daemonHealth: 'stopped', trackedDetails: [], codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, copilotAvailable: false, copilotConfigured: false, copilotComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', activeTask: null, statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
 const gortexDiagnostics = reactive({ loading: false, doctorOk: false, doctorOutput: '', doctorError: '', statusOk: false, statusOutput: '', statusError: '' })
 const gortexProjectPath = ref('')
 const gortexReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
@@ -257,6 +257,31 @@ function formatModifiedAgents(names) {
   const labels = { codex: 'Codex', 'claude-code': 'Claude Code', cursor: 'Cursor', copilot: 'GitHub Copilot' }
   return names.map((name) => labels[name] || name).join('、')
 }
+
+function gortexDaemonLabel(tool) {
+  if (tool.loading) return '读取中'
+  if (tool.starting || tool.activationState === 'starting') return '启动/准备中…'
+  if (tool.daemonHealth === 'indexing') return 'daemon 建图中…'
+  if (tool.daemonHealth === 'unresponsive') return 'daemon 未响应'
+  if (tool.daemonHealth === 'degraded') return 'daemon 降级运行'
+  if (tool.running) return 'daemon 运行中'
+  if (tool.managedInstalled || tool.installed) return 'daemon 已停止'
+  return '未安装'
+}
+
+const gortexDisplayProjects = computed(() => {
+  if (Array.isArray(gortex.trackedDetails) && gortex.trackedDetails.length) {
+    return gortex.trackedDetails
+  }
+  return gortex.trackedProjects.map((p) => ({
+    path: p,
+    name: 'project',
+    status: 'ready',
+    is_external: false,
+    nodes: null,
+    files: null
+  }))
+})
 
 function activationLabel(tool, activeLabel = '已安装/运行中') {
   if (tool.loading) return '读取中'
@@ -673,6 +698,8 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.codexTrustRequired = false
   gortex.codexTrustNotice = data.codex_trust_notice || ''
   gortex.codexTrustSteps = Array.isArray(data.codex_trust_steps) ? data.codex_trust_steps : []
+  gortex.daemonHealth = data.daemon_health || (gortex.running ? 'serving' : 'stopped')
+  gortex.trackedDetails = Array.isArray(data.tracked_details) ? data.tracked_details : []
   const incomingTracked = (Array.isArray(data.tracked_projects) ? data.tracked_projects : []).map(cleanPathDisplay)
   if (!arraysEqual(gortex.trackedProjects, incomingTracked)) {
     gortex.trackedProjects = incomingTracked
@@ -2512,8 +2539,8 @@ onBeforeUnmount(() => {
             <h2 id="gortex-title">Gortex 管理</h2>
           </div>
           <div class="llmtrim-actions">
-            <span class="daemon-badge" :class="{ running: gortex.running, attention: gortex.activationState === 'attention' || gortex.activationState === 'starting' }">
-              {{ activationLabel(gortex, 'daemon 运行中') }}
+            <span class="daemon-badge" :class="{ running: gortex.running && (gortex.daemonHealth === 'serving' || !gortex.daemonHealth), attention: gortex.activationState === 'starting' || gortex.daemonHealth === 'indexing' || gortex.daemonHealth === 'unresponsive' }">
+              {{ gortexDaemonLabel(gortex) }}
             </span>
             <button type="button" :class="{ stop: gortex.running }" :disabled="gortex.loading || gortexBusy || !gortex.managedInstalled || gortex.activationState === 'starting'" @click="controlGortex(gortex.running ? 'stop' : 'start')">
               {{ gortex.working ? ('处理中' + rotatingDots) : (gortex.activationState === 'starting' ? ('启动中' + rotatingDots) : (!gortex.managedInstalled ? '仅检测' : (gortex.running ? '停止 daemon' : '启动 daemon'))) }}
@@ -2633,14 +2660,30 @@ onBeforeUnmount(() => {
             <input id="gortex-project-path" v-model="gortexProjectPath" spellcheck="false" autocomplete="off" placeholder="D:\\你的项目所在的目录" :disabled="gortexBusy" />
             <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="trackGortexProject">{{ isGortexTracking ? ('track' + rotatingDots) : 'track' }}</button>
           </div>
-          <div v-if="gortex.trackedProjects.length || (gortex.activeTask && gortex.activeTask.action === 'track')" class="gortex-project-list">
-            <div v-if="gortex.activeTask && gortex.activeTask.action === 'track' && !gortex.trackedProjects.some(p => p.toLowerCase() === gortex.activeTask.path.toLowerCase())" class="gortex-project-item">
-              <code>{{ cleanPathDisplay(gortex.activeTask.path) }}</code>
+          <div v-if="gortexDisplayProjects.length || (gortex.activeTask && gortex.activeTask.action === 'track')" class="gortex-project-list">
+            <div v-if="gortex.activeTask && gortex.activeTask.action === 'track' && !gortexDisplayProjects.some(p => p.path.toLowerCase() === gortex.activeTask.path.toLowerCase())" class="gortex-project-item">
+              <div class="gortex-project-info">
+                <code>{{ cleanPathDisplay(gortex.activeTask.path) }}</code>
+                <div class="gortex-project-tags">
+                  <span class="project-tag indexing">建图中{{ rotatingDots }}</span>
+                </div>
+              </div>
               <button type="button" disabled>{{ 'track' + rotatingDots }}</button>
             </div>
-            <div v-for="project in gortex.trackedProjects" :key="project" class="gortex-project-item">
-              <code>{{ cleanPathDisplay(project) }}</code>
-              <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="untrackGortexProject(project)">{{ isGortexUntracking(project) ? ('untrack' + rotatingDots) : 'untrack' }}</button>
+            <div v-for="proj in gortexDisplayProjects" :key="proj.path" class="gortex-project-item">
+              <div class="gortex-project-info">
+                <code>{{ cleanPathDisplay(proj.path) }}</code>
+                <div class="gortex-project-tags">
+                  <span v-if="proj.is_external" class="project-tag external">外部接入</span>
+                  <span v-if="proj.status === 'ready'" class="project-tag ready">已就绪{{ proj.nodes ? ` · ${(proj.nodes / 10000).toFixed(1)}万节点` : '' }}</span>
+                  <span v-else-if="proj.status === 'indexing'" class="project-tag indexing">建图中{{ rotatingDots }}</span>
+                  <span v-else-if="proj.status === 'missing'" class="project-tag error">路径丢失</span>
+                  <span v-else-if="proj.status === 'degraded'" class="project-tag warning">已降级</span>
+                  <span v-else-if="proj.status === 'unindexed'" class="project-tag warning">未索引</span>
+                  <span v-else class="project-tag ready">已就绪</span>
+                </div>
+              </div>
+              <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="untrackGortexProject(proj.path)">{{ isGortexUntracking(proj.path) ? ('untrack' + rotatingDots) : 'untrack' }}</button>
             </div>
           </div>
           <p v-else class="daemon-meta">尚未记录通过本页面 track 的项目。</p>
