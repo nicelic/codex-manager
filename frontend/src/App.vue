@@ -393,6 +393,41 @@ async function loadApplicationReleases({ more = false, silent = false } = {}) {
   }
 }
 
+function compareVersions(v1, v2) {
+  if (!v1 || !v2) return 0
+  const clean = (v) => String(v).trim().replace(/^[vV]/, '')
+  const [num1, pre1] = clean(v1).split('-')
+  const [num2, pre2] = clean(v2).split('-')
+  const p1 = (num1 || '').split('.').map((n) => parseInt(n, 10) || 0)
+  const p2 = (num2 || '').split('.').map((n) => parseInt(n, 10) || 0)
+  const max = Math.max(p1.length, p2.length)
+  for (let i = 0; i < max; i++) {
+    const a = p1[i] || 0
+    const b = p2[i] || 0
+    if (a !== b) return a - b
+  }
+  if (!pre1 && pre2) return 1
+  if (pre1 && !pre2) return -1
+  if (pre1 && pre2) return pre1.localeCompare(pre2)
+  return 0
+}
+
+const applicationInstallButtonLabel = computed(() => {
+  if (applicationUpdateWorking.value) return '处理中…'
+  if (!selectedApplicationVersion.value || selectedApplicationVersion.value === '__load_more__') return '安装所选'
+  const cmp = compareVersions(selectedApplicationVersion.value, applicationVersion.value)
+  if (cmp === 0) return '重新安装'
+  if (cmp < 0) return `回退到 ${selectedApplicationVersion.value}`
+  return `升级到 ${selectedApplicationVersion.value}`
+})
+
+function toggleApplicationHistory() {
+  applicationShowHistory.value = !applicationShowHistory.value
+  if (applicationShowHistory.value && !applicationReleases.loaded && !applicationReleases.loading) {
+    loadApplicationReleases()
+  }
+}
+
 function handleApplicationVersionChange() {
   if (selectedApplicationVersion.value === '__load_more__') {
     selectedApplicationVersion.value = ''
@@ -413,11 +448,24 @@ function requestApplicationUpdate(event) {
     applicationUpdateNotice.value = '当前处于开发源码目录，已锁定更新，避免覆盖开发中的产物与源码。'
     return
   }
-  const isCurrent = selectedApplicationVersion.value === applicationVersion.value
+  const cmp = compareVersions(selectedApplicationVersion.value, applicationVersion.value)
+  let actionTitle = `安装 ${selectedApplicationVersion.value}？`
+  let confirmBtn = '开始安装'
+  if (cmp === 0) {
+    actionTitle = `重新安装 ${selectedApplicationVersion.value}？`
+    confirmBtn = '重新安装'
+  } else if (cmp < 0) {
+    actionTitle = `确认回退到 ${selectedApplicationVersion.value}？`
+    confirmBtn = '确认回退'
+  } else {
+    actionTitle = `确认升级到 ${selectedApplicationVersion.value}？`
+    confirmBtn = '确认升级'
+  }
+
   openConfirmation({
-    title: isCurrent ? `重新安装 ${selectedApplicationVersion.value}？` : `安装 ${selectedApplicationVersion.value}？`,
-    description: `将在更新前自动停止顶部代理及运行中的 RTK、snip、llmtrim，并停止 Gortex daemon 且清理相关进程以释放文件锁，然后下载并安全替换 code-Manager.exe。失败时会自动恢复当前 EXE。`,
-    confirmLabel: isCurrent ? '重新安装' : '开始安装',
+    title: actionTitle,
+    description: `将在更新前自动停止顶部代理及运行中的 RTK、snip、llmtrim，并停止 Gortex daemon 且清理相关进程以释放文件锁，然后下载并安全替换程序。若替换失败将自动回滚恢复当前版本。`,
+    confirmLabel: confirmBtn,
     onConfirm: installApplicationUpdate,
     trigger: event?.currentTarget,
   })
@@ -464,7 +512,9 @@ async function installApplicationUpdate() {
     } catch {
       throw new Error(responseText.trim() || '更新接口返回了无效响应')
     }
-    if (!response.ok || !data.accepted) throw new Error(data.message || responseText.trim() || '启动更新失败')
+    if (!response.ok || (!data.accepted && !data.success)) {
+      throw new Error(data.message || responseText.trim() || '启动更新失败')
+    }
     applicationUpdateNotice.value = data.message || '正在替换并重启 code-Manager。'
     applicationUpdateRestarting.value = true
     waitForApplicationUpdate(data.target_version || targetVersion, currentVersion)
@@ -2326,7 +2376,7 @@ onBeforeUnmount(() => {
                 type="button"
                 class="update-toggle-history-button"
                 :disabled="applicationUpdateWorking || applicationUpdateRestarting"
-                @click="applicationShowHistory = !applicationShowHistory"
+                @click="toggleApplicationHistory"
               >
                 {{ applicationShowHistory ? '收起版本列表' : '历史版本 / 回退' }}
               </button>
@@ -2342,7 +2392,7 @@ onBeforeUnmount(() => {
                 :disabled="applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading"
                 @change="handleApplicationVersionChange"
               >
-                <option value="">{{ applicationReleases.loaded ? '请选择目标版本' : '请先点击检查更新' }}</option>
+                <option value="">{{ applicationReleases.loading ? '正在加载远端版本…' : (applicationReleases.loaded ? '请选择目标版本' : '请先点击检查更新') }}</option>
                 <option
                   v-for="release in applicationReleases.items"
                   :key="release.tag_name"
@@ -2359,7 +2409,7 @@ onBeforeUnmount(() => {
                 :disabled="applicationIsDevMode || applicationUpdateWorking || applicationUpdateRestarting || applicationReleases.loading || !selectedApplicationVersion || selectedApplicationVersion === '__load_more__'"
                 @click="requestApplicationUpdate"
               >
-                {{ applicationUpdateWorking ? '安装中…' : (selectedApplicationVersion === applicationVersion ? '重新安装' : '安装所选') }}
+                {{ applicationInstallButtonLabel }}
               </button>
             </div>
             <p v-if="applicationIsDevMode" class="dev-mode-tip">开发源码模式下禁止自升级覆盖，避免破坏开发中文件与二进制。</p>

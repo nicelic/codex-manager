@@ -22,6 +22,8 @@ pub struct GithubRelease {
     #[serde(default)]
     pub prerelease: Option<bool>,
     #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
     pub assets: Vec<GithubReleaseAsset>,
 }
 
@@ -101,6 +103,68 @@ pub async fn download_file(
         .bytes()
         .await
         .map_err(|e| format!("接收文件数据流失败: {}", e))?;
+
+    fs::write(dest_path, &bytes).map_err(|e| format!("保存文件失败: {}", e))?;
+    Ok(())
+}
+
+pub async fn download_file_with_hash(
+    download_url: &str,
+    dest_path: &Path,
+    expected_sha256: Option<&str>,
+    proxy_url: Option<&str>,
+) -> Result<(), String> {
+    let client = build_http_client(proxy_url);
+    let res = client
+        .get(download_url)
+        .send()
+        .await
+        .map_err(|e| format!("下载请求失败 ({}): {}", download_url, e))?;
+
+    if !res.status().is_success() {
+        return Err(format!("下载响应错误: HTTP {}", res.status()));
+    }
+
+    if let Some(parent) = dest_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| format!("接收文件数据流失败: {}", e))?;
+
+    // 检查 Windows EXE 大小与文件头特征
+    let is_exe = dest_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|s| s.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false);
+
+    if is_exe {
+        if bytes.len() < 1024 * 1024 {
+            return Err("下载的可执行文件大小异常（小于 1MB），可能下载不完整或返回了错误页".to_string());
+        }
+        if bytes.len() >= 2 && &bytes[0..2] != b"MZ" {
+            return Err("下载的文件不是有效的 Windows 可执行文件（缺少 MZ 标识头）".to_string());
+        }
+    }
+
+    if let Some(expected) = expected_sha256 {
+        let expected_trimmed = expected.trim();
+        if !expected_trimmed.is_empty() {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let actual_hash = hex::encode(hasher.finalize());
+            if !actual_hash.eq_ignore_ascii_case(expected_trimmed) {
+                return Err(format!(
+                    "文件 SHA-256 校验失败！预期: {}, 实际: {}",
+                    expected_trimmed, actual_hash
+                ));
+            }
+        }
+    }
 
     fs::write(dest_path, &bytes).map_err(|e| format!("保存文件失败: {}", e))?;
     Ok(())

@@ -13,10 +13,28 @@ Gortex 是对其 track 仓库全生命周期代码探测、定位、精读、分
 4. 【全局技能只读豁免】（Global Skills Read Exemption）：read 门面放行对全局技能资产的只读访问（~/.agents/skills/*/SKILL.md、~/.config/opencode/skills/、~/.copilot/skills/、~/.claude/skills/ 及 Pi 包生态），用于对齐宿主环境已挂载的全局工作流，严禁对技能目录执行任何形式的写操作。
 5. 【顶层先探测后分析代码铁律】（Probe-Before-Analyze Mandate）：进入新任务或跨模块分析前，必须首先调用 workspace 门面执行环境边界、主场工程与索引健康度前置探测，严禁盲目直接读搜；未明确仓库归属前严禁注入 repo 选择器（防范 no_repository_selector 拦截）。
 6. 【全生命周期高吞吐与单轮全量交付铁律】（Full-Lifecycle Single-Turn High-Throughput Mandate）：严禁“边走边改、逐处轮询、试探推演”的切香肠式低效交互。接收任务后必须全局通盘规划，严禁以“修改仅 1 处”为借口退回单入单出轮询。必须严格执行“查-读-析-写-验”五步单轮交付流水线（“查-读-析-写-验”具体门面与参数在后续章节中有详细规范）。单任务全流程原则上仅允许 1 次批量写交互，彻底消除偷懒式碎片轮询。若“验”阶段发现单测或架构守卫失败，必须通盘汇总全部报错点，发起第 2 次单轮批量修复，严禁退化为零散试探修改。
-7. 【连续物理流 10KB 视窗定界与轮廓先行铁律】（Universal 10KB Bounded Stream & Summary-First Mandate）：全栈工程中，代码资产在物理上分为“语法闭合实体（函数/类/接口）”与“连续物理流容器（物理文件/配置体/脚本）”两类通用形态。语法闭合实体必须且仅能通过 `read.symbols` / `read.source` 读取；连续物理流容器属于无自然边界的线性字节流，绝对严禁无参数发起全量裸读！凡调用 `read.file`，视窗参数 `options: {offset: 起始行, limit: 80~100, max_bytes: 10240}` 属于绝对法定必填元数据，单次物理体积硬性锁死在 10KB 以内（为 JSON 传输转义预留绝对安全余量，彻底消灭 16KB 磁盘转储）；严禁盲目从第 1 行切香肠式逐屏翻页（如 1~80, 81~160）！面对大文件，第一法定入口必须且仅能是 `read(operation="summary")` 获取结构与行号地图，随后直接以已知行号发起单次精准视窗狙击切片。
+7. 【全链路 JSON 100% 零信息损失与双层配额铁律】（Universal Zero Information Loss & Two-Tier Quota Mandate）：
+   - **零信息损失终极契约（Zero Information Loss Mandate）**：
+     强制全链路采用 `format: "json"` 的最高宪法使命是**彻底杜绝删除任何信息**！坚决废止一切以“节省体积”为借口的主动信息阉割手段：
+     1. **严禁字段过滤（No Field Filtering）**：彻底废除 `fields` 参数，必须 100% 完整保留 `symbol_id`、`symbol_name`、告警原因 `message` 与修复指引 `remediation`，消除二次反查；
+     2. **严禁代码掏空（No Code Elision）**：彻底废除 `compress_bodies: true`，严禁将函数体掏空为存根，代码阅读必须 100% 所见即所得；
+     3. **严禁排除测试（No Test Exclusion）**：彻底废除 `exclude_tests: true`，100% 纳入单元测试调用与引用边，保全最佳使用范例与重构安全门禁；
+     4. **严禁压缩行号（No Compact Compression）**：彻底废除 `compact: true`，100% 完整保留调用发生的精确行号（`edge.line`）与 AST 节点属性；
+     5. **严禁半截残卷（No Content Truncation）**：废除制造半截代码的强制字符硬截断，由精准行号切片（`offset + limit`）保证读入代码行行连续、首尾闭合；
+   - **双层漏斗模型架构（Two-Tier Funnel Architecture）**：
+     在确立了底层物理字节（`max_bytes: 10240 / 8192`）绝对阻断 16KB 磁盘转储的前提下，全面实施“**规范定最大上限 Ceiling，AI 场景驱动动态自主定界，引擎早停绝对兜底**”：
+     1. **底层物理安全底座（不可逾越）**：所有命令显式携带字节预算（常规门面 `options: {max_bytes: 10240}`，源码精读门面 `options: {max_bytes: 8192}`），超额由引擎底层 `applyBudget` 按条数自动早停；
+     2. **业务条数最大上限（Max Ceiling）与 AI 自主裁量**：规范确立各命令的绝对最大上限 Ceiling，严禁 AI 传入极端超大数值。AI 在 `1 ~ Max Ceiling` 区间内自主决定最紧凑高效的 `limit`；
+   - **`read` 门面多维立体严限法则（Read Restricted Far Beyond Search）**：
+     由于代码文本中换行与制表符在 JSON 序列化中产生膨胀，**`read` 门面全子命令必须执行严格的五重立体限制**：
+     1. **第一重：行号双参严格定界（完整源码，拒绝残卷）**：`read.file` 绝对严禁裸传 `target.file` 读全文件！必须且仅能显式携带已知双参切片 `offset >= 1` 与动态 `limit`（**单次切片最大上限 Ceiling: 250 行，硬顶绝对不得超过 280 行**；AI 动态范围 `30 ~ 250` 行，常规局部精读推荐 80~160 行；实测证实常规 200~250 行代码多在 7KB~9KB 之间，首尾闭合，杜绝半截代码）；
+     2. **第二重：物理字节紧缩硬顶（8KB~10KB）**：常规精读子命令（`read.source`, `read.symbols`, `read.editing_context`, `read.summary`）必须传入 `options: {max_bytes: 8192}`（常规 8KB 锁死），物理切片 `read.file` 传入 `options: {max_bytes: 10240}`（硬顶 10KB）；
+     3. **第三重：符号数量与单体行数约束**：`read.symbols` 符号数组**最大上限 Ceiling: 16 个符号**（AI 动态范围 `1 ~ 16` 个，常规推荐 2~4 个，模块级聚合精读放宽至 16 个）；长函数调用 `read.source` 行数**最大上限 Ceiling: 300 行**（`context: {max_lines: 50~300, context_lines: 3}`，常规推荐 100~180 行）；
+     4. **第四重：真实源码所见即所得铁律（No Code Elision）**：彻底废止 `compress_bodies`，严禁将函数体掏空为存根！宏观全景必须通过 `read.summary` 大纲先行，深入研读必须通过精准行号切片；
+     5. **第五重：分级防御优先级**：符号级 `read.source` / `read.symbols` 绝对优先（天然语法闭合）> 骨架级 `read.summary` 次之（大纲先行）> 局部上下文 `read.editing_context` 辅助 > 物理切片 `read.file` 垫底。
 8. 【宿主环境反压阻断与严禁顺从脱轨铁律】（Host Backpressure & Anti-Spill Guard）：当工具响应中出现 `The output was large and was saved to: .../output.txt` 或界面提示 `Full output written to output.txt` 时，该信号属于宿主环境发出的【通信反压拒绝凭据】。绝对严禁顺从调用宿主工具（read_file、view_file）去读取该 output.txt！绝对严禁顺着该路径扩散调用任何系统命令行工具（findstr、grep、dir、Get-ChildItem）！违者直接判定为最高级脱轨违规。唯一法定自愈动作：必须在 Gortex 体系内执行【原点收敛】：若由 `read.file` 触发，立即将视窗减半（`limit: 40~50, max_bytes: 5120`）带精准 offset 重新下发；若由检索或分析门面触发，必须且仅能调用 `response(operation="slice")` 或 `response(operation="grep")` 对内存环形缓冲区原地后置提取，彻底切断外部扩散。
 9. 【严禁调用 explore 全景探索门面】（Absolute Ban on Explore Facade）：严禁发起 explore 门面的任何操作调用。该门面默认携带 12,000 Tokens 巨量泛洪，且在受限预算下会强行触发底层 Shedding 算法剥离实现代码（将函数体掏空为签名存根），必然导致 20KB 磁盘转储截断或分析残缺，诱发退回宿主工具。
-10. 【全门面 10KB 物理通信硬顶与反降级替代铁律】（Universal 10KB Ceiling & Anti-Substitution Mandate）：Gortex 暴露的所有只读、精读、检索与追踪门面，在单次交互中必须遵循全生命周期两大约束：① 全门面 10KB 通信物理硬锁：单次纯文本承载上限绝对锁死在 10KB 以内（为 JSON 传输转义保留 4KB~5KB 绝对安全裕度，彻底阻断 16KB 宿主磁盘转储 output.txt）。无论是物理文件切片、AST 符号实现、局部装配上下文还是调用网络树，凡涉及体积展开的工具必须显式携带安全预算（max_bytes: 10240 与紧凑 limit）；② 严禁降级等价逃逸（Anti-Substitution）：当某一核心路径（如 winnow 拓扑分析或单次批量写）面临规则门禁时，严禁使用功能相近但缺乏架构约束的次级工具（如以 search.symbols 代替 search.winnow、以 relations.usages 探听全局结构、以 editing_context 偷窥未裁剪源码）进行暗度陈仓式降级规避。
+10. 【全门面所有命令无死角预算与最大上限管控铁律】（Universal Hard-Ceiling Budget & Anti-Substitution Mandate）：Gortex 暴露的所有门面与命令（无一例外），在单次交互中必须遵循全生命周期两大约束：① 全门面所有命令无死角物理硬锁与最大上限管控：单次純文本承载上限绝对锁死在 10KB 以内（常规门面 `options: {max_bytes: 10240}`，精读子命令更严格收紧至 8KB）。各门面根据其信息密度严格受控于各自的【最大上限 Ceiling】（如 `read.file <= 250行`, `read.source <= 300行`, `read.symbols <= 16个`, `search.text <= 80处` [100%全字段无损输出与引擎底层兜底], `search.symbols <= 70个`, `search.winnow <= 50个`, `search.files <= 220个`, `search.ast <= 50处`, `relations <= 60条`, `trace <= 60节点`, `analyze <= 60条`, `pr <= 60项`），严禁传入超越 Ceiling 的无边界数值；② 严禁降级等价逃逸（Anti-Substitution）：当某一核心路径（如 winnow 拓扑分析或单次批量写）面临规则门禁时，严禁使用功能相近但缺乏架构约束的次级工具（如以 search.symbols 代替 search.winnow、以 relations.usages 探听全局结构、以 editing_context 偷窥未裁剪源码）进行暗度陈仓式降级规避。
 
 ---
 
@@ -138,7 +156,7 @@ Gortex 是对其 track 仓库全生命周期代码探测、定位、精读、分
 | :--- | :--- | :--- | :--- |
 | **开局探测当前工作区纳管的全部已 track 仓库列表** | 边界探测 | `workspace(operation="repos")` | 强制容器: `arguments: {}` (严禁传 repo 属性) |
 | **开局探测当前会话绑定的主场工程与成员仓库** | 归属探测 | `workspace(operation="active_project")` | 强制容器: `arguments: {}` |
-| **开局探测图谱健康分、解析失败数与过期文件** | 索引健康 | `workspace(operation="index")` | 强制容器: `arguments: {compact: true}` |
+| **开局探测图谱健康分、解析失败数与过期文件** | 索引健康 | `workspace(operation="index")` | 强制容器: `arguments: {}` |
 | **获取全局知识图谱节点、边数与内存占用指标** | 图谱统计 | `workspace(operation="graph")` | 强制容器: `arguments: {}` |
 | **获取工作区根目录、绑定模式与排除标记全景** | 工作区元数据 | `workspace(operation="info")` | 强制容器: `arguments: {}` (严禁传 repo 属性) |
 | **免切主工程，跨项目单次穿透检索外部仓库符号** | 跨库穿透检索 | `workspace(operation="project")` | 强制容器: `arguments: {project: "Project-B", query: "TokenValidator"}` |
@@ -173,9 +191,7 @@ workspace({
 ```json
 workspace({
   "operation": "index",
-  "arguments": {
-    "compact": true
-  }
+  "arguments": {}
 })
 ```
 
@@ -186,7 +202,8 @@ workspace({
   "arguments": {
     "project": "Project-B",
     "query": "Authenticator::verify_token",
-    "limit": 20
+    "limit": 20,
+    "max_bytes": 10240
   }
 })
 ```
@@ -279,7 +296,7 @@ flowchart TD
 \`\`\`json
 explain_view({
   "path": "Project-A/src/lib.rs",
-  "format": "gcx",
+  "format": "json",
   "max_bytes": 8192
 })
 \`\`\`
@@ -288,7 +305,7 @@ explain_view({
 \`\`\`json
 reconcile_checkouts({
   "family": "Project-A",
-  "format": "gcx"
+  "format": "json"
 })
 \`\`\`
 
@@ -369,9 +386,9 @@ forget_checkout({
                                                     ▼
       ┌─────────────────────────────────────────────────────────────────────────────┐
       │   【第 1 轮：B 战术 —— 单轮多维并发双探 (Turn-1 Concurrent Dual-Probe)】        │
-      │   同时下发 2 个调用 (同轮返回，0 轮次额外时延，< 15KB 安全内存防爆):              │
-      │   1. search.text(query="原样字面量", output:{format:"gcx"})                   │
-      │   2. search.winnow(query="实体 动作", options:{min_fan_in:2}, output:{...})   │
+      │   同时下发 2 个调用 (同轮返回，0 轮次额外时延，全链路统一 format: "json"):        │
+      │   1. search.text(query="原样字面量", output:{format:"json"}, limit:25)        │
+      │   2. search.winnow(query="实体 动作", options:{min_fan_in:2, limit:15})       │
       └─────────────────────────────────────────────────────────────────────────────┘
                                                     │
                                                     ▼
@@ -404,8 +421,9 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
                             │
                             ▼
               【合法进入源码精读与批量修改阶段】
-               禁止全文件盲读！严格按需执行精读闭环：
-               - AST 符号精读: read.symbols(symbols: ["id1", "id2"]) (严禁 gcx)
+               杜绝全文件盲读！符号级 read.source 优先，严格按需精读闭环：
+               - 符号深入精读: read.source(target:{symbol:"id"}) / read.symbols(全链路统一 json)
+               - 物理切片安全: read.file 强锁 offset+limit(<=250行)
                - 局部拓扑装配: read.editing_context(target: {file:"..."}, options:{keep:"..."})
                             │
                             ▼
@@ -421,8 +439,8 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
     ┌────────────────────────────────────┴────────────────────────────────────┐
     ▼                                                                         ▼
 【第一阶段：查 (Search Hub)】                                               【第二阶段：读 (Read Hub)】
- 1. 首动并发: search.text + search.winnow (format: "gcx")                    1. 严禁 gcx 格式 (保全 callers/callees 上下文)
- 2. 拓扑升格: 穿透真实符号名定向 winnow 补齐拓扑                            2. 严禁 read.file 全量盲读 (>150行必开存根化)
+ 1. 首动并发: search.text + search.winnow (format: "json", limit<=25)        1. 全链路统一 format: "json" 零损失原则
+ 2. 拓扑升格: 穿透真实符号名定向 winnow 补齐拓扑                            2. 严禁 read.file 读全文件 (符号 source 优先，物理切片必带 offset/limit 视窗)
  3. 产出物: 确定性候选 AST 符号 ID 数组 (2 ~ 4 个) ──────────► 握手交接 ─────► 3. 批量精读: read.symbols(symbols: 2~4个)
                                                                               4. 局部拓扑: read.editing_context(keep)
                                                                                         │
@@ -476,14 +494,14 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
    - **适用范围**：**全语种源代码**（包含 TypeScript、JavaScript、Python、Java、Go、Rust、C/C++、C# 等任意被图谱纳管的编程语言）；
    - **触发场景**：凡涉及业务逻辑、函数实现、类/结构体方法、接口/Trait 抽象、状态流转、服务通信与跨模块依赖分析；
    - **唯一法定动作**：**第一动作必须且仅能在单轮中并发下发双通道工具调用**：
-     * **探针通道**：`search(operation="text", query="原样字面量", options:{limit:15, fields:"path,line,text"}, output:{format:"gcx"})`
-     * **雷达通道**：`search(operation="winnow", query="紧凑实体词元", options:{min_fan_in:2, limit:15}, output:{format:"gcx"})`
+     * **探针通道**：`search(operation="text", query="原样字面量", options:{limit:25, max_bytes:10240}, output:{format:"json"})`
+     * **雷达通道**：`search(operation="winnow", query="紧凑实体词元", options:{min_fan_in:2, limit:15, max_bytes:10240}, output:{format:"json"})`
    - **执行约束**：两通道同批并发下发、同批返回，彻底消灭“只搜文本、漏掉 winnow 拓扑”的短路违规。
 
 2. **类别 2【无 AST 符号本体的物理配置与元数据资产】（合法豁免 Winnow）**：
    - **适用范围**：纯配置文件（JSON、TOML、YAML、INI、Properties、.env）、版本声明、构建发布脚本、环境元数据与纯说明文档（Markdown/TXT）；
    - **本质界定**：此类资产在物理上仅为静态数据值，底层图谱绝无 AST 函数/类符号拓扑，强行调用 winnow 必然为空；
-   - **唯一法定动作**：**合法豁免 `search.winnow`**；允许直接调用 `search(operation="text", query="字面量", output:{format:"gcx"})` 锁定行号，随后以已知行号直接发起紧凑切片（`read.file` 视窗锁死 <= 10KB），严禁泛洪。
+   - **唯一法定动作**：**合法豁免 `search.winnow`**；允许直接调用 `search(operation="text", query="字面量", options:{limit:25, max_bytes:10240}, output:{format:"json"})` 锁定行号，随后以已知行号直接发起精确切片（`read.file` 锁死 offset+limit），严禁泛洪。
 
 3. **类别 3【混合声明标记容器（SFC 组件与声明式模板）】（大纲先行，严禁翻页）**：
    - **适用范围**：单文件组件与视图模板（如 Vue、Svelte、HTML、XML 等多域混合文件）；
@@ -500,7 +518,7 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
    - 无论用户需求中是否包含了看似文件名、组件名的词汇（如 multiplex / singbox_inbound），严禁首动调用 `search.files` 投机取巧！凡涉及代码逻辑，第一动作必须严格经由类别 1 并发双探锁定中枢。
 4. **AST 架构场景拓扑升格死锁**：
    - 在类别 1（代码与架构逻辑）中，若首轮并发中 `search.winnow` 因词元偏差未命中，模型**绝对严禁直接进入 `read.file` 连续裸读或直接进入 `edit.batch` 盲改**！
-   - 唯一法定动作：必须从 `search.text` 命中行中穿透提取包裹该行的外层真实函数名/结构体名，强制发起第二轮定向拓扑定界：`search(operation="winnow", query="真实符号名", options:{min_fan_in:0, limit:20}, output:{format:"gcx"})`，拿到调用度与拓扑凭据后，方可合法进入精读与写闭环。
+   - 唯一法定动作：必须从 `search.text` 命中行中穿透提取包裹该行的外层真实函数名/结构体名，强制发起第二轮定向拓扑定界：`search(operation="winnow", query="真实符号名", options:{min_fan_in:0, limit:15, max_bytes:10240}, output:{format:"json"})`，拿到调用度与拓扑凭据后，方可合法进入精读与写闭环。
 5. **Files 定位后的收敛死锁**：
    - 仅当纯粹排查文件存在性而必须使用 `search.files` 时，拿到文件路径后的下一动作**绝对严禁直接调用 `read.file` 全量读文件**！必须严格经由 `read.summary` 大纲提取后方可按需切片。
 
@@ -514,16 +532,19 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
 2. **绝对禁令（严禁作为 winnow 降级替代品）**：严禁使用 `search.symbols` 代替 `search.winnow` 作为架构分析依据！严禁向 `search.symbols` 输入无限定的通用词元（如 Config, Handler, State, Service, new）发起全局泛洪。
 3. **空间收敛双重约束**：凡调用 `search.symbols`，必须同时在 `options` 中显式指定 `path`（限定单仓或子模块）并传入 `limit: 20`，严禁发起无仓库限定的全图谱符号检索。
 - 违规反例（严禁）：`search({ "operation": "symbols", "query": "Handler" })`（全图泛洪）
-- 合规正例（法定）：`search({ "operation": "symbols", "query": "TcpHandler", "options": {"path": "core/net", "limit": 10}, "output": {"format": "gcx"} })`
+- 合规正例（法定）：`search({ "operation": "symbols", "query": "TcpHandler", "options": {"path": "core/net", "limit": 15, "max_bytes": 10240}, "output": {"format": "json"} })`
 
 ---
 
-### 2. 【零落盘防截断硬门禁】（Zero Spill Budget）
-* **`limit` 参数定义**：最大返回匹配命中条数（Matches Count / Early-Stop Ceiling），严禁理解为行号或扫描范围；
-* **硬性上限门禁**：
-  * 单独立检索调用：`limit` 参数**必须且仅能设置在 20 ~ 30 之间**（严禁省略，严禁传入大于 30 的数值）；
-  * 并发检索调用：每个调用的 `limit` **强制压缩至 15 ~ 20 之间**；
-* **物理防爆指标**：单次检索响应体积严格锁定在 5KB ~ 9KB 黄金内存区间，硬性阻断宿主平台超过 20KB~25KB 时的磁盘转储（`output.txt`）机制，杜绝工具链脱轨。
+### 2. 【物理底座保安全与 limit 最大上限管控】（Zero Spill Budget & Max Ceiling Protocol）
+* **`limit` 参数本质**：逻辑命中条数早停阈值（Early-Stop Ceiling），在底层有 `options: {max_bytes: 10240}` 物理绝对兜底的前提下，放开硬顶，由 AI 根据排查场景在 `1 ~ Max Ceiling` 之间自主动态定界；
+* **各检索命令【最大上限 Ceiling】与 AI 自主裁量范围（自定义顶格上限与双层漏斗安全网）**：
+  * **`search.text`**：**最大上限 Ceiling: 80 处（硬顶 90 处）**（AI 动态范围 `15 ~ 80`；精准字面量/错误码排查设 15~30；全局宏观排查放宽至 60~80；**100% 原生保留全字段（完整输出 symbol_id 与 symbol_name，彻底废除字段过滤）**；列表型回包由引擎底层 `applyBudget(max_bytes: 10240)` 自动兜底早停，兼顾极致吞吐与零落盘）；
+  * **`search.symbols`**：**最大上限 Ceiling: 70 个**（AI 动态范围 `5 ~ 70`；精准单一定位设 5~15；模块同类派生类型全景探测放宽至 40~70；列表由引擎底层 `applyBudget(max_bytes: 10240)` 自动早停裁减冗余）；
+  * **`search.winnow`**：**最大上限 Ceiling: 50 个**（AI 动态范围 `5 ~ 50`；核心中枢常规设 10~15；复合大系统跨模块调用交织放宽至 30~50；列表由引擎底层 `applyBudget(max_bytes: 10240)` 自动兜底）；
+  * **`search.files`**：**最大上限 Ceiling: 220 个**（AI 动态范围 `20 ~ 220`；纯路径极度轻量，单条仅约 35 字节，220 条仅约 7.7KB，单仓全景扩展名巡检放宽至 220）；
+  * **`search.ast`**：**最大上限 Ceiling: 50 处**（AI 动态范围 `5 ~ 50`；抽象语法结构模式匹配放宽至 35~50；列表由引擎底层 `applyBudget(max_bytes: 10240)` 自动截断）；
+* **并发检索约束**：首轮并发下发 2 个以上检索时，每个调用的 `limit` 建议主动收窄至最大上限的一半以内，确保首轮毫秒级高吞吐返回。
 
 ---
 
@@ -534,13 +555,17 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
 
 ---
 
-### 4. 【全域强制 GCX 容器契约】（Mandatory Search GCX Contract）
-* **全域强制开启铁律**：**凡调用 `search` 领域门面的任何操作（包括 winnow, symbols, text, ast, files），必须且仅能显式传入 `output: {format: "gcx"}`**；
-* **容器位置约束**：`format` 属性**必须且仅能放置于 `output: {format: "gcx"}` 容器对象内**，严禁平铺到顶层或误塞入 `options`（否则触发 Schema Guard 拒绝）；
-* **底层源码保障机制**：
-  * `search.winnow` 与 `search.symbols`：激活源码原生手写的 `encodeWinnowSymbols` 与 `encodeSearchSymbols` 矩阵编码器，15个/13个关键属性 **100% 完整保留（零数据损失）**，并硬砍掉 30%~40% 的冗余 JSON 键名字符；
-  * `search.text` 与 `search.files`：Gortex 底层收到 `format: "gcx"` 会**自动平滑降级为紧凑 TOON 格式**，零报错且同样实现 Token 瘦身；
-* **字段投影（Sparse Fieldset）**：字面量排查仅需确认位置时，传入 `options: {fields: "path,line,text"}`，自动剔除 AST 冗余元数据；
+### 4. 【全域统一 JSON 格式契约（零损失原则）与双重安全配额】（Mandatory Search JSON Contract & Dual Quota Guard）
+* **全域统一 JSON 零损失铁律**：**凡调用 `search` 领域门面的任何操作（包括 winnow, symbols, text, ast, files），必须且仅能显式传入 `output: {format: "json"}`**；彻底废弃 `format: "gcx"` 与 `format: "toon"`；
+* **容器位置约束**：`format` 属性**必须且仅能放置于 `output: {format: "json"}` 容器对象内**，严禁平铺到顶层或误塞入 `options`（否则触发 Schema Guard 拒绝）；
+* **零损失原则与元数据保全机制**：
+  * 源码审查与实测证实：TOON 与 GCX 格式在底层序列化时会强制裁剪 `doc` 注释文档摘要、`next_cursor` 分页游标，以及关系调用中的关键行号；缺失元数据会诱发模型反复发起多轮反查，导致注意力严重失焦与 Token 剧烈膨胀；
+  * 唯有显式采用 `format: "json"`，才能 100% 完整保留定义行号、注释摘要、翻页游标与语法拓扑树；
+* **物理安全底座与最大上限约束（防宿主 16KB 反压截断）**：
+  * 实测 Antigravity 宿主硬上限为 16KB，全 JSON 模式下必须同时实施物理字节兜底与最大上限管控：
+    - 所有检索调用**必须显式附加 `options: {max_bytes: 10240}`** 阻断体积溢出；
+    - `limit` 由 AI 在安全区间自主动态决定，但**严禁超越各自的【最大上限 Ceiling】**（`text <= 80`, `symbols <= 70`, `winnow <= 50`, `files <= 220`, `ast <= 50`）；
+* **全字段保真契约（Full-Fidelity Fieldset）**：严禁传入 `fields` 参数过滤字段！必须 100% 完整原汁原味返回 `symbol_id` 与 `symbol_name`，保全外层 AST 符号归属关系，确保穿透升格链路畅通无阻；
 * **预算裁剪感知**：若响应尾部出现 `# truncated_by_budget=true`，严禁调大 limit 重搜，必须调用 `response(operation="slice")` 进行后置切片读取。
 
 ---
@@ -561,13 +586,13 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
 
 | 优先级位阶 | 触发场景 (Trigger) | 唯一法定操作 (Action) | 核心必填参数与规则 |
 | :---: | :--- | :--- | :--- |
-| **P0 (全语种架构双探)** | **任意语言代码逻辑 / 函数方法 / 状态链路 (含文案/报错/实体)** | **强制单轮并发**：<br>1. `search.text` (搜原样物理字面量)<br>2. `search.winnow` (搜归一化实体词元) | 并发 1: `operation: "text"`, `query: "原样字面量"`, `options: {limit: 15, fields: "path,line,text"}`, `output: {format: "gcx"}`<br>并发 2: `operation: "winnow"`, `query: "实体 动作词元"`, `options: {min_fan_in: 2, limit: 15}`, `output: {format: "gcx"}` |
-| **P0 (纯拓扑雷达)** | **抽象算法 / 底层机制 / 协议状态流 (代码中无特定字符串字面量)** | `search(operation="winnow")` | `query: "核心代码实体词元"`, `options: {min_fan_in: 2, limit: 20}`, `output: {format: "gcx"}` |
-| **P1 (拓扑升格)** | **类别 1 代码中 `search.text` 命中行后，穿透外层符号补齐拓扑** | `search(operation="winnow")` | `query: "外层真实声明符号名"`, `options: {min_fan_in: 0, limit: 20}`, `output: {format: "gcx"}` |
-| **P2 (字面探针)** | **类别 2 纯配置 / 版本号 / 确切机器错误码 / 环境变量 Key** | `search(operation="text")` | `query: "原样字面量"`, `options: {limit: 20, fields: "path,line,text"}`, `output: {format: "gcx"}` (无 AST 符号资产合法豁免 winnow) |
-| **P3 (符号定义)** | **已知具体类型/类/函数全名，跨语言查找单一定义点** | `search(operation="symbols")` | `query: "精确符号名"`, `options: {assist: "off", limit: 20}`, `output: {format: "gcx"}` (严禁代偿 winnow) |
-| **P4 (语法模式)** | **查找跨文件抽象语法调用模式 / 结构级写法 (AST Pattern)** | `search(operation="ast")` | `query: "S表达式"`, `options: {language: "指定语言", limit: 20}`, `output: {format: "gcx"}` |
-| **P5 (文件存在性)** | **纯粹排查文件路径存在性 / 目录归属** | `search(operation="files")` | `query: "文件名"`, `options: {glob: "*.*", limit: 20}`, `output: {format: "gcx"}` (拿到路径后严禁裸读翻页) |
+| **P0 (全语种架构双探)** | **任意语言代码逻辑 / 函数方法 / 状态链路 (含文案/报错/实体)** | **强制单轮并发**：<br>1. `search.text` (搜原样物理字面量)<br>2. `search.winnow` (搜归一化实体词元) | 并发 1: `operation: "text"`, `query: "原样字面量"`, `options: {limit: 25~60(上限80), max_bytes: 10240}`, `output: {format: "json"}`<br>并发 2: `operation: "winnow"`, `query: "实体 动作词元"`, `options: {min_fan_in: 2, limit: 15~30(上限50), max_bytes: 10240}`, `output: {format: "json"}` |
+| **P0 (纯拓扑雷达)** | **抽象算法 / 底层机制 / 协议状态流 (代码中无特定字符串字面量)** | `search(operation="winnow")` | `query: "核心代码实体词元"`, `options: {min_fan_in: 2, limit: 15~30(上限50), max_bytes: 10240}`, `output: {format: "json"}` |
+| **P1 (拓扑升格)** | **类别 1 代码中 `search.text` 命中行后，穿透外层符号补齐拓扑** | `search(operation="winnow")` | `query: "外层真实声明符号名"`, `options: {min_fan_in: 0, limit: 15~30(上限50), max_bytes: 10240}`, `output: {format: "json"}` |
+| **P2 (字面探针)** | **类别 2 纯配置 / 版本号 / 确切机器错误码 / 环境变量 Key** | `search(operation="text")` | `query: "原样字面量"`, `options: {limit: 25~60(上限80), max_bytes: 10240}`, `output: {format: "json"}` (无 AST 符号资产合法豁免 winnow) |
+| **P3 (符号定义)** | **已知具体类型/类/函数全名，跨语言查找单一定义点** | `search(operation="symbols")` | `query: "精确符号名"`, `options: {assist: "off", limit: 25~45(上限70), max_bytes: 10240}`, `output: {format: "json"}` (严禁代偿 winnow) |
+| **P4 (语法模式)** | **查找跨文件抽象语法调用模式 / 结构级写法 (AST Pattern)** | `search(operation="ast")` | `query: "S表达式"`, `options: {language: "指定语言", limit: 20~35(上限50), max_bytes: 10240}`, `output: {format: "json"}` |
+| **P5 (文件存在性)** | **纯粹排查文件路径存在性 / 目录归属** | `search(operation="files")` | `query: "文件名"`, `options: {glob: "*.*", limit: 50~150(上限220), max_bytes: 10240}`, `output: {format: "json"}` (拿到路径后严禁裸读翻页) |
 
 ---
 
@@ -578,9 +603,9 @@ SW 抓到了对应模块中枢      但第 1 轮 SW 猜的英文词元未打中 
 * **通道 1：首轮并发后 `winnow` 未收敛降级阶梯**：
   * Level 1 (ST 命中物理行，SW 结果为空或偏离): **触发 A 宪法升格硬锁**！严禁读写代码，穿透提取 ST 外层真实符号名（如 `wnd_proc` / `forward_handler`），执行定向 `search.winnow(query="真实符号名", options:{min_fan_in:0, limit:20})` 补齐拓扑。
   * Level 2 (ST 与 SW 双 0 命中): 解除拓扑扇入限制，松弛执行 `search.winnow(query="核心实体词元", options:{min_fan_in:0, limit:20})` 覆盖叶子函数与入口。
-  * Level 3 (仍无果): 缩短字面量短语为单一核心词，调用 `search.text(options:{limit:20, fields:"path,line,text"})` 降维重试。
+  * Level 3 (仍无果): 缩短字面量短语为单一核心词，调用 `search.text(options:{limit:20})` 降维重试。
 * **通道 2：纯字面量探针零命中降级阶梯**：
-  * Level 1: `search.text(query="原样字面量", options:{limit:20, fields:"path,line,text"}, output:{format:"gcx"})`
+  * Level 1: `search.text(query="原样字面量", options:{limit:25, max_bytes:10240}, output:{format:"json"})`
   * Level 2 (0 结果): 剔除外部标点与修饰词，拆分为更短核心词重试。
   * Level 3 (仍无果): 调用 `search.files(options:{glob:"*.<目标语言扩展名>", limit:20})` 查找对应功能模块目录直接研读。
 
@@ -594,7 +619,7 @@ search({
   "operation": "winnow",
   "query": "certificate push",
   "options": {"limit": 20, "min_fan_in": 2, "path": "Project-A/backend"},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -604,7 +629,7 @@ search({
   "operation": "winnow",
   "query": "forward_handler",
   "options": {"limit": 20, "min_fan_in": 0, "path": "Project-A"},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -613,8 +638,8 @@ search({
 search({
   "operation": "text",
   "query": "Failed to read request body",
-  "options": {"limit": 20, "path": "Project-A", "fields": "path,line,text"},
-  "output": {"format": "gcx"}
+  "options": {"limit": 20, "path": "Project-A"},
+  "output": {"format": "json"}
 })
 ```
 
@@ -624,7 +649,7 @@ search({
   "operation": "symbols",
   "query": "CertificatePushRequest",
   "options": {"kind": "struct", "assist": "off", "limit": 20, "path": "Project-A"},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -638,7 +663,7 @@ search({
     "path": "Project-A",
     "limit": 20
   },
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -648,7 +673,7 @@ search({
   "operation": "files",
   "query": "tray",
   "options": {"glob": "*.rs", "limit": 20, "path": "Project-A"},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -662,15 +687,15 @@ search({
 search({
   "operation": "text",
   "query": "Open Webpage",
-  "options": {"path": "Project-A", "limit": 15, "fields": "path,line,text"},
-  "output": {"format": "gcx"}
+  "options": {"path": "Project-A", "limit": 15},
+  "output": {"format": "json"}
 })
 // 并发调用 2 (雷达通道: 归一化代码实体词元抓取架构拓扑中枢，严禁传自然语言长句)
 search({
   "operation": "winnow",
   "query": "tray web",
   "options": {"path": "Project-A", "limit": 15, "min_fan_in": 2},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -681,14 +706,14 @@ search({
   "operation": "winnow",
   "query": "certificate push",
   "options": {"path": "Project-A", "limit": 15},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 // 并发调用 2 (缩写实体 + 动作)
 search({
   "operation": "winnow",
   "query": "cert push",
   "options": {"path": "Project-A", "limit": 15},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -699,14 +724,14 @@ search({
   "operation": "winnow",
   "query": "certificate",
   "options": {"path": "Project-A", "limit": 15},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 // 并发调用 2 (基准参考外部项目)
 search({
   "operation": "winnow",
   "query": "certificate",
   "options": {"path": "Project-B", "limit": 15},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -720,10 +745,10 @@ search({
 
 ### 1. 最高精读准则与硬性门禁 (Core Read Rules)
 
-#### 准则一：【零 GCX 格式铁律】（Zero-GCX Mandate for Read）
-* **硬性禁令**：**凡调用 `read` 领域门面的任何操作（包括 symbols, source, file, summary, editing_context, history, artifact），严禁传入 `format: "gcx"`，必须且仅能采用默认格式输出**；
-* **底层源码根因**：
-  * GCX 编码器在 `read.symbols` 底层（tools_coding.go:1386）会主动丢弃 callers/callees 上下文数组；`read.file` 无原生 GCX 编码器；精读单次体积稳定在 4KB~8KB 黄金区间，零超限风险，严禁为格式损失上下文。
+#### 准则一：【全链路统一 JSON 格式铁律（零损失原则）】（Unified JSON Mandate for Read）
+* **硬性禁令**：**凡调用 `read` 领域门面的任何操作（包括 symbols, source, file, summary, editing_context, history, artifact），严禁传入 `format: "gcx"` 或 `format: "toon"`，必须且仅能采用显式 `output: {format: "json"}`（或缺省默认 JSON 格式）**；
+* **底层源码根因与零损失契约**：
+  * GCX 与 TOON 编码器在 `read.symbols` 底层会主动丢弃 callers/callees 拓扑数组及行号元数据；采用全链路统一 JSON 格式，可 100% 完整保全调用方/被调方列表、符号定义位置及注释文档，消除元数据缺失引发的二次反复反查与注意力失焦。
 
 #### 准则二：【`target` 容器对象化与单选互斥硬门禁】（Target Container & Mutex Selector Mandate）
 * **硬性门禁**：所有定位读取目标的参数，**必须且仅能封装于 `target: { ... }` 容器对象内**，严禁将属性直接平铺在请求顶层！
@@ -735,33 +760,41 @@ search({
 
 #### 准则三：【参数容器物理隔离契约】（Container Allocation Mandate）
 * **硬性门禁**：入参必须严格按照 Gortex 门面参数树契约分别填入对应容器，严禁跨容器错位或平铺：
-  * **`context` 容器专属字段**：**必须且仅能包含 `context_lines`、`max_lines`、`compress_bodies`**（源码 `facade_schema.go:326` 唯一绑定为 `context` 容器）；
+  * **`context` 容器专属字段**：**必须且仅能包含 `context_lines`、`max_lines`**（源码 `facade_schema.go:326` 绑定为 `context` 容器；彻底废弃 `compress_bodies`，严禁掏空函数体）；
   * **`options` 容器专属字段**：**必须且仅能包含 `offset`、`limit`、`keep`、`include_source`、`new_user_task`**；
-  * **违规判定**：若将 `context_lines` 或 `compress_bodies` 误塞入顶层平铺或乱填入 `options`，会导致 Schema 校验异常或参数被静默忽略。
+  * **违规判定**：若将 `context_lines` 误塞入顶层平铺或乱填入 `options`，会导致 Schema 校验异常或参数被静默忽略。
 
 #### 准则四：【Symbol ID 路径正斜杠铁律】（Symbol ID Path Normalization）
 * **硬性门禁**：**无论宿主操作系统为何（包括 Windows），所有 `symbol` 与 `symbols` 属性中的符号 ID，其路径分隔符必须且仅能使用正斜杠 `/`，格式严格统一为 `"仓库标识/相对路径::符号名"`**；
 * **违规后果**：在 Windows 环境下若误传反斜杠 `\`（如 `"Project-A\src\net\tcp.rs::handshake"`），由于图谱底层节点索引键统一注册为正斜杠，会导致字符串比对失败，抛出 `symbol not found` 错误。
 
-#### 准则五：【巨型符号 10KB 物理拦截与 editing_context 安全预算】（Giant Symbol Guard & Safe Context）
+#### 准则五：【巨型符号 8KB 物理拦截与精读子命令收敛契约】（Giant Symbol Guard & 8KB Safe Context）
 * **`read.symbols` 数组上限与防爆门禁**：
-  单次调用 `read(operation="symbols")` 时，`target.symbols` 数组长度**强制锁定为 2 ~ 3 个核心符号**（严禁一次性灌入 4 个以上符号）；必须显式声明 `options: {include_source: true}`，单轮全量抓齐，严禁单步轮询；
-* **`read.source` 巨型函数 10KB 物理截断**：
-  “符号语法自然闭合”不等于“体积天然安全”。当目标函数属于巨型长函数（单体 > 200 行）或数据结构时，为防范打爆 16KB 转储，单符号深入精读必须显式附加安全上限：`options: {max_bytes: 10240}`，防止单个巨型 God Method 瞬间打爆通信通道；
+  单次调用 `read(operation="symbols")` 时，`target.symbols` 数组长度**强制锁定为 2 ~ 3 个核心符号**（严禁一次性灌入 4 个以上符号）；必须显式声明 `options: {include_source: true, max_bytes: 8192}`，单轮全量抓齐，严禁单步轮询；
+* **`read.source` 巨型函数 8KB 物理截断与行数约束**：
+  “符号语法自然闭合”不等于“体积天然安全”。当目标函数属于巨型长函数（单体 > 100 行）或复杂数据结构时，为防范打爆 16KB 转储，单符号深入精读必须显式附加双重安全上限：`options: {max_bytes: 8192}` 与 `context: {context_lines: 3, max_lines: 100}`，严格将代码体积压制在 8KB 黄金线以内，防止单个巨型 God Method 瞬间打爆通信通道；
 * **`read.editing_context` 拓扑装配绝对收敛契约**：
   `read(operation="editing_context")` 默认会级联拉取相邻符号与依赖声明，体积极易雪崩。因此：
-  - 必须显式声明 `options: {keep: "单一核心目标函数", max_bytes: 10240}`；
-  - 严禁省略 `keep` 泛装配整个模块上下文；若目标文件总行数 > 300 行，禁止调用 `editing_context`，必须降维使用精准行号视窗切片 `read.file`；
+  - 必须显式声明 `options: {keep: "单一核心目标函数", max_bytes: 8192}`；
+  - 严禁省略 `keep` 泛装配整个模块上下文；若目标文件总行数 > 200 行，禁止调用 `editing_context`，必须降维使用精准行号视窗切片 `read.file`；
   - 违规反例（严禁）：`read({ "operation": "editing_context", "target": {"file": "large_view.ext"} })`
-  - 合规正例（法定）：`read({ "operation": "editing_context", "target": {"file": "core/router.ext"}, "options": {"keep": "dispatch_packet", "max_bytes": 10240} })`
+  - 合规正例（法定）：`read({ "operation": "editing_context", "target": {"file": "core/router.ext"}, "options": {"keep": "dispatch_packet", "max_bytes": 8192}, "output": {"format": "json"} })`
 
-#### 准则六：【物理文件 10KB 视窗双保险与防切香肠靶向精读契约】（10KB Dual-Ceiling & Anti-Chop Target Guard）
-* **代码阅读分工铁律**：
-  * 研读函数/结构体强制调用 `read.symbols` 或 `read.source`（保证 100% 语法闭合）；`read.file` 行号切片仅适用于非 AST 符号（UI 模板、配置、特定报错行）；
-* **10KB 双保险参数锁（行数与字节数强制双限）**：
-  凡调用 `read(operation="file")`，必须且仅能同时附带行数上限与字节上限，严禁单限裸奔：
-  - 必须传入：`options: { offset: 起始行, limit: 80~100, max_bytes: 10240 }`
-  - 物理防爆指标：单次响应体积绝对锁定在 10KB 以内，加上 JSON 传输报文后稳定在 12KB~13KB，彻底消灭触发宿主 16KB 磁盘转储 (`output.txt`) 的任何物理可能性。
+#### 准则六：【彻底杜绝全文件裸读与 read 六重立体严密限制契约】（Absolute Ban on Whole-File Reading & Deep Read Guard）
+* **彻底杜绝全文件读取禁令（Absolute Ban on Whole-File Reading）**：
+  * **严禁裸传 `target.file` 读全文件**！任何不带精确行号切片范围的全文件读取调用均判定为严重脱轨违规；
+* **`read` 门面限制维度远多于 `search` 的六重立体限制法则（Six-Layer Guard on Read）**：
+  `search` 命令通常仅需限制条数与字节；而 `read` 命令直接承载具有高密度换行与制表符的源码，转义膨胀率极高（实测 9020 字符即可触发 16KB 反压落盘）。因此，**`read` 门面全子命令必须执行比 `search` 维度更多、大小更严的六重立体限制**：
+  1. **行号双参严格定界（完整源码，拒绝残卷）**：调用 `read.file` 必须且仅能显式传入 `options: {offset: 起始行, limit: 80~160}`（绝对严禁省略 offset，常规局部视窗推荐 80~160 行，**最大上限 Ceiling: 250 行，硬顶绝对不得超过 280 行**；由精准行号切片锁定区间，保证首尾闭合与源码完整性，严禁依赖粗暴截断制造半截残缺代码）；
+  2. **行号视窗绝对闭合（拒绝半截残卷）**：依靠精确的 `offset + limit` 双参视窗锁定读取区间，保证代码行行连续、首尾闭合，严禁依赖粗暴字符截断制造半截残缺代码；
+  3. **更紧缩的字节硬顶（8KB~10KB）**：常规精读子命令（`read.source`, `read.symbols`, `read.editing_context`, `read.summary`）必须传入 `options: {max_bytes: 8192}`（常规 8KB 锁死，为 JSON 序列化预留 50% 缓冲），物理切片 `read.file` 必须传入 `options: {max_bytes: 10240}`（硬顶 10KB）；
+  4. **符号数量与函数行数硬约束**：`read.symbols` 符号数组严格限定在 2~3 个；巨型长函数调用 `read.source` 强制附加 `context: {context_lines: 3, max_lines: 100}`；
+  5. **真实源码所见即所得铁律（No Code Elision）**：彻底废止 `compress_bodies`，严禁将函数体掏空为存根！必须保证读取到的每一行代码都是真实完整的源码；
+  6. **精读优先级阶梯**：
+     - **符号级 `read.source` / `read.symbols` 绝对优先**：研读代码必须优先通过单符号 `read.source` 或批量 `read.symbols` 展开，其天然语法闭合性彻底杜绝整文件泛洪；
+     - **骨架级 `read.summary` 次之**：未知代码文件首动先读大纲结构与行号地图，零 Token 浪费；
+     - **局部上下文 `read.editing_context` 辅助**：仅在编辑准备时提取目标函数相邻局部拓扑；
+     - **物理切片 `read.file` 严禁裸读**：仅适用于非代码资产（UI模板、配置、纯数据）或已定位确切行号的局部视窗。
 * **唯一法定单构容器（彻底消灭 arguments 混用）**：
   `read` 门面严禁使用 `arguments` 容器！目标文件必须且仅能封装于 `target.file` 对象内，严禁容器层级错位导致 options 参数被底层忽略：
   - 唯一法定标准调用模板：
@@ -769,19 +802,21 @@ search({
     read({
       "operation": "file",
       "target": { "file": "相对路径/文件名.ext" },
-      "options": { "offset": 120, "limit": 80, "max_bytes": 10240 }
+      "options": { "offset": 120, "limit": 80, "max_bytes": 10240 },
+      "output": { "format": "json" }
     })
     ```
 * **防切香肠式翻页三大法定靶向法则（Anti-Chop Targeting Invariants）**：
   严禁在未定位目标行号前，从第 1 行开始盲目连续分页读取（严禁 1~80, 81~160, 161~240 循环轮询）！长文件阅读必须且仅能采用以下三种单次收敛机制：
-  - **法则 A（大纲靶向狙击）**：未知目标位置的大文件，必须先执行 `read(operation="summary", target: {file: "..."})` 提取行号大纲地图，直接跳至目标函数/属性对应行号下发单次视窗读取；
-  - **法则 B（语法存根化全景）**：需要纵览千行大文件全局骨架并研读某核心函数时，强制开启语法压缩：`read(operation="file", target: {file: "..."}, context: {compress_bodies: true}, options: {keep: "核心函数名", max_bytes: 10240})`，单次调用全景获取；
+  - **法则 A（大纲靶向狙击）**：未知目标位置的大文件，必须先执行 `read(operation="summary", target: {file: "..."}, options: {max_bytes: 8192})` 提取行号大纲地图，直接跳至目标函数/属性对应行号下发单次视窗读取；
+  - **法则 B（大纲定位+真实切片）**：需要纵览千行大文件时，严禁使用 compress_bodies 掏空代码！必须先调用 `read.summary` 获取结构大纲与行号地图，再针对核心函数下发真实视窗切片 `read.file(offset, limit)`；
   - **法则 C（逆向探针定界）**：先由 `search.text` 命中精确行号（如第 142 行），再直接以 `options: {offset: 130, limit: 30, max_bytes: 10240}` 狙击读取上下文，一次性交付！
 
-#### 准则七：【长文件存根化巡检契约】（AST Compress Protocol）
-* **触发条件**：需要了解某个大文件（> 150 行）的内部全貌、成员变量和主要函数骨架；
-* **唯一法定动作**：调用 `read.file`，并显式传入 `context: {compress_bodies: true}` 与 `options: {keep: "核心函数名"}`；
-* **执行机理**：利用 Tree-sitter 语法压缩器，将文件内部非核心函数体自动替换为 `{ /* N lines elided */ }` 存根，**体积直接削减 70%**，同时完整保留 `keep` 指定核心函数的源码实现。
+#### 准则七：【真实源码所见即所得与杜绝代码掏空契约】（Absolute Ban on Code Elision）
+* **核心原则**：**源码阅读必须 100% 所见即所得**！严禁调用 `compress_bodies: true` 将非核心函数体掏空为 `{ /* N lines elided */ }` 存根；
+* **零损失替代方案**：
+  - 了解大文件全貌：唯一法定操作是调用 `read(operation="summary")`，以极低 Token 提取类结构、函数签名大纲与行号地图；
+  - 研读函数实现：通过符号级 `read.source` 或已知行号的局部物理切片 `read.file` 精读完整代码，杜绝任何代码空洞。
 
 #### 准则八：【新任务首动文件重置契约】（New User Task Boundary）
 * **触发条件**：用户一上来就直接提供具体文件路径开启新任务；
@@ -795,13 +830,13 @@ search({
 
 | 触发场景 (Trigger) | 唯一法定操作 (Action) | 核心必填参数与门禁 | 格式与容器规则 |
 | :--- | :--- | :--- | :--- |
-| **`search` 命中 2 ~ 4 个关联函数/结构体** | `read(operation="symbols")` | `target: {symbols: ["id1","id2"]}`, `options: {include_source: true}`, `context: {context_lines: 3}`, 数组长度 2~4 | **严禁 gcx**（保留 callers 列表） |
-| **明确研读某 1 个具体函数/结构体** | `read(operation="source")` | `target: {symbol: "id"}`, `context: {context_lines: 3}` | **严禁 gcx**（保证函数完整语法闭合） |
-| **未知代码文件，需快速掌握符号大纲与依赖** | `read(operation="summary")` | `target: {file: "path"}` | **严禁 gcx**（极低 Token 提取类型分布与顶级符号） |
-| **已知非代码文件明确行号（UI组件/配置/报错行）** | `read(operation="file")` | `target: {file: "path"}`, `options: {offset: 起始行, limit: 80~100, max_bytes: 10240}` | **严禁 gcx**（硬锁 <= 10KB 阻断 output.txt） |
-| **长文件（>150行）结构巡检与骨架研判** | `read(operation="file")` | `target: {file: "path"}`, `context: {compress_bodies: true}`, `options: {keep: "核心函数", max_bytes: 10240}` | **严禁 gcx**（语法级存根化瘦身70%） |
-| **落笔修改前装配相邻符号与导入依赖** | `read(operation="editing_context")` | `target: {file: "path"}`, `options: {keep: "目标修改函数"}` | **严禁 gcx**（装配局部编辑拓扑） |
-| **追溯某特定符号演化历史与提交记录** | `read(operation="history")` | `target: {symbol: "id"}` | **严禁 gcx**（获取符号级提交追溯） |
+| **`search` 命中 2 ~ 3 个关联函数/结构体** | `read(operation="symbols")` | `target: {symbols: ["id1","id2"]}`, `options: {include_source: true, max_bytes: 8192}`, `context: {context_lines: 3}`, 数组上限 Ceiling: 16 (推荐2~4, 聚合精读放宽至16) | **统一 JSON 格式**（100% 保留 callers 拓扑与行号，锁死 8KB） |
+| **明确研读某 1 个具体函数/结构体** | `read(operation="source")` | `target: {symbol: "id"}`, `context: {context_lines: 3, max_lines: 100~200(上限300)}`, `options: {max_bytes: 8192}` | **统一 JSON 格式**（天然语法闭合，严锁 8KB，杜绝整文件裸读） |
+| **未知代码文件，需快速掌握符号大纲与依赖** | `read(operation="summary")` | `target: {file: "path"}`, `options: {max_bytes: 8192}` | **统一 JSON 格式**（极低 Token 提取类型分布与顶级符号） |
+| **已知非代码文件明确行号（UI组件/配置/报错行）** | `read(operation="file")` | `target: {file: "path"}`, `options: {offset: 起始行, limit: 80~160(上限250,硬顶280), max_bytes: 10240}` | **统一 JSON 格式**（行号+字符+字节三重熔断阻断 output.txt） |
+| **长文件（>100行）结构巡检与骨架研判** | `read(operation="summary")` | `target: {file: "path"}`, `options: {max_bytes: 8192}` | **统一 JSON 格式**（大纲先行，零Token浪费，严禁掏空源码） |
+| **落笔修改前装配相邻符号与导入依赖** | `read(operation="editing_context")` | `target: {file: "path"}`, `options: {keep: "目标修改函数", max_bytes: 8192}` | **统一 JSON 格式**（装配局部编辑拓扑，紧缩至 8KB） |
+| **追溯某特定符号演化历史与提交记录** | `read(operation="history")` | `target: {symbol: "id"}`, `options: {max_bytes: 8192}` | **统一 JSON 格式**（获取符号级提交追溯） |
 
 ---
 
@@ -828,18 +863,21 @@ read({
       "Project-A/src/net/tcp.rs::TcpHandler::handshake"
     ]
   },
-  "options": {"include_source": true},
-  "context": {"context_lines": 3}
+  "options": {"include_source": true, "max_bytes": 8192},
+  "context": {"context_lines": 3},
+  "output": {"format": "json"}
 })
 ```
-* **参数规范**：`target.symbols` 数组限 2~4 个符号，Symbol ID 严格正斜杠 `/`，容器严格区分 `options` 与 `context`，严禁 `output.format`。
+* **参数规范**：`target.symbols` 数组严格锁定 2~3 个符号，Symbol ID 严格正斜杠 `/`，强制 `options: {max_bytes: 8192}` 锁死 8KB，显式 `output: {format: "json"}`。
 
 #### 模板 2：单符号独立深入精读 (`read.source`)
 ```json
 read({
   "operation": "source",
   "target": {"symbol": "Project-A/src/net/tcp.rs::TcpHandler::handshake"},
-  "context": {"context_lines": 3}
+  "context": {"context_lines": 3, "max_lines": 100},
+  "options": {"max_bytes": 8192},
+  "output": {"format": "json"}
 })
 ```
 
@@ -847,7 +885,9 @@ read({
 ```json
 read({
   "operation": "summary",
-  "target": {"file": "Project-A/src/net/tcp.rs"}
+  "target": {"file": "Project-A/src/net/tcp.rs"},
+  "options": {"max_bytes": 8192},
+  "output": {"format": "json"}
 })
 ```
 
@@ -856,17 +896,18 @@ read({
 read({
   "operation": "file",
   "target": {"file": "Project-A/frontend/src/views/Settings.vue"},
-  "options": {"offset": 80, "limit": 80, "max_bytes": 10240}
+  "options": {"offset": 80, "limit": 120, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
-#### 模板 5：长文件存根化无损巡检 (`read.file` - 语法压缩)
+#### 模板 5：大文件精准视窗精读 (`read.file` - 真实切片所见即所得)
 ```json
 read({
   "operation": "file",
   "target": {"file": "Project-A/src/server.rs"},
-  "context": {"compress_bodies": true},
-  "options": {"keep": "start_listen,reload_config", "max_bytes": 10240}
+  "options": {"offset": 100, "limit": 120, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -875,7 +916,8 @@ read({
 read({
   "operation": "editing_context",
   "target": {"file": "Project-A/src/net/tcp.rs"},
-  "options": {"keep": "handshake"}
+  "options": {"keep": "handshake", "max_bytes": 8192},
+  "output": {"format": "json"}
 })
 ```
 
@@ -917,14 +959,15 @@ read({
 * **缺省保护机理**：若未传入 `kind` 或 `kind` 为空，底层默认执行 `kind="help"`，返回全量 94 种可用分析种类字典；
 * **反向禁令**：`analyze` 门面不支持 `operation` 参数，**严禁向 `analyze` 传入 `operation`**（会被底层自动剥离）。
 
-#### 准则三：【零落盘预算与报表条数硬顶铁律】（Zero Spill Budget for Analyze）
-* **高危场景**：在大中型工程中，全图分析（如 `dead_code`、`hotspots`、`sast`、`todos`、`bottlenecks`）直接全量输出会产生数千条结果，体积极易突破 20KB 触发 Antigravity 磁盘转储 `output.txt`；
-* **唯一法定收窄动作（绝对必填双参数）**：
+#### 准则三：【全命令零落盘预算与 analyze 最大上限管控铁律】（Zero Spill Budget & Analyze Max Ceiling）
+* **高危场景**：在大中型工程中，全图分析（如 `dead_code`、`hotspots`、`sast`、`todos`、`bottlenecks`、`cycles`）直接全量输出会产生数千条结果，体积极易突破 16KB 触发宿主磁盘转储 `output.txt`；
+* **唯一法定收窄动作（绝对必填三位一体参数）**：
   * **单仓收窄**：必须在 `options` 容器中传入 `repo: "Project-A"`，触发 `analyzeScopeAwareKinds` central 过滤机制，严禁跨库全量扫；
-  * **条数硬顶**：产生列表的分析种类必须显式传入 `limit: 30`（严格锁定在 10 ~ 30 条以内），确保单次响应体积锁定在 5KB ~ 9KB 黄金内存区间；
-  * **稀疏投影**：必须配合 `fields: "..."` 过滤冗余字段，严禁全量转储；
-  * ❌ 违规反例（严禁，必触发转储）：`analyze({ "kind": "dead_code", "options": {"repo": "Project-A"} })`（缺省 limit 裸奔）
-  *  合规正例（法定）：`analyze({ "kind": "dead_code", "options": {"repo": "Project-A", "limit": 30, "fields": "symbol,file,line"} })`
+  * **最大上限管控与 AI 动态裁量**：凡产生列表的分析种类，**最大上限 Ceiling 设定为 60 条**（AI 动态范围 `10 ~ 60`；常规健康排查设 15~25，全仓技术债全面审计放宽至 40~60 条；必须在 `options` 中传入 `repo` 作用域；100% 保全诊断上下文（保留 message, rule, severity, remediation）；列表结果由引擎底层 `applyBudget(max_bytes: 10240)` 自动早停截断兜底）；
+  * **字节硬顶**：必须显式附加 `options: {max_bytes: 10240}`，严格将输出体积锁定在 10KB 安全线以内；
+  * **全保真诊断输出**：严禁传入 `fields` 过滤字段！必须全量保留告警详细原因（`message`）、检测规则（`rule`）与修复指引（`remediation`），杜绝因字段缺失导致盲目猜想；
+  * ❌ 违规反例（严禁，必触发转储）：`analyze({ "kind": "dead_code", "options": {"repo": "Project-A"} })`（缺省 limit 与 max_bytes 裸奔）
+  *  合规正例（法定）：`analyze({ "kind": "dead_code", "options": {"repo": "Project-A", "limit": 25, "max_bytes: 10240} })`
 
 #### 准则四：【写治理与管理操作绝对物理隔离】（Write Isolation Mandate）
 * **底层事实**：`analyze` 门面声明为只读模式（`readOnly: true`）；
@@ -943,11 +986,11 @@ read({
 | :--- | :--- | :--- | :--- |
 | **排查系统循环依赖 / 架构分层违规成环** | 拓扑图计算 | `analyze(kind="cycles")` | `options: {repo: "Project-A"}` |
 | **推演新增依赖是否会导致成环** | 架构推演 | `analyze(kind="would_create_cycle")` | `options: {from_id: "Project-A/src/a.rs::A", to_id: "Project-A/src/b.rs::B"}` |
-| **排查未被引用的废弃函数 / 死代码** | 质量与瘦身 | `analyze(kind="dead_code")` | `options: {repo: "Project-A", limit: 30}`（必须带 limit 防转储） |
+| **排查未被引用的废弃函数 / 死代码** | 质量与瘦身 | `analyze(kind="dead_code")` | `options: {repo: "Project-A", limit: 25, max_bytes: 10240}`（必须带 limit 与 max_bytes 防转储） |
 | **多协程/多线程并发数据写入竞态排查** | 并发安全 | `analyze(kind="race_writes")` | `options: {repo: "Project-A"}` |
 | **跨仓 / 跨微服务 API 接口契约对齐** | 系统边界 | `analyze(kind="contracts")` | `options: {role: "consumer", path: "/v1/auth"}`（匹配 HTTP/gRPC/Topic） |
 | **定位全系统核心架构瓶颈节点** | 稳定性审计 | `analyze(kind="bottlenecks")` | `options: {repo: "Project-A", limit: 20}` |
-| **静态代码安全漏洞与语法缺陷审计** | 静态安全 | `analyze(kind="sast")` | `options: {repo: "Project-A", limit: 30}`（190+ 漏洞检测规则） |
+| **静态代码安全漏洞与语法缺陷审计** | 静态安全 | `analyze(kind="sast")` | `options: {repo: "Project-A", limit: 25, max_bytes: 10240}`（190+ 漏洞检测规则） |
 | **获取代码库结构健康度量化总分** | 质量度量 | `analyze(kind="health_score")` | `options: {repo: "Project-A"}` |
 | **全景宏观架构与核心模块入口概览** | 全景鸟瞰 | `analyze(kind="architecture")` | `options: {repo: "Project-A"}` |
 | **通道未关闭 / 协程泄露静态检测** | 并发安全 | `analyze(kind="unclosed_channels")` | `options: {repo: "Project-A"}` |
@@ -962,7 +1005,7 @@ read({
 ```json
 analyze({
   "kind": "cycles",
-  "options": {"repo": "Project-A"}
+  "options": {"repo": "Project-A", "limit": 25, "max_bytes": 10240}
 })
 ```
 
@@ -970,7 +1013,7 @@ analyze({
 ```json
 analyze({
   "kind": "would_create_cycle",
-  "options": {"from_id": "Project-A/src/net/tcp.rs::TcpHandler", "to_id": "Project-A/src/auth/token.rs::TokenVerifier"}
+  "options": {"from_id": "Project-A/src/net/tcp.rs::TcpHandler", "to_id": "Project-A/src/auth/token.rs::TokenVerifier", "max_bytes": 10240}
 })
 ```
 
@@ -978,7 +1021,7 @@ analyze({
 ```json
 analyze({
   "kind": "dead_code",
-  "options": {"repo": "Project-A", "limit": 30}
+  "options": {"repo": "Project-A", "limit": 25, "max_bytes": 10240}
 })
 ```
 
@@ -986,7 +1029,7 @@ analyze({
 ```json
 analyze({
   "kind": "race_writes",
-  "options": {"repo": "Project-A"}
+  "options": {"repo": "Project-A", "limit": 25, "max_bytes": 10240}
 })
 ```
 
@@ -994,7 +1037,7 @@ analyze({
 ```json
 analyze({
   "kind": "contracts",
-  "options": {"role": "consumer", "path": "/api/v1/session"}
+  "options": {"role": "consumer", "path": "/api/v1/session", "limit": 25, "max_bytes": 10240}
 })
 ```
 
@@ -1002,7 +1045,7 @@ analyze({
 ```json
 analyze({
   "kind": "bottlenecks",
-  "options": {"repo": "Project-A", "limit": 20}
+  "options": {"repo": "Project-A", "limit": 20, "max_bytes": 10240}
 })
 ```
 
@@ -1010,7 +1053,7 @@ analyze({
 ```json
 analyze({
   "kind": "sast",
-  "options": {"repo": "Project-A", "limit": 30}
+  "options": {"repo": "Project-A", "limit": 25, "max_bytes": 10240}
 })
 ```
 
@@ -1044,9 +1087,9 @@ analyze({
 * **高危场景**：公共基础函数（如通用日志、配置获取、网络发送）调用方成百上千，使用默认 `depth: 2` 会引发调用树爆炸，返回数千节点打爆 20KB 触发 Antigravity 磁盘转储 `output.txt`；
 * **唯一法定参数锁**：
   * **深度硬门禁**：对基础通用函数，`options` 中 `depth` 强制锁定为 `1`（严禁传 `depth >= 2`）；
-  * **条数硬上限**：必须显式传入 `options: {limit: 30}`，锁定在 20 ~ 30 条以内；
-  * **排除测试调用**：必须传入 `options: {exclude_tests: true}`，剔除单元测试干扰；
-  * **强制 GCX 压缩**：必须传入 `output: {format: "gcx"}`，二维表格编码无损保留调用节点并削减 30% 体积，确保响应严格锁定在 5KB ~ 9KB 黄金区间。
+  * **条数硬上限**：必须显式传入 `options: {limit: 25, max_bytes: 10240}`，锁定在 20 ~ 25 条以内；
+  * **保全测试图谱生态（彻底杜绝排除测试）**：严禁传入 `exclude_tests: true`！测试用例是代码最规范的使用范例（Usage Examples），且在 pre-delete 安全删除排查中排除测试会导致致命误删！必须 100% 纳入单元测试调用与引用边；
+  * **全链路统一 JSON 格式（零损失原则）与最大上限管控**：必须传入 `output: {format: "json"}`。源码与实测证实，TOON 编码会丢弃 edge.line（调用发生的精确代码行号）与 edge.context 等核心元数据，导致模型失去精确定位行能力；采用统一 JSON 格式可 100% 完整保留 edge 边属性与调用行号。为防止调用树膨胀击穿宿主 16KB 上限，**必须显式附加 `options: {max_bytes: 10240}` 物理兜底，`limit` 最大上限 Ceiling 设定为 60 条（AI 动态范围 `10 ~ 60`；常规直接调用排查设 15~25，波及面排查放宽至 40~60 条；列表型结果包含 `edge.line` 行号元数据，超额由引擎底层 `applyBudget(max_bytes: 10240)` 自动早停兜底）**。
 
 #### 准则三：【`target` 容器单选互斥契约】（Target Mutex Contract）
 * **容器对象化**：
@@ -1067,17 +1110,17 @@ analyze({
 
 | 触发场景 (Trigger) | 涉及领域 | 唯一法定操作 (Action) | 核心必填参数与门禁规则 |
 | :--- | :--- | :--- | :--- |
-| **查询具体函数的上游调用方（谁调用了我）** | 调用拓扑 | `relations(operation="callers")` | `target: {symbol: "id"}`, `options: {depth: 1, limit: 30, exclude_tests: true}`, `output: {format: "gcx"}` |
-| **查询函数的正向直接依赖（我调用/引用了谁）** | 依赖拓扑 | `relations(operation="dependencies")` | `target: {symbol: "id"}`, `options: {depth: 2, limit: 30}`, `output: {format: "gcx"}` |
-| **查询哪些符号在结构上依赖我** | 依赖拓扑 | `relations(operation="dependents")` | `target: {symbol: "id"}`, `options: {depth: 2, limit: 30}`, `output: {format: "gcx"}` |
-| **全场景引用点精准定位（调用/传参/字段赋值）** | 语法引用 | `relations(operation="usages")` | `target: {symbol: "id"}`, `options: {context: "call", limit: 30}`, 可选 `group_by: "file"` |
+| **查询具体函数的上游调用方（谁调用了我）** | 调用拓扑 | `relations(operation="callers")` | `target: {symbol: "id"}`, `options: {depth: 1, limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
+| **查询函数的正向直接依赖（我调用/引用了谁）** | 依赖拓扑 | `relations(operation="dependencies")` | `target: {symbol: "id"}`, `options: {depth: 2, limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
+| **查询哪些符号在结构上依赖我** | 依赖拓扑 | `relations(operation="dependents")` | `target: {symbol: "id"}`, `options: {depth: 2, limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
+| **全场景引用点精准定位（调用/传参/字段赋值）** | 语法引用 | `relations(operation="usages")` | `target: {symbol: "id"}`, `options: {context: "call", limit: 25, max_bytes: 10240}`, 可选 `group_by: "file"` |
 | **从使用代码字面量反查其调用的目标声明点** | 语法反查 | `relations(operation="declaration")` | `target: {query: "fooBar("}`, `options: {path_prefix: "Project-A", limit: 20}` |
 | **查询类/结构体/接口的双向完整继承树** | 面向对象 | `relations(operation="hierarchy")` | `target: {symbol: "id"}`, `options: {direction: "both", depth: 3}` |
 | **查询接口（Interface/Trait）的所有具体落地实现** | 多态实现 | `relations(operation="implementations")` | `target: {symbol: "id"}`（单次查出整棵实现树，严禁逐文件搜 impl） |
 | **查询虚方法/接口方法的重写子类实现** | 多态实现 | `relations(operation="overrides")` | `target: {symbol: "id"}`, `options: {direction: "children"}` |
-| **删除或重命名符号前的悬挂引用安全审计** | 重构门禁 | `relations(operation="references")` | `target: {symbol: "id"}`, `options: {exclude_tests: true}`（唯一法定 pre-delete 门禁） |
+| **删除或重命名符号前的悬挂引用安全审计** | 重构门禁 | `relations(operation="references")` | `target: {symbol: "id"}`（唯一法定 pre-delete 门禁，100% 覆盖生产与测试引用） |
 | **计算把某符号引入当前文件所需的合法 import 路径** | 编码辅助 | `relations(operation="import_path")` | `options: {name: "SymbolName", path: "Project-A/src/target.rs"}` |
-| **以符号为中心探测紧密协作代码簇子图** | 局部聚类 | `relations(operation="cluster")` | `target: {symbol: "id"}`, `options: {radius: 2, limit: 30}` |
+| **以符号为中心探测紧密协作代码簇子图** | 局部聚类 | `relations(operation="cluster")` | `target: {symbol: "id"}`, `options: {radius: 2, limit: 25, max_bytes: 10240}` |
 
 ---
 
@@ -1088,8 +1131,8 @@ analyze({
 relations({
   "operation": "callers",
   "target": {"symbol": "Project-A/src/net/tcp.rs::TcpHandler::handshake"},
-  "options": {"depth": 1, "limit": 30, "exclude_tests": true},
-  "output": {"format": "gcx"}
+  "options": {"depth": 1, "limit": 25, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -1098,8 +1141,8 @@ relations({
 relations({
   "operation": "usages",
   "target": {"symbol": "Project-A/src/net/tcp.rs::TcpHandler"},
-  "options": {"context": "call", "limit": 30, "group_by": "file"},
-  "output": {"format": "gcx"}
+  "options": {"context": "call", "limit": 25, "group_by": "file", "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -1124,8 +1167,7 @@ relations({
 ```json
 relations({
   "operation": "references",
-  "target": {"symbol": "Project-A/src/legacy.rs::deprecated_helper"},
-  "options": {"exclude_tests": true}
+  "target": {"symbol": "Project-A/src/legacy.rs::deprecated_helper"}
 })
 ```
 
@@ -1182,11 +1224,11 @@ trace (全链路追踪门面) ──┼─── 5. taint (安全污点分析：
 
 #### 准则三：【正向调用展开零落盘预算门禁】（Zero Spill Budget for Call Chain）
 - **单向无目标正向遍历 (`trace.call_chain`)**：仅用于评估某一函数向下级联触发的整个调用子树。
-- **防爆参数锁**：
+- **防爆参数锁与全链路统一 JSON**：
   - **深度硬门禁**：`options` 中 `depth` 锁定为 `2`（高扇出根函数）至 `3`（普通业务函数），严禁使用默认值 `4`；
-  - **节点数量上限**：必须显式传入 `options: {limit: 30}`，严禁超过 30 节点；
-  - **压缩单行输出**：必须传入 `options: {compact: true}`，节省 50%~70% 响应体积；
-  - **强制 GCX 编码**：必须显式传入 `output: {format: "gcx"}`，彻底消除 20KB 磁盘转储风险。
+  - **节点数量最大上限与 AI 动态裁量**：**`limit` 最大上限 Ceiling 设定为 60 节点**（AI 动态范围 `5 ~ 60`；常规调用链深度 2 推荐 15~20，复杂业务全拓扑遍历放宽至 40~60 节点），必须显式附加 `options: {max_bytes: 10240}`，由引擎底层 `applyBudget` 自动兜底；
+  - **保全精确行号与树形 AST（彻底杜绝单行压缩）**：严禁传入 `compact: true`！单行模式会剥离 `edge.line`（调用发生的代码行号）与上下文；必须默认保留完整结构化输出，确保模型一眼看清每次调用是在哪一行触发；
+  - **全链路统一 JSON 格式**：必须显式传入 `output: {format: "json"}`，保全 trace 路径拓扑关系与精确行号。
 
 #### 准则四：【容器分层与目标双向互斥契约】（Container Boundaries & Mutex Contract）
 - **双向端点容器契约 (`path`, `flow`, `taint`)**：
@@ -1207,13 +1249,13 @@ trace (全链路追踪门面) ──┼─── 5. taint (安全污点分析：
 
 | 触发场景 (Trigger) | 涉及领域 | 唯一法定操作 (Action) | 核心必填参数与门禁规则 |
 | :--- | :--- | :--- | :--- |
-| **已知起止两点，排查 A 如何调用到 B（最短调用链路）** | 定向调用链 | `trace(operation="path")` | `target: {symbol: "src"}`, `to: {symbol: "dst"}`, `options: {max_depth: 16, k: 1}`, `output: {format: "gcx"}` |
-| **追踪变量/入参/数据在跨函数间的流动传递路径** | 跨过程数据流 | `trace(operation="flow")` | `target: {symbol: "src"}`, `to: {symbol: "dst"}`, `options: {max_depth: 12, max_paths: 5}`, `output: {format: "gcx"}` |
-| **审计单个复杂函数内部的控制流分支与 def-use 链** | 过程内控制流 | `trace(operation="cfg")` | `target: {symbol: "id"}`, `options: {mermaid: true}`, `output: {format: "gcx"}` |
-| **无特定终点，排查某函数向下触发的所有下级调用子树** | 正向调用子树 | `trace(operation="call_chain")` | `target: {symbol: "id"}`, `options: {depth: 2, limit: 30, compact: true}`, `output: {format: "gcx"}` |
-| **跨系统排查未校验输入源是否扩散至危险执行点** | 安全污点分析 | `trace(operation="taint")` | `target: {query: "source_pat"}`, `to: {query: "sink_pat"}`, `options: {min_tier: "ast_resolved"}`, `output: {format: "gcx"}` |
-| **沿特定边类型（如 calls/references）有预算自由图探索** | 自由拓扑游走 | `trace(operation="walk")` | `target: {symbol: "id"}`, `options: {edge_kinds: "calls", direction: "out", token_budget: 1500, max_depth: 3}`, `output: {format: "gcx"}` |
-| **执行 1~5 级管道只读 DSL 查询特定复杂图拓扑** | DSL 结构查询 | `trace(operation="graph")` | `target: {query: "nodes kind=function | traverse calls out | filter path=Project-A"}`, `options: {limit: 30}`, `output: {format: "gcx"}` |
+| **已知起止两点，排查 A 如何调用到 B（最短调用链路）** | 定向调用链 | `trace(operation="path")` | `target: {symbol: "src"}`, `to: {symbol: "dst"}`, `options: {max_depth: 16, k: 1, max_bytes: 10240}`, `output: {format: "json"}` |
+| **追踪变量/入参/数据在跨函数间的流动传递路径** | 跨过程数据流 | `trace(operation="flow")` | `target: {symbol: "src"}`, `to: {symbol: "dst"}`, `options: {max_depth: 12, max_paths: 5, max_bytes: 10240}`, `output: {format: "json"}` |
+| **审计单个复杂函数内部的控制流分支与 def-use 链** | 过程内控制流 | `trace(operation="cfg")` | `target: {symbol: "id"}`, `options: {mermaid: true, max_bytes: 10240}`, `output: {format: "json"}` |
+| **无特定终点，排查某函数向下触发的所有下级调用子树** | 正向调用子树 | `trace(operation="call_chain")` | `target: {symbol: "id"}`, `options: {depth: 2, limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
+| **跨系统排查未校验输入源是否扩散至危险执行点** | 安全污点分析 | `trace(operation="taint")` | `target: {query: "source_pat"}`, `to: {query: "sink_pat"}`, `options: {min_tier: "ast_resolved", max_bytes: 10240}`, `output: {format: "json"}` |
+| **沿特定边类型（如 calls/references）有预算自由图探索** | 自由拓扑游走 | `trace(operation="walk")` | `target: {symbol: "id"}`, `options: {edge_kinds: "calls", direction: "out", token_budget: 1500, max_depth: 3, max_bytes: 10240}`, `output: {format: "json"}` |
+| **执行 1~5 级管道只读 DSL 查询特定复杂图拓扑** | DSL 结构查询 | `trace(operation="graph")` | `target: {query: "nodes kind=function | traverse calls out | filter path=Project-A"}`, `options: {limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
 
 ---
 
@@ -1226,7 +1268,7 @@ trace({
   "target": {"symbol": "Project-A/src/api/handler.rs::handle_request"},
   "to": {"symbol": "Project-A/src/db/pool.rs::acquire_connection"},
   "options": {"max_depth": 16, "k": 1, "include_references": true},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -1237,7 +1279,7 @@ trace({
   "target": {"symbol": "Project-A/src/auth/session.rs::parse_header"},
   "to": {"symbol": "Project-A/src/service/user.rs::authenticate"},
   "options": {"max_depth": 12, "max_paths": 5},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -1247,7 +1289,7 @@ trace({
   "operation": "cfg",
   "target": {"symbol": "Project-A/src/core/router.rs::dispatch_packet"},
   "options": {"mermaid": true},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -1256,8 +1298,8 @@ trace({
 trace({
   "operation": "call_chain",
   "target": {"symbol": "Project-A/src/controller/order.rs::create_order"},
-  "options": {"depth": 2, "limit": 30, "compact": true},
-  "output": {"format": "gcx"}
+  "options": {"depth": 2, "limit": 25, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -1268,7 +1310,7 @@ trace({
   "target": {"query": "path:Project-A/src/api/ kind:parameter"},
   "to": {"query": "exact:execute_raw_sql"},
   "options": {"min_tier": "ast_resolved", "max_depth": 10},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -1278,7 +1320,7 @@ trace({
   "operation": "walk",
   "target": {"symbol": "Project-A/src/core/engine.rs::Engine::start"},
   "options": {"edge_kinds": "calls,references", "direction": "out", "token_budget": 1500, "max_depth": 3},
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -1287,8 +1329,8 @@ trace({
 trace({
   "operation": "graph",
   "target": {"query": "nodes kind=interface name~Service | traverse implements in | filter path=Project-A/src/"},
-  "options": {"limit": 30},
-  "output": {"format": "gcx"}
+  "options": {"limit": 25, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 ---
@@ -1624,12 +1666,12 @@ change (评估与验证中枢) ─┼
 | 触发场景 (Trigger) | 质检阶段 | 唯一法定操作 (Action) | 核心必填参数与门禁规则 |
 | :--- | :--- | :--- | :--- |
 | **写操作超时/断开/报错后，核验物理落盘结果** | 落地即核验 | `change(operation="receipt")` | 可选参数 `receipt: "id"` 或 `path: "path"`，无参查询最近记录 |
-| **检视当前 Git 工作区未提交改动的具体符号与爆炸半径** | 变动检视 | `change(operation="detect")` | `options: {scope: "unstaged", limit: 30}`, `output: {format: "gcx"}` |
+| **检视当前 Git 工作区未提交改动的具体符号与爆炸半径** | 变动检视 | `change(operation="detect")` | `options: {scope: "unstaged", limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
 | **修改公共函数签名或方法前，预检下游调用破坏** | 改动前预检 | `change(operation="verify")` | `source: {changes: [{"symbol_id": "id", "new_signature": "sig"}]}` |
-| **评估修改一批符号的层级爆炸半径（d=1, d=2, d=3）** | 改动前预检 | `change(operation="impact")` | `target: {symbols: ["id1", "id2"]}`, `options: {limit: 30}` |
+| **评估修改一批符号的层级爆炸半径（d=1, d=2, d=3）** | 改动前预检 | `change(operation="impact")` | `target: {symbols: ["id1", "id2"]}`, `options: {limit: 25, max_bytes: 10240}` |
 | **全流水线评估代码变更风险分数与裁决策略** | 风险评估 | `change(operation="contract")` | `source: {scope: "unstaged"}`, 固定 `ack: false` |
-| **改动落盘后，精准定位覆盖了本次改动的单元测试** | 改后质检 | `change(operation="tests")` | `target: {symbols: ["id1", "id2"]}`, `options: {compact: true, depth: 3}` |
-| **核查变动符号是否违背项目的架构守卫规则与边界禁令** | 改后质检 | `change(operation="guards")` | `target: {symbols: ["id1", "id2"]}`, `options: {compact: true}` |
+| **改动落盘后，精准定位覆盖了本次改动的单元测试** | 改后质检 | `change(operation="tests")` | `target: {symbols: ["id1", "id2"]}`, `options: {depth: 3}` |
+| **核查变动符号是否违背项目的架构守卫规则与边界禁令** | 改后质检 | `change(operation="guards")` | `target: {symbols: ["id1", "id2"]}` |
 | **获取语言服务器返回的当前文件实时语法/类型诊断问题** | 改后质检 | `change(operation="diagnostics")` | `target: {file: "path"}`, `options: {wait: true}` |
 | **获取针对当前诊断错误的精准语言服务器修复动作** | 改后质检 | `change(operation="code_actions")` | `target: {file: "path"}`, `options: {start_line: 10}` |
 | **对比两个 Git 分支之间的全量图谱符号差异** | 分支比对 | `change(operation="compare_branches")` | `target: {symbol: "id"}`, `options: {base_ref: "main", head_ref: "feature"}` |
@@ -1651,7 +1693,7 @@ change({
 change({
   "operation": "tests",
   "target": {"symbols": ["Project-A/src/auth/token.rs::verify_jwt_token"]},
-  "options": {"compact": true, "depth": 3}
+  "options": {"depth": 3}
 })
 ```
 
@@ -1675,7 +1717,7 @@ change({
 change({
   "operation": "guards",
   "target": {"symbols": ["Project-A/src/api/handler.rs::process_order", "Project-A/src/models/order.rs::OrderState"]},
-  "options": {"compact": true}
+  // 保留完整守卫校验信息
 })
 ```
 
@@ -1683,8 +1725,8 @@ change({
 ```json
 change({
   "operation": "detect",
-  "options": {"scope": "unstaged", "limit": 30},
-  "output": {"format": "gcx"}
+  "options": {"scope": "unstaged", "limit": 25, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -1693,8 +1735,8 @@ change({
 change({
   "operation": "impact",
   "target": {"symbols": ["Project-A/src/core/engine.rs::Engine::stop"]},
-  "options": {"limit": 30},
-  "output": {"format": "gcx"}
+  "options": {"limit": 25, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -1777,9 +1819,9 @@ review (本地审阅门面) ─┼── 4. sibling_context (兄弟文件上下�
 
 | 触发场景 (Trigger) | 涉及领域 | 唯一法定操作 (Action) | 核心必填参数与门禁规则 |
 | :--- | :--- | :--- | :--- |
-| **对当前工作区未提交修改执行全量代码审阅** | 本地代码审阅 | `review(operation="run")` | `options: {scope: "unstaged", limit: 30}`, `output: {format: "gcx"}` |
-| **对两个分支比对执行全量打包审阅（CI 门禁大礼包）** | 本地代码审阅 | `review(operation="pack")` | `options: {scope: "compare", base_ref: "main", limit: 30}`, `output: {format: "gcx"}` |
-| **提取 Git diff 波及符号的图谱富集调用上下文** | 审阅上下文 | `review(operation="diff_context")` | `options: {scope: "unstaged", compact: true}` |
+| **对当前工作区未提交修改执行全量代码审阅** | 本地代码审阅 | `review(operation="run")` | `options: {scope: "unstaged", limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
+| **对两个分支比对执行全量打包审阅（CI 门禁大礼包）** | 本地代码审阅 | `review(operation="pack")` | `options: {scope: "compare", base_ref: "main", limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
+| **提取 Git diff 波及符号的图谱富集调用上下文** | 审阅上下文 | `review(operation="diff_context")` | `options: {scope: "unstaged"}` |
 | **评审单文件时拉取并排序其余关联文件的协同 diff** | 兄弟上下文 | `review(operation="sibling_context")` | `options: {focus_file: "Project-A/src/lib.rs", scope: "unstaged"}` |
 | **对生成的审阅报告进行二阶置信度反思与降噪** | 报告批判 | `review(operation="critique")` | `options: {scope: "unstaged"}` |
 | **为人工 Reviewer 生成针对本改动的核心架构提问** | 审阅提议 | `review(operation="questions")` | `options: {scope: "unstaged"}` |
@@ -1794,8 +1836,8 @@ review (本地审阅门面) ─┼── 4. sibling_context (兄弟文件上下�
 ```json
 review({
   "operation": "run",
-  "options": {"scope": "unstaged", "limit": 30},
-  "output": {"format": "gcx"}
+  "options": {"scope": "unstaged", "limit": 25, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -1803,8 +1845,8 @@ review({
 ```json
 review({
   "operation": "pack",
-  "options": {"scope": "compare", "base_ref": "main", "limit": 30},
-  "output": {"format": "gcx"}
+  "options": {"scope": "compare", "base_ref": "main", "limit": 25, "max_bytes": 10240},
+  "output": {"format": "json"}
 })
 ```
 
@@ -2092,8 +2134,8 @@ pr (协同雷达门面)─┼── 4. risk (针对已映射符号或 base diff 
   2. **第二位阶（权重 2）**：变动符号历史代码的最近核心作者（Recent Authorship）；
   3. **第三位阶（权重 1）**：协同变更专家（Co-change Experts，历史上常联动修改该区域的开发者）。
 
-#### 准则五：【零落盘与 GCX 格式契约】
-- 针对 `pr.list`、`pr.impact`、`pr.triage`、`pr.conflicts`、`pr.risk`，必须配置 `limit: 20~30` 并显式传入 `output: {format: "gcx"}`，将响应体积锁定在 **5KB~9KB** 黄金内存区间，杜绝触发磁盘转储。
+#### 准则五：【零落盘与全链路统一 JSON 格式契约】
+- 针对 `pr.list`、`pr.impact`、`pr.triage`、`pr.conflicts`、`pr.risk`，必须显式传入 `output: {format: "json"}` 并附加 `max_bytes: 10240` 物理兜底；**`pr.list` 的 `limit` 最大上限 Ceiling 设定为 60 项（AI 动态范围 `10 ~ 60`，常规 15~25）；`pr.conflicts` 与 `pr.triage` 最大上限 Ceiling 设定为 30 项；`pr.reviewers` 最大上限 Ceiling 设定为 20 项**；列表型回包由引擎级 `applyBudget(max_bytes: 10240)` 自动早停兜底，杜绝触发磁盘转储与元数据丢失。
 
 ---
 
@@ -2101,11 +2143,11 @@ pr (协同雷达门面)─┼── 4. risk (针对已映射符号或 base diff 
 
 | 触发场景 (Trigger) | 涉及领域 | 唯一法定操作 (Action) | 核心必填参数与门禁规则 |
 | :--- | :--- | :--- | :--- |
-| **检索开放 PR 列表并获取状态标签与 CI 阻断判定** | PR 列表分类 | `pr(operation="list")` | 强制容器: `arguments: {state: "open", limit: 30}`, `output: {format: "gcx"}` |
-| **对指定 PR 开展基于图谱的爆炸半径与风险评分** | 爆炸半径分析 | `pr(operation="impact")` | 强制容器: `arguments: {number: 101, receipt: true}`, `output: {format: "gcx"}` |
-| **跨多个开放 PR 检测 AST 社区碰撞并规划合流顺序** | 冲突雷达排期 | `pr(operation="conflicts")` | 强制容器: `arguments: {limit: 20}`, `output: {format: "gcx"}` |
+| **检索开放 PR 列表并获取状态标签与 CI 阻断判定** | PR 列表分类 | `pr(operation="list")` | 强制容器: `arguments: {state: "open", limit: 25, max_bytes: 10240}`, `output: {format: "json"}` |
+| **对指定 PR 开展基于图谱的爆炸半径与风险评分** | 爆炸半径分析 | `pr(operation="impact")` | 强制容器: `arguments: {number: 101, receipt: true, max_bytes: 10240}`, `output: {format: "json"}` |
+| **跨多个开放 PR 检测 AST 社区碰撞并规划合流顺序** | 冲突雷达排期 | `pr(operation="conflicts")` | 强制容器: `arguments: {limit: 20, max_bytes: 10240}`, `output: {format: "json"}` |
 | **对分支比对或已映射符号集执行 5 维加权风险评分** | 综合风险评估 | `pr(operation="risk")` | 强制容器: `arguments: {base: "main"}` 或 `arguments: {ids: "id1,id2"}` |
-| **海量开放 PR 审查工作量智能分流与排期** | PR 审查分流 | `pr(operation="triage")` | 强制容器: `arguments: {limit: 20}`, `output: {format: "gcx"}` |
+| **海量开放 PR 审查工作量智能分流与排期** | PR 审查分流 | `pr(operation="triage")` | 强制容器: `arguments: {limit: 20, max_bytes: 10240}`, `output: {format: "json"}` |
 | **为待提交或已开启 PR 匹配高置信度人工审查人** | 审查人匹配 | `pr(operation="reviewers")` | 强制容器: `arguments: {number: 101}` 或 `arguments: {base: "main", limit: 10}` |
 
 ---
@@ -2118,9 +2160,10 @@ pr({
   "operation": "list",
   "arguments": {
     "state": "open",
-    "limit": 30
+    "limit": 25,
+    "max_bytes": 10240
   },
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -2130,10 +2173,9 @@ pr({
   "operation": "impact",
   "arguments": {
     "number": 105,
-    "receipt": true,
-    "scrub": true
+    "receipt": true
   },
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -2144,7 +2186,7 @@ pr({
   "arguments": {
     "limit": 20
   },
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 
@@ -2155,7 +2197,7 @@ pr({
   "arguments": {
     "base": "main"
   },
-  "output": {"format": "gcx"}
+  "output": {"format": "json"}
 })
 ```
 

@@ -289,8 +289,8 @@ impl GortexService {
         }
 
         let mut projects = Vec::new();
-        let mut daemon_health = "stopped".to_string();
-        let mut daemon_active = false;
+        let daemon_health;
+        let daemon_active;
 
         let res = new_silent_command(executable).arg("status").output();
         match res {
