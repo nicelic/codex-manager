@@ -412,8 +412,7 @@ rem 1. 等待主进程退出
 ping -n 3 127.0.0.1 >nul
 echo [%date% %time%] Initial wait finished. >> "%LOG_FILE%"
 
-rem 2. 清理残留工具进程
-taskkill /F /IM gortex.exe /T >nul 2>&1
+rem 2. 清理残留工具进程（独立守护模式：保持 Gortex daemon 常驻）
 taskkill /F /IM rtk.exe /T >nul 2>&1
 taskkill /F /IM snip.exe /T >nul 2>&1
 taskkill /F /IM llmtrim.exe /T >nul 2>&1
@@ -538,13 +537,7 @@ ping -n 2 127.0.0.1 >nul
 pub async fn exit_app(State(state): State<AppState>) -> impl IntoResponse {
     let sender = state.shutdown_sender.clone();
     tokio::spawn(async move {
-        tokio::task::spawn_blocking(|| {
-            let _ = crate::tools::gortex::service::GortexService::stop_daemon();
-            let _ = crate::tools::gortex::service::GortexService::stop_all_processes(
-                std::time::Duration::from_secs(3),
-            );
-        }).await.ok();
-
+        // 独立守护模式：主程序退出时不停止或杀死 Gortex daemon，保持后台常驻
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
         let _ = sender.send(());
     });

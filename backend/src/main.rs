@@ -196,14 +196,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 crate::common::process::kill_process_by_pid(pid);
             }
 
-            // 确保彻底停止并杀死所有 Gortex 进程（包括其他方式启动的）
-            let _ = tokio::task::spawn_blocking(|| {
-                info!("优雅退出：正在停止并杀死所有 Gortex 进程（包括其他方式启动的）...");
-                let _ = crate::tools::gortex::service::GortexService::stop_daemon();
-                let _ = crate::tools::gortex::service::GortexService::stop_all_processes(
-                    std::time::Duration::from_secs(3),
-                );
-            }).await;
+            // 独立守护模式：主程序退出时不停止或杀死 Gortex daemon，保持后台常驻为外部工具 (如 Google Antigravity) 提供持续服务
+            info!("优雅退出：保持 Gortex daemon 独立守护常驻后台...");
         })
         .await?;
 
