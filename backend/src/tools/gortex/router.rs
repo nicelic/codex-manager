@@ -94,6 +94,19 @@ pub async fn stop() -> impl IntoResponse {
     }
 }
 
+pub async fn recover() -> impl IntoResponse {
+    match GortexService::recover_daemon() {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "message": "Gortex daemon 已重置并成功接管启动", "success": true })),
+        ),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": err, "success": false })),
+        ),
+    }
+}
+
 pub async fn register(payload: Option<Json<GortexPlatformActionRequest>>) -> impl IntoResponse {
     let platform = payload.and_then(|p| p.0.platform).filter(|s| !s.trim().is_empty());
     let platform_ref = platform.as_deref();
@@ -223,6 +236,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/gortex/install", post(install))
         .route("/api/gortex/start", post(start))
         .route("/api/gortex/stop", post(stop))
+        .route("/api/gortex/recover", post(recover))
         .route("/api/gortex/register", post(register))
         .route("/api/gortex/remove", post(remove))
         .route("/api/gortex/trust", post(trust))

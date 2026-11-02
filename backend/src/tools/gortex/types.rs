@@ -94,6 +94,12 @@ pub struct GortexStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_task: Option<GortexActiveTask>,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takeover_state: Option<String>,
+    #[serde(default)]
+    pub mcp_client_count: usize,
+    #[serde(default)]
+    pub gortex_process_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

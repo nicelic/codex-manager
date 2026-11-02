@@ -75,6 +75,8 @@ code { color: #c9e5ff; font-family: Consolas, monospace; }
 .llmtrim-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .llmtrim-actions button.stop { border-color: #824e55; background: #6c303c; }
 .llmtrim-actions button.stop:hover:not(:disabled) { border-color: #ff9b9b; background: #873b49; }
+.llmtrim-actions button.recover { border-color: #b87431; background: #874e1d; }
+.llmtrim-actions button.recover:hover:not(:disabled) { border-color: #ffaa55; background: #a66023; }
 .daemon-badge { border: 1px solid #5b4d39; border-radius: 999px; padding: 5px 10px; color: #e9bf78; background: #2b241a; font-size: 12px; }
 .daemon-badge.running { border-color: #276653; color: #8de6b8; background: #122b25; }
 .daemon-badge.attention { border-color: #8a6a2f; color: #ffd98a; background: #332814; }
