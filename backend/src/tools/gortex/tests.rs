@@ -239,11 +239,14 @@ sandbox = "elevated"
         assert!(prompt.contains("为方便接下来工作的展开，你必须先全量读取"));
         assert!(prompt.contains("C:\\test\\gortex提示词.md"));
         assert!(prompt.contains(&expected_line_str));
-        assert!(prompt.contains("并发发起 4 个切片读取"));
-        assert!(prompt.contains(&format!("L2101-{}", expected_lines)));
+        let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 700);
+        let expected_slice_count_str = format!("并发发起 {} 个切片读取", expected_slices.len());
+        let expected_last_slice = expected_slices.last().unwrap();
+        assert!(prompt.contains(&expected_slice_count_str));
+        assert!(prompt.contains(expected_last_slice));
         assert!(prompt.contains("外部文档只读豁免"));
         assert!(prompt.contains("宿主原生只读工具"));
-        assert!(prompt.contains("严禁调用 Gortex MCP 读取该外部文件"));
+        assert!(prompt.contains("严禁调用 Gortex MCP 读取“gortex提示词.md”"));
         assert!(prompt.contains("后续代码闭环契约"));
         assert!(prompt.contains("使用原生工具"));
         assert!(!prompt.contains("可免除预读此文档"));
