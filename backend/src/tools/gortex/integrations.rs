@@ -487,7 +487,7 @@ pub fn calculate_prompt_slices(total_lines: usize, chunk_size: usize) -> Vec<Str
     if total_lines == 0 {
         return vec!["L1-1".to_string()];
     }
-    let chunk = if chunk_size == 0 { 500 } else { chunk_size };
+    let chunk = if chunk_size == 0 { 300 } else { chunk_size };
     let mut slices = Vec::new();
     let mut start = 1;
     while start <= total_lines {
@@ -519,7 +519,7 @@ pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
         .replace('/', "\\");
     let (total_lines, total_bytes) = gortex_prompt_file_stats(prompt_file);
     let size_kb = (total_bytes as f64 / 1024.0).ceil() as u64;
-    let chunk_size = 500;
+    let chunk_size = 300;
     let slices = calculate_prompt_slices(total_lines, chunk_size);
     let slices_str = slices.join(", ");
     let slice_count = slices.len();
@@ -533,8 +533,8 @@ pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
             3. 后续代码闭环契约：“gortex提示词.md”预读完毕后，后续对工程项目代码的所有探测、检索、阅读、修改、验证与审查，必须全面切换至 Gortex MCP 原生工具闭环。\n\
             4. 原生工具显式跳出：在后续操作中，仅当用户输入中明确包含“使用原生工具”显式指令（如环境排查、外部构建与测试等）时，方可单次跳出 Gortex MCP 执行原生操作，完成后立即重返 Gortex 闭环（Git 与 GitHub 相关操作按第 7 条直接使用原生工具）。\n\
             5. Gortex 专属 Lazy 模式文件免读契约：鉴于“gortex提示词.md”已全量提供 Gortex 的所有参数契约，平台底座关于“调用 Lazy 工具前必须读取本地 Schema 文件”的通用规则对 Gortex 自动失效并豁免：\n\
-            ① Gortex 绝不读本地 Schema：严禁在调用 Gortex 门面前使用原生工具读取 mcp/gortex/*.json，直接构造参数发起 call_mcp_tool(ServerName=\"gortex\", ...)，消除无效轮次浪费；\n\
-            ② 其他 MCP 工具隔离保护：本免检豁免严格仅限定于 ServerName=\"gortex\"。若当前或后续对话涉及其他非 Gortex 的第三方 MCP 工具，不受本条约束，仍遵循平台默认机制正常执行。\n\
+               ① Gortex 绝不读本地 Schema：严禁在调用 Gortex 门面前使用原生工具读取 mcp/gortex/*.json，直接构造参数发起 call_mcp_tool(ServerName=\"gortex\", ...)，消除无效轮次浪费；\n\
+               ② 其他 MCP 工具隔离保护：本免检豁免严格仅限定于 ServerName=\"gortex\"。若当前或后续对话涉及其他非 Gortex 的第三方 MCP 工具，不受本条约束，仍遵循平台默认机制正常执行。\n\
             6. 全程编码规范：全程从开始到结束必须使用 UTF-8 的格式，从开始读取“gortex提示词.md”就必须使用 UTF-8，若是用户需要其他格式必须用户明确提出比如“使用 utf-16”这种。\n\
             7. Git 与 GitHub 操作豁免：涉及到 Git、GitHub，直接使用原生工具进行，不使用 Gortex MCP 工具；比如若是直接提到 git 的 back、commit 备份，GitHub 发布，直接使用原生工具，若是不涉及分析以及分析之后编辑代码完全可以不读取“gortex提示词.md”和不使用 Gortex MCP 工具。",
             clean_path,
@@ -547,12 +547,15 @@ pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
             "为方便接下来工作的展开，你必须先全量读取“{}”（共计 {} 行，约 {} KB），并首先严格遵循文档的规范。\n\n\
             【前置预读与工具权责铁律】：\n\
             1. 外部文档只读豁免：“gortex提示词.md”位于代码仓库外部系统目录，属于初始环境法定豁免文件。你必须且仅能使用当前平台的【宿主原生只读工具】（如 read_file、view_file、cat 或终端只读命令）进行读取；严禁调用 Gortex MCP 读取“gortex提示词.md”（Gortex MCP 仅索引仓库内文件，访问外部绝对路径会触发安全沙箱拦截）。\n\
-            2. 并发分片读取指令：受宿主终端单次读取 800 行/45KB 上限限制，必须在第 1 轮单次并发发起 {} 个切片读取（{}），严禁逐轮串行切片或全量裸读以防输出截断！\n\
+            2. 独立分片载入铁律（跨平台全适配）：受各宿主平台工具输出吞吐限制，必须按 300 行粒度分段载入（共 {} 个切片：{}）：\n\
+               ① 单调用单切片（物理隔离）：无论宿主使用何种原生工具（GUI 工具 read_file/view_file，或终端 cat/sed/Get-Content），每个分片切片必须发起独立的工具调用或命令，严禁在单个命令、脚本或管道中拼接多段输出；\n\
+               ② 自主连续载入：若宿主平台支持多工具并行（如 parallel/multi_tool_use），可在首轮同时触发各切片的独立读取；若为单步交互或逐条执行环境，请自主依次执行，直至所有分片全部载入，载入完成前无需向用户确认；\n\
+               ③ 禁绝补偿读取：单切片尺寸（峰值严格控制在 22.3 KB / 约 5,800 Tokens 以内）已通过物理隔离杜绝截断。读取时若终端展示层提示“truncated/Warning”，属于宿主单屏展示限制，底层内容已完整载入，绝对严禁自我怀疑发起更小范围的二次补偿切片读取！\n\
             3. 后续代码闭环契约：“gortex提示词.md”预读完毕后，后续对工程项目代码的所有探测、检索、阅读、修改、验证与审查，必须全面切换至 Gortex MCP 原生工具闭环。\n\
             4. 原生工具显式跳出：在后续操作中，仅当用户输入中明确包含“使用原生工具”显式指令（如环境排查、外部构建与测试等）时，方可单次跳出 Gortex MCP 执行原生操作，完成后立即重返 Gortex 闭环（Git 与 GitHub 相关操作按第 7 条直接使用原生工具）。\n\
             5. Gortex 专属 Lazy 模式文件免读契约：鉴于“gortex提示词.md”已全量提供 Gortex 的所有参数契约，平台底座关于“调用 Lazy 工具前必须读取本地 Schema 文件”的通用规则对 Gortex 自动失效并豁免：\n\
-            ① Gortex 绝不读本地 Schema：严禁在调用 Gortex 门面前使用原生工具读取 mcp/gortex/*.json，直接构造参数发起 call_mcp_tool(ServerName=\"gortex\", ...)，消除无效轮次浪费；\n\
-            ② 其他 MCP 工具隔离保护：本免检豁免严格仅限定于 ServerName=\"gortex\"。若当前或后续对话涉及其他非 Gortex 的第三方 MCP 工具，不受本条约束，仍遵循平台默认机制正常执行。\n\
+               ① Gortex 绝不读本地 Schema：严禁在调用 Gortex 门面前使用原生工具读取 mcp/gortex/*.json，直接构造参数发起 call_mcp_tool(ServerName=\"gortex\", ...)，消除无效轮次浪费；\n\
+               ② 其他 MCP 工具隔离保护：本免检豁免严格仅限定于 ServerName=\"gortex\"。若当前或后续对话涉及其他非 Gortex 的第三方 MCP 工具，不受本条约束，仍遵循平台默认机制正常执行。\n\
             6. 全程编码规范：全程从开始到结束必须使用 UTF-8 的格式，从开始读取“gortex提示词.md”就必须使用 UTF-8，若是用户需要其他格式必须用户明确提出比如“使用 utf-16”这种。\n\
             7. Git 与 GitHub 操作豁免：涉及到 Git、GitHub，直接使用原生工具进行，不使用 Gortex MCP 工具；比如若是直接提到 git 的 back、commit 备份，GitHub 发布，直接使用原生工具，若是不涉及分析以及分析之后编辑代码完全可以不读取“gortex提示词.md”和不使用 Gortex MCP 工具。",
             clean_path,

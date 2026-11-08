@@ -217,14 +217,31 @@ sandbox = "elevated"
     fn test_calculate_prompt_slices() {
         use crate::tools::gortex::integrations::calculate_prompt_slices;
 
-        assert_eq!(calculate_prompt_slices(0, 500), vec!["L1-1"]);
-        assert_eq!(calculate_prompt_slices(500, 500), vec!["L1-500"]);
-        assert_eq!(calculate_prompt_slices(700, 500), vec!["L1-500", "L501-700"]);
+        assert_eq!(calculate_prompt_slices(0, 300), vec!["L1-1"]);
+        assert_eq!(calculate_prompt_slices(300, 300), vec!["L1-300"]);
+        assert_eq!(calculate_prompt_slices(500, 300), vec!["L1-300", "L301-500"]);
         assert_eq!(
-            calculate_prompt_slices(2429, 500),
-            vec!["L1-500", "L501-1000", "L1001-1500", "L1501-2000", "L2001-2429"]
+            calculate_prompt_slices(1000, 300),
+            vec!["L1-300", "L301-600", "L601-900", "L901-1000"]
         );
-        assert_eq!(calculate_prompt_slices(1000, 0), vec!["L1-500", "L501-1000"]);
+        assert_eq!(
+            calculate_prompt_slices(2429, 300),
+            vec![
+                "L1-300",
+                "L301-600",
+                "L601-900",
+                "L901-1200",
+                "L1201-1500",
+                "L1501-1800",
+                "L1801-2100",
+                "L2101-2400",
+                "L2401-2429"
+            ]
+        );
+        assert_eq!(
+            calculate_prompt_slices(1000, 0),
+            vec!["L1-300", "L301-600", "L601-900", "L901-1000"]
+        );
     }
 
     #[test]
@@ -240,14 +257,18 @@ sandbox = "elevated"
         assert!(prompt.contains("为方便接下来工作的展开，你必须先全量读取"));
         assert!(prompt.contains("C:\\test\\gortex提示词.md"));
         assert!(prompt.contains(&expected_line_str));
-        let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 500);
-        let expected_slice_count_str = format!("并发发起 {} 个切片读取", expected_slices.len());
+        let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 300);
+        let expected_slice_count_str = format!("共 {} 个切片：", expected_slices.len());
         let expected_last_slice = expected_slices.last().unwrap();
         assert!(prompt.contains(&expected_slice_count_str));
         assert!(prompt.contains(expected_last_slice));
         assert!(prompt.contains("外部文档只读豁免"));
         assert!(prompt.contains("宿主原生只读工具"));
         assert!(prompt.contains("严禁调用 Gortex MCP 读取“gortex提示词.md”"));
+        assert!(prompt.contains("独立分片载入铁律（跨平台全适配）"));
+        assert!(prompt.contains("单调用单切片（物理隔离）"));
+        assert!(prompt.contains("自主连续载入"));
+        assert!(prompt.contains("禁绝补偿读取"));
         assert!(prompt.contains("后续代码闭环契约"));
         assert!(prompt.contains("使用原生工具"));
         assert!(prompt.contains("全程编码规范"));
