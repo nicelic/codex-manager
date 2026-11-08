@@ -217,13 +217,14 @@ sandbox = "elevated"
     fn test_calculate_prompt_slices() {
         use crate::tools::gortex::integrations::calculate_prompt_slices;
 
-        assert_eq!(calculate_prompt_slices(0, 700), vec!["L1-1"]);
-        assert_eq!(calculate_prompt_slices(500, 700), vec!["L1-500"]);
-        assert_eq!(calculate_prompt_slices(700, 700), vec!["L1-700"]);
+        assert_eq!(calculate_prompt_slices(0, 500), vec!["L1-1"]);
+        assert_eq!(calculate_prompt_slices(500, 500), vec!["L1-500"]);
+        assert_eq!(calculate_prompt_slices(700, 500), vec!["L1-500", "L501-700"]);
         assert_eq!(
-            calculate_prompt_slices(2429, 700),
-            vec!["L1-700", "L701-1400", "L1401-2100", "L2101-2429"]
+            calculate_prompt_slices(2429, 500),
+            vec!["L1-500", "L501-1000", "L1001-1500", "L1501-2000", "L2001-2429"]
         );
+        assert_eq!(calculate_prompt_slices(1000, 0), vec!["L1-500", "L501-1000"]);
     }
 
     #[test]
@@ -239,7 +240,7 @@ sandbox = "elevated"
         assert!(prompt.contains("为方便接下来工作的展开，你必须先全量读取"));
         assert!(prompt.contains("C:\\test\\gortex提示词.md"));
         assert!(prompt.contains(&expected_line_str));
-        let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 700);
+        let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 500);
         let expected_slice_count_str = format!("并发发起 {} 个切片读取", expected_slices.len());
         let expected_last_slice = expected_slices.last().unwrap();
         assert!(prompt.contains(&expected_slice_count_str));
@@ -249,6 +250,10 @@ sandbox = "elevated"
         assert!(prompt.contains("严禁调用 Gortex MCP 读取“gortex提示词.md”"));
         assert!(prompt.contains("后续代码闭环契约"));
         assert!(prompt.contains("使用原生工具"));
+        assert!(prompt.contains("全程编码规范"));
+        assert!(prompt.contains("UTF-8"));
+        assert!(prompt.contains("从开始读取“gortex提示词.md”就必须使用 UTF-8"));
+        assert!(prompt.contains("Git 与 GitHub 操作豁免"));
         assert!(!prompt.contains("可免除预读此文档"));
     }
 
