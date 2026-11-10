@@ -106,6 +106,8 @@ const snipTrustWorking = ref(false)
 const gortex = reactive({ path: '', managedInstalled: false, managedRootExists: false, version: '', installing: false, installed: false, running: false, starting: false, startupPhase: '', anyProcessRunning: false, unmanagedProcessRunning: false, integrationPresent: false, processId: 0, activationState: 'not_installed', daemonHealth: 'stopped', takeoverState: '', mcpClientCount: 0, gortexProcessCount: 0, trackedDetails: [], codexAvailable: false, codexConfigured: false, codexComplete: false, claudeAvailable: false, claudeConfigured: false, claudeComplete: false, cursorAvailable: false, cursorConfigured: false, cursorComplete: false, openCodeAvailable: false, openCodeConfigured: false, openCodeComplete: false, antigravityAvailable: false, antigravityConfigured: false, antigravityComplete: false, geminiAvailable: false, geminiConfigured: false, geminiComplete: false, codexPrompt: false, codexPromptComplete: false, claudePrompt: false, claudePromptComplete: false, cursorPrompt: false, cursorPromptComplete: false, copilotPrompt: false, copilotPromptComplete: false, openCodePrompt: false, openCodePromptComplete: false, antigravityPrompt: false, antigravityPromptComplete: false, geminiPrompt: false, geminiPromptComplete: false, codexHook: false, codexHookComplete: false, claudeHook: false, claudeHookComplete: false, copilotHook: false, copilotHookComplete: false, openCodeHook: false, openCodeHookComplete: false, antigravityHook: false, antigravityHookComplete: false, geminiHook: false, geminiHookComplete: false, userPath: false, systemPath: false, codexTrustStatus: 'not_applicable', codexTrustRequired: false, codexTrustNotice: '', codexTrustSteps: [], trackedProjects: [], projectMCPEnabled: false, projectMCPProjects: [], defaultProject: '', activeTask: null, statusKnown: false, loading: true, working: false, installWorking: false, notice: '' })
 const gortexDiagnostics = reactive({ loading: false, doctorOk: false, doctorOutput: '', doctorError: '', statusOk: false, statusOutput: '', statusError: '' })
 const gortexProjectPath = ref('')
+const gortexUntrackingPath = ref('')
+const gortexTrackWorking = ref(false)
 const gortexReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
 const selectedGortexVersion = ref('')
 const gortexBusy = computed(() => gortex.working || gortex.installWorking || gortex.installing)
@@ -148,7 +150,7 @@ watch(
 
 const isGortexTracking = computed(() => {
   if (gortex.activeTask && gortex.activeTask.action === 'track') return true
-  return Boolean(gortex.working && gortexProjectPath.value)
+  return gortexTrackWorking.value
 })
 
 function arraysEqual(a, b) {
@@ -174,10 +176,14 @@ function cleanPathDisplay(p) {
 }
 
 function isGortexUntracking(project) {
+  const projectClean = cleanPathDisplay(project || '').toLowerCase()
+  if (!projectClean) return false
+  if (gortexUntrackingPath.value && cleanPathDisplay(gortexUntrackingPath.value).toLowerCase() === projectClean) {
+    return true
+  }
   if (!gortex.activeTask) return false
   if (gortex.activeTask.action !== 'untrack') return false
   const activeClean = cleanPathDisplay(gortex.activeTask.path || '').toLowerCase()
-  const projectClean = cleanPathDisplay(project || '').toLowerCase()
   return activeClean === projectClean
 }
 function gortexVersionKey(value) {
@@ -327,8 +333,11 @@ const gortexDisplayProjects = computed(() => {
   return gortex.trackedProjects.map((p) => ({
     path: p,
     name: 'project',
-    status: 'ready',
+    status: gortex.running ? 'ready' : 'stopped',
     is_external: false,
+    tracked: true,
+    in_config: true,
+    in_daemon: gortex.running,
     nodes: null,
     files: null
   }))
@@ -803,7 +812,9 @@ function applyGortexStatus(data, { silent = false } = {}) {
   gortex.codexTrustNotice = data.codex_trust_notice || ''
   gortex.codexTrustSteps = Array.isArray(data.codex_trust_steps) ? data.codex_trust_steps : []
   gortex.daemonHealth = data.daemon_health || (gortex.running ? 'serving' : 'stopped')
-  gortex.trackedDetails = Array.isArray(data.tracked_details) ? data.tracked_details : []
+  gortex.trackedDetails = Array.isArray(data.tracked_details)
+    ? data.tracked_details.map((item) => ({ ...item, path: cleanPathDisplay(item.path) }))
+    : []
   const incomingTracked = (Array.isArray(data.tracked_projects) ? data.tracked_projects : []).map(cleanPathDisplay)
   if (!arraysEqual(gortex.trackedProjects, incomingTracked)) {
     gortex.trackedProjects = incomingTracked
@@ -1562,6 +1573,7 @@ async function trackGortexProject() {
     if (!pathValue) gortex.notice = '请输入要 track 的项目绝对路径。'
     return
   }
+  gortexTrackWorking.value = true
   gortex.working = true
   gortex.notice = ''
   try {
@@ -1570,19 +1582,22 @@ async function trackGortexProject() {
     let data = {}
     try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex track 接口返回了无效响应') }
     if (!response.ok) throw new Error(data.message || responseText.trim() || 'Gortex track 失败')
-    gortex.notice = data.message || '项目已 track。'
+    const warningText = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings.join(' ')}` : ''
+    gortex.notice = `${data.message || '项目已 track。'}${warningText}`
     gortexProjectPath.value = ''
   } catch (error) {
     gortex.notice = error.message || 'Gortex track 失败'
   } finally {
+    gortexTrackWorking.value = false
     gortex.working = false
     await loadGortexStatus({ silent: true })
   }
 }
 
-async function untrackGortexProject(pathValue) {
+async function untrackGortexProject(pathValue, allowRecordCleanup = false) {
   const clean = cleanPathDisplay(pathValue)
-  if (gortexBusy.value || !gortex.managedInstalled || !clean) return
+  if (gortexBusy.value || (!gortex.managedInstalled && !allowRecordCleanup) || !clean) return
+  gortexUntrackingPath.value = clean
   gortex.working = true
   gortex.notice = ''
   try {
@@ -1591,12 +1606,17 @@ async function untrackGortexProject(pathValue) {
     let data = {}
     try { data = responseText ? JSON.parse(responseText) : {} } catch { throw new Error(responseText.trim() || 'Gortex untrack 接口返回了无效响应') }
     if (!response.ok) throw new Error(data.message || responseText.trim() || 'Gortex untrack 失败')
-    gortex.notice = data.message || '项目已取消 track。'
+    const warningText = Array.isArray(data.warnings) && data.warnings.length ? ` ${data.warnings.join(' ')}` : ''
+    gortex.notice = `${data.message || '项目已彻底取消 track。'}${warningText}`
   } catch (error) {
     gortex.notice = error.message || 'Gortex untrack 失败'
   } finally {
-    gortex.working = false
-    await loadGortexStatus({ silent: true })
+    try {
+      await loadGortexStatus({ silent: true })
+    } finally {
+      gortexUntrackingPath.value = ''
+      gortex.working = false
+    }
   }
 }
 
@@ -2761,14 +2781,14 @@ onBeforeUnmount(() => {
         <div class="llmtrim-install-control">
           <label for="gortex-project-path">
             <strong>项目代码图谱</strong>
-            <span>输入项目绝对路径后执行 track；取消 track 只解除 Gortex 对该项目的索引关联，不删除项目文件。</span>
+            <span>输入项目绝对路径后执行 track；列表会显示项目是否已 track 及索引状态，点击 untrack 会彻底解除 Gortex 对该项目的索引关联并清理数据库残留图谱，不删除项目文件。</span>
           </label>
           <div class="setting-control">
             <input id="gortex-project-path" v-model="gortexProjectPath" spellcheck="false" autocomplete="off" placeholder="D:\\你的项目所在的目录" :disabled="gortexBusy" />
             <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="trackGortexProject">{{ isGortexTracking ? ('track' + rotatingDots) : 'track' }}</button>
           </div>
           <div v-if="gortexDisplayProjects.length || (gortex.activeTask && gortex.activeTask.action === 'track')" class="gortex-project-list">
-            <div v-if="gortex.activeTask && gortex.activeTask.action === 'track' && !gortexDisplayProjects.some(p => p.path.toLowerCase() === gortex.activeTask.path.toLowerCase())" class="gortex-project-item">
+            <div v-if="gortex.activeTask && gortex.activeTask.action === 'track' && !gortexDisplayProjects.some(p => cleanPathDisplay(p.path).toLowerCase() === cleanPathDisplay(gortex.activeTask.path).toLowerCase())" class="gortex-project-item">
               <div class="gortex-project-info">
                 <code>{{ cleanPathDisplay(gortex.activeTask.path) }}</code>
                 <div class="gortex-project-tags">
@@ -2781,19 +2801,27 @@ onBeforeUnmount(() => {
               <div class="gortex-project-info">
                 <code>{{ cleanPathDisplay(proj.path) }}</code>
                 <div class="gortex-project-tags">
-                  <span v-if="proj.is_external" class="project-tag external">外部接入</span>
-                  <span v-if="proj.status === 'ready'" class="project-tag ready">已就绪{{ proj.nodes ? ` · ${(proj.nodes / 10000).toFixed(1)}万节点` : '' }}</span>
-                  <span v-else-if="proj.status === 'indexing'" class="project-tag indexing">建图中{{ rotatingDots }}</span>
-                  <span v-else-if="proj.status === 'missing'" class="project-tag error">路径丢失</span>
-                  <span v-else-if="proj.status === 'degraded'" class="project-tag warning">已降级</span>
-                  <span v-else-if="proj.status === 'unindexed'" class="project-tag warning">未索引</span>
-                  <span v-else class="project-tag ready">已就绪</span>
+                  <span v-if="isGortexUntracking(proj.path)" class="project-tag indexing">正在彻底 untrack{{ rotatingDots }}</span>
+                  <template v-else>
+                    <span v-if="proj.tracked !== false" class="project-tag tracked">已 track</span>
+                    <span v-else class="project-tag untracked">未 track</span>
+                    <span v-if="proj.in_daemon && proj.in_config === false" class="project-tag warning">仅数据库残留</span>
+                    <span v-if="proj.is_external" class="project-tag external">外部接入</span>
+                    <span v-if="proj.status === 'ready'" class="project-tag ready">已就绪{{ proj.nodes ? (proj.nodes >= 1000 ? ` · ${(proj.nodes / 10000).toFixed(1)}万节点` : ` · ${proj.nodes}节点`) : '' }}</span>
+                    <span v-else-if="proj.status === 'indexing'" class="project-tag indexing">建图中{{ rotatingDots }}</span>
+                    <span v-else-if="proj.status === 'missing'" class="project-tag error">路径丢失</span>
+                    <span v-else-if="proj.status === 'degraded'" class="project-tag warning">已降级</span>
+                    <span v-else-if="proj.status === 'stopped'" class="project-tag stopped">Daemon 已停止</span>
+                    <span v-else-if="proj.status === 'empty'" class="project-tag warning">空图谱</span>
+                    <span v-else-if="proj.status === 'unindexed'" class="project-tag warning">未索引</span>
+                    <span v-else class="project-tag ready">已就绪</span>
+                  </template>
                 </div>
               </div>
-              <button type="button" :disabled="gortexBusy || !gortex.managedInstalled" @click="untrackGortexProject(proj.path)">{{ isGortexUntracking(proj.path) ? ('untrack' + rotatingDots) : 'untrack' }}</button>
+              <button type="button" :disabled="gortexBusy || (!gortex.managedInstalled && proj.tracked !== false)" @click="untrackGortexProject(proj.path, proj.tracked === false)">{{ isGortexUntracking(proj.path) ? ('untrack' + rotatingDots) : (proj.tracked === false ? '清理记录' : 'untrack') }}</button>
             </div>
           </div>
-          <p v-else class="daemon-meta">尚未记录通过本页面 track 的项目。</p>
+          <p v-else class="daemon-meta">尚未记录已 track 的项目。</p>
         </div>
         <div v-if="gortexDiagnostics.doctorOutput || gortexDiagnostics.statusOutput" class="llmtrim-control gortex-diagnostics">
           <label><strong>Gortex 验证结果</strong><span>doctor 负责检查 MCP、Hook 与运行证据；status 展示 daemon 的全部 tracked repositories。</span></label>

@@ -2,6 +2,10 @@
 mod tests {
     use crate::tools::gortex::ownership::*;
     use crate::tools::gortex::reconcile::*;
+    use crate::tools::gortex::service::{
+        UntrackCliOutcome, build_gortex_project_infos, classify_gortex_daemon_repo_status,
+        classify_gortex_untrack_cli_output, has_gortex_database_files,
+    };
     use crate::tools::gortex::types::*;
     use crate::tools::gortex::windows::*;
     use serde_json::json;
@@ -265,17 +269,38 @@ sandbox = "elevated"
         assert!(prompt.contains("外部文档只读豁免"));
         assert!(prompt.contains("宿主原生只读工具"));
         assert!(prompt.contains("严禁调用 Gortex MCP 读取“gortex提示词.md”"));
-        assert!(prompt.contains("独立分片载入铁律（跨平台全适配）"));
-        assert!(prompt.contains("单调用单切片（物理隔离）"));
+        assert!(prompt.contains("分片载入、完整性验收与缺口自愈铁律（跨平台全适配）"));
+        assert!(prompt.contains("单调用单切片（物理隔离）与参数防错"));
         assert!(prompt.contains("自主连续载入"));
-        assert!(prompt.contains("禁绝补偿读取"));
+        assert!(prompt.contains("逐片验收与缺口补全"));
+        assert!(prompt.contains("全量覆盖硬阻断门禁（未读全不得继续）"));
+        assert!(prompt.contains(&format!("L1 至 L{}", expected_lines)));
         assert!(prompt.contains("后续代码闭环契约"));
         assert!(prompt.contains("使用原生工具"));
         assert!(prompt.contains("全程编码规范"));
         assert!(prompt.contains("UTF-8"));
         assert!(prompt.contains("从开始读取“gortex提示词.md”就必须使用 UTF-8"));
         assert!(prompt.contains("Git 与 GitHub 操作豁免"));
+        assert!(!prompt.contains("禁绝补偿读取"));
         assert!(!prompt.contains("可免除预读此文档"));
+        assert!(prompt.len() <= 24 * 1024, "delegated prompt exceeds 24KB: {} bytes", prompt.len());
+
+        // 验证单切片分支同样包含完整性验收与 24KB 以内预算控制
+        let temp_small = std::env::temp_dir().join(format!(
+            "gortex_small_prompt_{}.md",
+            std::process::id()
+        ));
+        let small_content = (1..=50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        std::fs::write(&temp_small, small_content).expect("write temp small prompt");
+        let small_prompt = gortex_delegated_prompt_body(&temp_small);
+        let _ = std::fs::remove_file(&temp_small);
+
+        assert!(small_prompt.contains("共 50 行"));
+        assert!(small_prompt.contains("L1-50"));
+        assert!(small_prompt.contains("完整覆盖 1-50"));
+        assert!(small_prompt.contains("未达第 50 行"));
+        assert!(small_prompt.contains("核验完整载入后"));
+        assert!(small_prompt.len() <= 24 * 1024, "single-slice prompt exceeds 24KB: {} bytes", small_prompt.len());
     }
 
     #[test]
@@ -405,6 +430,407 @@ sandbox = "elevated"
         assert!(s.contains("\"takeover_state\":\"managed_adopted\""));
         assert!(s.contains("\"mcp_client_count\":1"));
         assert!(s.contains("\"gortex_process_count\":2"));
+    }
+
+    #[test]
+    fn test_reconcile_preserves_external_repos_and_config_helpers() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "edit_rust_reconcile_test_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp test dir");
+        let config_path = dir.join("config.yaml");
+
+        // When seed_missing_ui_projects == false and config.yaml doesn't exist, it is not created.
+        let ui_only = vec!["C:\\work\\app-a".to_string()];
+        let created = ensure_gortex_global_config_workspaces_at_path(
+            &config_path,
+            "default",
+            &ui_only,
+            false,
+        )
+        .expect("reconcile absent config");
+        assert!(!created);
+        assert!(!config_path.exists());
+
+        // Seed existing config with external repo, managed duplicate, and projects.* entry.
+        let initial_yaml = r#"repos:
+  - path: C:\work\external-repo
+    name: ext-custom
+    workspace: custom-ws
+    project: ext-proj
+  - path: C:\work\app-a
+    workspace: other-ws
+    project: wrong-slug
+  - path: c:/work/app-a/
+    workspace: dup-ws
+projects:
+  myproj:
+    repos:
+      - path: C:\work\in-project-repo
+"#;
+        std::fs::write(&config_path, initial_yaml).expect("write initial config");
+
+        let changed = ensure_gortex_global_config_workspaces_at_path(
+            &config_path,
+            "default",
+            &[
+                "C:\\work\\app-a".to_string(),
+                "C:\\work\\unseeded".to_string(),
+            ],
+            false,
+        )
+        .expect("reconcile existing config");
+        assert!(changed);
+
+        let paths = read_gortex_config_repo_paths(&config_path);
+        assert!(paths.iter().any(|p| p.eq_ignore_ascii_case("C:\\work\\external-repo")));
+        assert!(paths.iter().any(|p| p.eq_ignore_ascii_case("C:\\work\\in-project-repo")));
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|p| p.eq_ignore_ascii_case("C:\\work\\app-a"))
+                .count(),
+            1
+        );
+        assert!(!paths.iter().any(|p| p.eq_ignore_ascii_case("C:\\work\\unseeded")));
+
+        let raw_after = std::fs::read_to_string(&config_path).expect("read reconciled config");
+        assert!(raw_after.contains("ext-custom"));
+        assert!(raw_after.contains("custom-ws"));
+
+        // seed_missing_ui_projects == true adds missing managed repos without dropping external ones.
+        let seeded = ensure_gortex_global_config_workspaces_at_path(
+            &config_path,
+            "default",
+            &[
+                "C:\\work\\app-a".to_string(),
+                "C:\\work\\seeded".to_string(),
+            ],
+            true,
+        )
+        .expect("seed missing config");
+        assert!(seeded);
+        assert!(read_gortex_config_repo_paths(&config_path)
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("C:\\work\\seeded")));
+
+        // Upsert helper is idempotent and remove only removes top-level repos.
+        assert_eq!(
+            upsert_project_in_gortex_config(&config_path, "default", "C:\\work\\upserted")
+                .expect("first upsert"),
+            true
+        );
+        assert_eq!(
+            upsert_project_in_gortex_config(&config_path, "default", "C:\\work\\upserted")
+                .expect("second upsert"),
+            false
+        );
+        assert_eq!(
+            remove_project_from_gortex_config(&config_path, "c:/work/app-a")
+                .expect("remove top-level"),
+            true
+        );
+        assert_eq!(
+            remove_project_from_gortex_config(&config_path, "C:\\work\\in-project-repo")
+                .expect("remove projects.* should not alter projects section"),
+            false
+        );
+
+        let final_paths = read_gortex_config_repo_paths(&config_path);
+        assert!(!final_paths.iter().any(|p| p.eq_ignore_ascii_case("C:\\work\\app-a")));
+        assert!(final_paths.iter().any(|p| p.eq_ignore_ascii_case("C:\\work\\external-repo")));
+        assert!(final_paths.iter().any(|p| p.eq_ignore_ascii_case("C:\\work\\in-project-repo")));
+        assert!(final_paths.iter().any(|p| p.eq_ignore_ascii_case("C:\\work\\upserted")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_classify_gortex_untrack_cli_output() {
+        assert_eq!(
+            classify_gortex_untrack_cli_output(true, r#"{"status":"forgotten"}"#, ""),
+            UntrackCliOutcome::Forgotten
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(true, r#"{"status":"untracked"}"#, ""),
+            UntrackCliOutcome::Untracked
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(true, r#"{"status":"evicted"}"#, ""),
+            UntrackCliOutcome::Untracked
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(false, r#"{"condition":"repo_not_tracked"}"#, ""),
+            UntrackCliOutcome::NotTracked
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(true, r#"{"demoted":true,"status":"demoted"}"#, ""),
+            UntrackCliOutcome::Demoted
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(true, r#"{"status":"preview","plan":"ready"}"#, ""),
+            UntrackCliOutcome::PreviewRequired
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(
+                true,
+                r#"{"status":"preview","plan":"blocked","blockers":["still wanted by project foo"]}"#,
+                ""
+            ),
+            UntrackCliOutcome::Blocked("still wanted by project foo".to_string())
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(
+                true,
+                "",
+                "[gortex] demoted D:\\repo to automatic lane"
+            ),
+            UntrackCliOutcome::Demoted
+        );
+        assert_eq!(
+            classify_gortex_untrack_cli_output(
+                true,
+                "",
+                "[gortex] untracked D:\\repo (config only)"
+            ),
+            UntrackCliOutcome::ConfigOnly
+        );
+        assert!(matches!(
+            classify_gortex_untrack_cli_output(false, "", "Error: unknown flag: --confirm"),
+            UntrackCliOutcome::UnsupportedFlagOrCmd(_)
+        ));
+        assert!(matches!(
+            classify_gortex_untrack_cli_output(
+                false,
+                "",
+                r#"Error: daemon does not track "D:\repo""#
+            ),
+            UntrackCliOutcome::Failed(_)
+        ));
+        assert_eq!(
+            classify_gortex_untrack_cli_output(true, "", "repo is not tracked"),
+            UntrackCliOutcome::NotTracked
+        );
+    }
+
+    #[test]
+    fn test_build_gortex_project_infos_and_db_detection() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let install_dir = std::env::temp_dir().join(format!(
+            "edit_rust_db_detect_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        let sub_data = install_dir.join("data").join("nested");
+        std::fs::create_dir_all(&sub_data).expect("create nested data dir");
+        std::fs::write(sub_data.join("log.txt"), b"ok").expect("write non-db file");
+        assert!(!has_gortex_database_files(&install_dir));
+        std::fs::write(sub_data.join("graph.sqlite"), b"sqlite").expect("write sqlite file");
+        assert!(has_gortex_database_files(&install_dir));
+        let _ = std::fs::remove_dir_all(&install_dir);
+
+        let daemon_projs = vec![
+            GortexProjectInfo {
+                path: "C:\\repo\\managed".to_string(),
+                name: "managed".to_string(),
+                status: "ready".to_string(),
+                files: Some(10),
+                nodes: Some(500),
+                is_external: false,
+                tracked: true,
+                in_config: false,
+                in_daemon: true,
+            },
+            GortexProjectInfo {
+                path: "C:\\repo\\ext".to_string(),
+                name: "ext".to_string(),
+                status: "ready".to_string(),
+                files: Some(5),
+                nodes: Some(200),
+                is_external: false,
+                tracked: true,
+                in_config: false,
+                in_daemon: true,
+            },
+            GortexProjectInfo {
+                path: "C:\\repo\\residual".to_string(),
+                name: "residual".to_string(),
+                status: "ready".to_string(),
+                files: Some(3),
+                nodes: Some(100),
+                is_external: false,
+                tracked: true,
+                in_config: false,
+                in_daemon: true,
+            },
+        ];
+        let config_paths = vec![
+            "C:\\repo\\managed".to_string(),
+            "C:\\repo\\ext".to_string(),
+            "C:\\repo\\only-config".to_string(),
+        ];
+        let local_tracked = vec![
+            "C:\\repo\\managed".to_string(),
+            "C:\\repo\\stale-local".to_string(),
+        ];
+
+        let running_infos = build_gortex_project_infos(
+            daemon_projs,
+            &config_paths,
+            &local_tracked,
+            true,
+            false,
+            None,
+        );
+        let find_info = |path: &str| {
+            running_infos
+                .iter()
+                .find(|i| i.path.eq_ignore_ascii_case(path))
+                .expect(path)
+        };
+
+        let managed = find_info("C:\\repo\\managed");
+        assert!(managed.tracked && managed.in_daemon && managed.in_config && !managed.is_external);
+        assert_eq!(managed.status, "ready");
+
+        let ext = find_info("C:\\repo\\ext");
+        assert!(ext.tracked && ext.in_daemon && ext.in_config && ext.is_external);
+
+        let only_config = find_info("C:\\repo\\only-config");
+        assert!(only_config.tracked && !only_config.in_daemon && only_config.in_config && only_config.is_external);
+        assert_eq!(only_config.status, "indexing");
+
+        let residual = find_info("C:\\repo\\residual");
+        assert!(residual.tracked && residual.in_daemon && !residual.in_config && residual.is_external);
+
+        let stale = find_info("C:\\repo\\stale-local");
+        assert!(!stale.tracked && !stale.in_daemon && !stale.in_config && !stale.is_external);
+        assert_eq!(stale.status, "unindexed");
+
+        // When stopped, config entries stay tracked with stopped status, and local-only stays untracked.
+        let stopped_infos = build_gortex_project_infos(
+            Vec::new(),
+            &["C:\\repo\\managed".to_string()],
+            &local_tracked,
+            false,
+            false,
+            None,
+        );
+        let stopped_managed = stopped_infos
+            .iter()
+            .find(|i| i.path.eq_ignore_ascii_case("C:\\repo\\managed"))
+            .unwrap();
+        assert!(stopped_managed.tracked && stopped_managed.in_config && !stopped_managed.in_daemon);
+        assert_eq!(stopped_managed.status, "stopped");
+
+        let stopped_stale = stopped_infos
+            .iter()
+            .find(|i| i.path.eq_ignore_ascii_case("C:\\repo\\stale-local"))
+            .unwrap();
+        assert!(!stopped_stale.tracked && !stopped_stale.in_config && !stopped_stale.in_daemon);
+        assert_eq!(stopped_stale.status, "unindexed");
+
+        // Active track task promotes local-only entry to tracked + indexing.
+        let active_task = GortexActiveTask {
+            path: "C:\\repo\\stale-local".to_string(),
+            action: "track".to_string(),
+        };
+        let tracking_infos = build_gortex_project_infos(
+            Vec::new(),
+            &[],
+            &local_tracked,
+            false,
+            false,
+            Some(&active_task),
+        );
+        let tracking_local = tracking_infos
+            .iter()
+            .find(|i| i.path.eq_ignore_ascii_case("C:\\repo\\stale-local"))
+            .unwrap();
+        assert!(tracking_local.tracked);
+        assert_eq!(tracking_local.status, "indexing");
+
+        // Startup phase alone without an active track task must not mark local-only untracked items as indexing.
+        let starting_infos = build_gortex_project_infos(
+            Vec::new(),
+            &["C:\\repo\\managed".to_string()],
+            &local_tracked,
+            false,
+            true,
+            None,
+        );
+        let starting_managed = starting_infos
+            .iter()
+            .find(|i| i.path.eq_ignore_ascii_case("C:\\repo\\managed"))
+            .unwrap();
+        assert!(starting_managed.tracked && starting_managed.status == "indexing");
+        let starting_stale = starting_infos
+            .iter()
+            .find(|i| i.path.eq_ignore_ascii_case("C:\\repo\\stale-local"))
+            .unwrap();
+        assert!(!starting_stale.tracked && starting_stale.status == "unindexed");
+    }
+
+    #[test]
+    fn test_classify_gortex_daemon_repo_status() {
+        let missing = GortexDaemonTrackedRepo {
+            missing: true,
+            loading: true,
+            ..Default::default()
+        };
+        assert_eq!(classify_gortex_daemon_repo_status(&missing), "missing");
+
+        let loading = GortexDaemonTrackedRepo {
+            loading: true,
+            unloaded: true,
+            ..Default::default()
+        };
+        assert_eq!(classify_gortex_daemon_repo_status(&loading), "indexing");
+
+        let unloaded = GortexDaemonTrackedRepo {
+            unloaded: true,
+            index_degraded: true,
+            ..Default::default()
+        };
+        assert_eq!(classify_gortex_daemon_repo_status(&unloaded), "unindexed");
+
+        let degraded_flag = GortexDaemonTrackedRepo {
+            index_degraded: true,
+            files: 12,
+            ..Default::default()
+        };
+        assert_eq!(classify_gortex_daemon_repo_status(&degraded_flag), "degraded");
+
+        let degraded_err = GortexDaemonTrackedRepo {
+            index_health_error: "parse error".to_string(),
+            failed_files: 1,
+            files: 10,
+            ..Default::default()
+        };
+        assert_eq!(classify_gortex_daemon_repo_status(&degraded_err), "degraded");
+
+        let empty = GortexDaemonTrackedRepo {
+            files: 0,
+            last_index_unix: 1700000000,
+            ..Default::default()
+        };
+        assert_eq!(classify_gortex_daemon_repo_status(&empty), "empty");
+
+        let ready = GortexDaemonTrackedRepo {
+            files: 42,
+            last_index_unix: 1700000000,
+            ..Default::default()
+        };
+        assert_eq!(classify_gortex_daemon_repo_status(&ready), "ready");
     }
 }
 

@@ -113,6 +113,12 @@ pub struct GortexProjectInfo {
     pub nodes: Option<usize>,
     #[serde(default)]
     pub is_external: bool,
+    #[serde(default)]
+    pub tracked: bool,
+    #[serde(default)]
+    pub in_config: bool,
+    #[serde(default)]
+    pub in_daemon: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -141,6 +147,14 @@ pub struct GortexDaemonTrackedRepo {
     pub loading: bool,
     #[serde(default)]
     pub unloaded: bool,
+    #[serde(default)]
+    pub last_index_unix: i64,
+    #[serde(default)]
+    pub index_health_error: String,
+    #[serde(default)]
+    pub failed_files: usize,
+    #[serde(default)]
+    pub index_degraded: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

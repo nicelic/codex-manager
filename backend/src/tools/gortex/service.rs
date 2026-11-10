@@ -2,14 +2,18 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use super::integrations::*;
 use super::ownership::*;
 use super::project_mcp::*;
-use super::reconcile::{ensure_gortex_watch_config, reconcile_gortex_workspaces};
+use super::reconcile::{
+    ensure_gortex_watch_config, pause_reconcile, read_gortex_config_repo_paths,
+    refresh_watch_enforcer_snapshots, remove_project_from_gortex_config,
+    upsert_project_in_gortex_config,
+};
 use super::types::*;
 use super::windows::{configure_gortex_path, query_gortex_path_status, remove_owned_gortex_path};
 use crate::common::downloader::fetch_github_releases;
@@ -32,6 +36,372 @@ static CACHED_VERSION: Mutex<Option<(Instant, String)>> = Mutex::new(None);
 static CACHED_TRACKED_STATUS: Mutex<Option<(Instant, Vec<GortexProjectInfo>, String, bool, Option<u32>)>> = Mutex::new(None);
 static ACTIVE_TASK: Mutex<Option<GortexActiveTask>> = Mutex::new(None);
 static INSTALLING: Mutex<bool> = Mutex::new(false);
+static GORTEX_LIFECYCLE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn gortex_lifecycle_lock() -> &'static tokio::sync::Mutex<()> {
+    GORTEX_LIFECYCLE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UntrackCliOutcome {
+    Forgotten,
+    Untracked,
+    NotTracked,
+    Demoted,
+    PreviewRequired,
+    ConfigOnly,
+    UnsupportedFlagOrCmd(String),
+    Blocked(String),
+    Failed(String),
+}
+
+pub fn classify_gortex_untrack_cli_output(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> UntrackCliOutcome {
+    let stdout_trim = stdout.trim();
+    let stderr_trim = stderr.trim();
+    let combined = if stderr_trim.is_empty() {
+        stdout_trim.to_string()
+    } else if stdout_trim.is_empty() {
+        stderr_trim.to_string()
+    } else {
+        format!("{}\n{}", stdout_trim, stderr_trim)
+    };
+    let lower = combined.to_ascii_lowercase();
+
+    if !success
+        && (lower.contains("unknown command")
+            || lower.contains("unknown flag")
+            || lower.contains("unknown shorthand flag")
+            || lower.contains("flag provided but not defined"))
+    {
+        return UntrackCliOutcome::UnsupportedFlagOrCmd(combined);
+    }
+
+    if stdout_trim.starts_with('{') {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(stdout_trim) {
+            if val.get("condition").and_then(|v| v.as_str()) == Some("repo_not_tracked") {
+                return UntrackCliOutcome::NotTracked;
+            }
+            if val.get("demoted").and_then(|v| v.as_bool()) == Some(true) {
+                return UntrackCliOutcome::Demoted;
+            }
+            if let Some(status) = val.get("status").and_then(|v| v.as_str()) {
+                match status {
+                    "forgotten" => return UntrackCliOutcome::Forgotten,
+                    "untracked" | "evicted" => return UntrackCliOutcome::Untracked,
+                    "demoted" => return UntrackCliOutcome::Demoted,
+                    "preview" => {
+                        let plan = val.get("plan").and_then(|v| v.as_str()).unwrap_or("");
+                        if plan == "blocked" {
+                            let blockers = val
+                                .get("blockers")
+                                .and_then(|v| v.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|x| x.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("; ")
+                                })
+                                .unwrap_or_else(|| combined.clone());
+                            return UntrackCliOutcome::Blocked(blockers);
+                        }
+                        return UntrackCliOutcome::PreviewRequired;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                return UntrackCliOutcome::Failed(err.to_string());
+            }
+        }
+    }
+
+    if lower.contains("[gortex] demoted") || lower.contains("automatic lane") {
+        return UntrackCliOutcome::Demoted;
+    }
+    if lower.contains("(config only)") {
+        return UntrackCliOutcome::ConfigOnly;
+    }
+    if lower.contains("repo_not_tracked")
+        || lower.contains("is not covered by any tracked repository")
+        || lower.contains("not currently tracked")
+        || (lower.contains("not tracked") && !lower.contains("does not track"))
+    {
+        return UntrackCliOutcome::NotTracked;
+    }
+    if lower.contains("still wanted by")
+        || lower.contains("cannot untrack")
+        || lower.contains("cannot be untracked")
+        || (lower.contains("blocked:") && !success)
+    {
+        return UntrackCliOutcome::Blocked(combined);
+    }
+    if !success {
+        return UntrackCliOutcome::Failed(combined);
+    }
+    if lower.contains("confirm_required")
+        || (lower.contains("--confirm") && (lower.contains("preview") || lower.contains("writes nothing")))
+    {
+        return UntrackCliOutcome::PreviewRequired;
+    }
+    UntrackCliOutcome::Untracked
+}
+
+pub fn has_gortex_database_files(install_root: &Path) -> bool {
+    let data_dir = install_root.join("data");
+    if !data_dir.is_dir() {
+        return false;
+    }
+    let mut stack = vec![data_dir];
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        visited += 1;
+        if visited > 256 {
+            break;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    let ext_lower = ext.to_ascii_lowercase();
+                    if ext_lower == "db" || ext_lower == "sqlite" || ext_lower == "sqlite3" {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn paths_refer_same(a: &str, b: &str) -> bool {
+    let ca = clean_path_str(a);
+    let cb = clean_path_str(b);
+    if ca.is_empty() || cb.is_empty() {
+        return false;
+    }
+    if ca.eq_ignore_ascii_case(&cb) {
+        return true;
+    }
+    let canon_a = Path::new(&ca)
+        .exists()
+        .then(|| canonicalize_clean(Path::new(&ca)).ok())
+        .flatten()
+        .map(|p| clean_path_str(&p.to_string_lossy()));
+    let canon_b = Path::new(&cb)
+        .exists()
+        .then(|| canonicalize_clean(Path::new(&cb)).ok())
+        .flatten()
+        .map(|p| clean_path_str(&p.to_string_lossy()));
+
+    if let Some(ref aa) = canon_a {
+        if aa.eq_ignore_ascii_case(&cb) {
+            return true;
+        }
+        if let Some(ref bb) = canon_b {
+            if aa.eq_ignore_ascii_case(bb) {
+                return true;
+            }
+        }
+    }
+    if let Some(ref bb) = canon_b {
+        if ca.eq_ignore_ascii_case(bb) {
+            return true;
+        }
+    }
+    false
+}
+
+fn path_list_contains(list: &[String], target: &str) -> bool {
+    let clean_target = clean_path_str(target);
+    if clean_target.is_empty() {
+        return false;
+    }
+    list.iter().any(|item| paths_refer_same(item, &clean_target))
+}
+
+fn path_matches_any_key(candidate: &str, keys: &[String]) -> bool {
+    path_list_contains(keys, candidate)
+}
+
+pub fn classify_gortex_daemon_repo_status(r: &GortexDaemonTrackedRepo) -> &'static str {
+    if r.missing {
+        "missing"
+    } else if r.loading {
+        "indexing"
+    } else if r.unloaded {
+        "unindexed"
+    } else if r.index_degraded || r.failed_files > 0 || !r.index_health_error.trim().is_empty() {
+        "degraded"
+    } else if r.files == 0 && r.last_index_unix > 0 {
+        "empty"
+    } else {
+        "ready"
+    }
+}
+
+fn project_display_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("project")
+        .to_string()
+}
+
+pub fn build_gortex_project_infos(
+    daemon_projs: Vec<GortexProjectInfo>,
+    config_paths: &[String],
+    local_tracked: &[String],
+    running: bool,
+    starting: bool,
+    active_task: Option<&GortexActiveTask>,
+) -> Vec<GortexProjectInfo> {
+    let mut tracked_details: Vec<GortexProjectInfo> = Vec::new();
+
+    let is_active_tracking = |p: &str| -> bool {
+        active_task
+            .map(|task| task.action == "track" && paths_refer_same(&task.path, p))
+            .unwrap_or(false)
+    };
+
+    if running {
+        for mut dp in daemon_projs {
+            let clean = clean_path_str(&dp.path);
+            if clean.is_empty()
+                || tracked_details
+                    .iter()
+                    .any(|existing| paths_refer_same(&existing.path, &clean))
+            {
+                continue;
+            }
+            let in_local = path_list_contains(local_tracked, &clean);
+            let in_config = path_list_contains(config_paths, &clean);
+            dp.path = clean;
+            dp.is_external = !in_local;
+            dp.tracked = true;
+            dp.in_config = in_config;
+            dp.in_daemon = true;
+            tracked_details.push(dp);
+        }
+
+        for cp in config_paths {
+            let clean = clean_path_str(cp);
+            if clean.is_empty()
+                || tracked_details
+                    .iter()
+                    .any(|existing| paths_refer_same(&existing.path, &clean))
+            {
+                continue;
+            }
+            let in_local = path_list_contains(local_tracked, &clean);
+            tracked_details.push(GortexProjectInfo {
+                path: clean.clone(),
+                name: project_display_name(&clean),
+                status: "indexing".to_string(),
+                files: None,
+                nodes: None,
+                is_external: !in_local,
+                tracked: true,
+                in_config: true,
+                in_daemon: false,
+            });
+        }
+
+        for lp in local_tracked {
+            let clean = clean_path_str(lp);
+            if clean.is_empty()
+                || tracked_details
+                    .iter()
+                    .any(|existing| paths_refer_same(&existing.path, &clean))
+            {
+                continue;
+            }
+            let active_track = is_active_tracking(&clean);
+            tracked_details.push(GortexProjectInfo {
+                path: clean.clone(),
+                name: project_display_name(&clean),
+                status: if active_track {
+                    "indexing".to_string()
+                } else {
+                    "unindexed".to_string()
+                },
+                files: None,
+                nodes: None,
+                is_external: false,
+                tracked: active_track,
+                in_config: false,
+                in_daemon: false,
+            });
+        }
+    } else {
+        for cp in config_paths {
+            let clean = clean_path_str(cp);
+            if clean.is_empty()
+                || tracked_details
+                    .iter()
+                    .any(|existing| paths_refer_same(&existing.path, &clean))
+            {
+                continue;
+            }
+            let in_local = path_list_contains(local_tracked, &clean);
+            let active_track = is_active_tracking(&clean);
+            tracked_details.push(GortexProjectInfo {
+                path: clean.clone(),
+                name: project_display_name(&clean),
+                status: if starting || active_track {
+                    "indexing".to_string()
+                } else {
+                    "stopped".to_string()
+                },
+                files: None,
+                nodes: None,
+                is_external: !in_local,
+                tracked: true,
+                in_config: true,
+                in_daemon: false,
+            });
+        }
+
+        for lp in local_tracked {
+            let clean = clean_path_str(lp);
+            if clean.is_empty()
+                || tracked_details
+                    .iter()
+                    .any(|existing| paths_refer_same(&existing.path, &clean))
+            {
+                continue;
+            }
+            let active_track = is_active_tracking(&clean);
+            tracked_details.push(GortexProjectInfo {
+                path: clean.clone(),
+                name: project_display_name(&clean),
+                status: if active_track {
+                    "indexing".to_string()
+                } else {
+                    "unindexed".to_string()
+                },
+                files: None,
+                nodes: None,
+                is_external: false,
+                tracked: active_track,
+                in_config: false,
+                in_daemon: false,
+            });
+        }
+    }
+
+    tracked_details.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    tracked_details
+}
 
 pub struct GortexService;
 
@@ -151,11 +521,11 @@ impl GortexService {
         ]
     }
 
-    pub async fn run_gortex_command_with_timeout(
+    pub async fn run_gortex_cli_capture(
         timeout: Duration,
         executable: &Path,
         args: &[&str],
-    ) -> Result<String, String> {
+    ) -> Result<(bool, String, String), String> {
         let exe = executable.to_path_buf();
         let args_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let env_vars = Self::get_managed_env_vars(&exe);
@@ -175,18 +545,28 @@ impl GortexService {
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                if output.status.success() {
-                    Ok(stdout)
-                } else if !stderr.is_empty() {
-                    Err(stderr)
-                } else if !stdout.is_empty() {
-                    Err(stdout)
-                } else {
-                    Err(format!("命令退出码 {}", output.status.code().unwrap_or(-1)))
-                }
+                Ok((output.status.success(), stdout, stderr))
             }
             Ok(Err(e)) => Err(e.to_string()),
             Err(_) => Err(format!("命令执行超时（{}秒）", timeout.as_secs())),
+        }
+    }
+
+    pub async fn run_gortex_command_with_timeout(
+        timeout: Duration,
+        executable: &Path,
+        args: &[&str],
+    ) -> Result<String, String> {
+        let (success, stdout, stderr) =
+            Self::run_gortex_cli_capture(timeout, executable, args).await?;
+        if success {
+            Ok(stdout)
+        } else if !stderr.is_empty() {
+            Err(stderr)
+        } else if !stdout.is_empty() {
+            Err(stdout)
+        } else {
+            Err("命令执行失败".to_string())
         }
     }
 
@@ -328,16 +708,11 @@ impl GortexService {
                         if clean.is_empty() {
                             continue;
                         }
-                        if !projects.iter().any(|existing: &GortexProjectInfo| existing.path.eq_ignore_ascii_case(&clean)) {
-                            let status = if r.missing {
-                                "missing".to_string()
-                            } else if r.loading {
-                                "indexing".to_string()
-                            } else if r.unloaded {
-                                "unindexed".to_string()
-                            } else {
-                                "ready".to_string()
-                            };
+                        if !projects
+                            .iter()
+                            .any(|existing: &GortexProjectInfo| paths_refer_same(&existing.path, &clean))
+                        {
+                            let status = classify_gortex_daemon_repo_status(&r).to_string();
 
                             let name = r.name
                                 .filter(|s| !s.is_empty())
@@ -357,6 +732,9 @@ impl GortexService {
                                 files: Some(r.files),
                                 nodes: Some(r.nodes),
                                 is_external: false,
+                                tracked: true,
+                                in_config: false,
+                                in_daemon: true,
                             });
                         }
                     }
@@ -455,7 +833,11 @@ impl GortexService {
                 };
 
                 let clean_path = clean_path_str(raw_path);
-                if !clean_path.is_empty() && !projects.iter().any(|existing: &GortexProjectInfo| existing.path.eq_ignore_ascii_case(&clean_path)) {
+                if !clean_path.is_empty()
+                    && !projects
+                        .iter()
+                        .any(|existing: &GortexProjectInfo| paths_refer_same(&existing.path, &clean_path))
+                {
                     let mut status = "ready".to_string();
                     let mut files = None;
                     let mut nodes = None;
@@ -493,6 +875,9 @@ impl GortexService {
                         files,
                         nodes,
                         is_external: false,
+                        tracked: true,
+                        in_config: false,
+                        in_daemon: true,
                     });
                 }
             }
@@ -735,42 +1120,28 @@ impl GortexService {
             0
         };
 
+        let config_path = install_root.join("config").join("gortex").join("config.yaml");
+        let config_paths = read_gortex_config_repo_paths(&config_path);
         let local_tracked = Self::get_tracked_projects();
-        let mut tracked_details: Vec<GortexProjectInfo> = Vec::new();
-
-        // 1. 将 Daemon 实际已管理的项目全量载入，并标记是否为外部接入
-        for mut dp in daemon_projs {
-            let in_local = local_tracked.iter().any(|lp| lp.eq_ignore_ascii_case(&dp.path));
-            dp.is_external = !in_local;
-            tracked_details.push(dp);
-        }
-
-        // 2. 本地已登记但 Daemon 尚未完成纳管或处于停止/启动阶段的项目
-        for lp in &local_tracked {
-            if !tracked_details.iter().any(|d| d.path.eq_ignore_ascii_case(lp)) {
-                let name = Path::new(lp).file_name().and_then(|s| s.to_str()).unwrap_or("project").to_string();
-                let status = if starting || running {
-                    "indexing".to_string()
-                } else {
-                    "unindexed".to_string()
-                };
-                tracked_details.push(GortexProjectInfo {
-                    path: lp.clone(),
-                    name,
-                    status,
-                    files: None,
-                    nodes: None,
-                    is_external: false,
-                });
-            }
-        }
-
-        tracked_details.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+        let active_task = Self::get_active_task();
+        let tracked_details = build_gortex_project_infos(
+            daemon_projs,
+            &config_paths,
+            &local_tracked,
+            running,
+            starting,
+            active_task.as_ref(),
+        );
         let tracked_projects: Vec<String> = tracked_details.iter().map(|d| d.path.clone()).collect();
 
         let mut cursor_prompt = false;
-        let mut cursor_prompt_complete = !tracked_projects.is_empty();
-        for project in &tracked_projects {
+        let active_cursor_projects: Vec<&str> = tracked_details
+            .iter()
+            .filter(|d| d.tracked && !d.is_external)
+            .map(|d| d.path.as_str())
+            .collect();
+        let mut cursor_prompt_complete = !active_cursor_projects.is_empty();
+        for project in active_cursor_projects {
             let rule_path = gortex_cursor_rule_path(project);
             if rule_path.is_file() {
                 if let Ok(data) = fs::read(&rule_path) {
@@ -910,7 +1281,7 @@ impl GortexService {
             project_mcp_projects: Some(project_mcp_projects),
             default_project,
             integration_present,
-            active_task: Self::get_active_task(),
+            active_task,
             message,
             takeover_state,
             mcp_client_count,
@@ -1526,6 +1897,8 @@ impl GortexService {
         let canonical = canonicalize_clean(p).map_err(|e| format!("解析路径失败: {}", e))?;
         let clean_path = clean_path_str(&canonical.to_string_lossy());
 
+        let _op_guard = gortex_lifecycle_lock().lock().await;
+        let _pause_guard = pause_reconcile();
         Self::set_active_task(&clean_path, "track");
         Self::clear_tracked_status_cache();
         let res = Self::track_project_inner(&clean_path).await;
@@ -1537,6 +1910,9 @@ impl GortexService {
     async fn track_project_inner(clean_path: &str) -> Result<GortexOperationResponse, String> {
         let exe = Self::get_managed_executable_path()
             .ok_or_else(|| "未检测到受管 Gortex，请先安装到同级目录".to_string())?;
+        let install_root = Self::get_install_dir();
+        let config_path = install_root.join("config").join("gortex").join("config.yaml");
+        let exe_str = exe.to_string_lossy().to_string();
 
         let (running, _) = Self::get_daemon_status();
         if !running {
@@ -1545,39 +1921,79 @@ impl GortexService {
 
         info!("Starting gortex track on {}", clean_path);
 
-        // 1. 立即持久化登记并同步配置，让 Daemon 的权威列表能及时读取到此项目（打破循环死锁）
-        let mut tracked = Self::get_tracked_projects();
-        if !tracked.iter().any(|p| clean_path_str(p).eq_ignore_ascii_case(clean_path)) {
-            tracked.push(clean_path.to_string());
-        }
-        Self::save_tracked_projects(&tracked)?;
-        let _ = reconcile_gortex_workspaces("default");
-
-        // 2. 调用 gortex track 通知 daemon 执行建图（去除 --wait 死锁参数，设置 60 秒安全时限）
-        let track_res = Self::run_gortex_command_with_timeout(
-            Duration::from_secs(60),
-            &exe,
-            &["track", clean_path],
-        ).await;
-
-        if let Err(e) = track_res {
-            tracing::warn!("gortex track trigger output: {}", e);
-        }
-
         let mut warnings = Vec::new();
         if let Err(e) = ensure_gortex_watch_config(clean_path) {
             warnings.push(format!("自动监视配置: {}", e));
         }
 
-        let _ = reconcile_gortex_workspaces("default");
+        let track_keys = vec![clean_path.to_string()];
+        let track_res = Self::run_gortex_cli_capture(
+            Duration::from_secs(60),
+            &exe,
+            &["track", clean_path],
+        )
+        .await;
 
-        let install_root = Self::get_install_dir();
+        match track_res {
+            Ok((true, _, _)) => {}
+            Ok((false, stdout, stderr)) => {
+                Self::clear_tracked_status_cache();
+                let (daemon_projs, _, alive, _) = Self::query_daemon_tracked_details(&exe_str);
+                let in_daemon = alive
+                    && daemon_projs
+                        .iter()
+                        .any(|p| path_matches_any_key(&p.path, &track_keys));
+                if !in_daemon {
+                    let detail = if !stderr.is_empty() { stderr } else { stdout };
+                    return Err(format!("Gortex track 失败: {}", detail));
+                }
+            }
+            Err(e) => {
+                Self::clear_tracked_status_cache();
+                let (daemon_projs, _, alive, _) = Self::query_daemon_tracked_details(&exe_str);
+                let in_daemon = alive
+                    && daemon_projs
+                        .iter()
+                        .any(|p| path_matches_any_key(&p.path, &track_keys));
+                let in_config = path_matches_any_key(
+                    clean_path,
+                    &read_gortex_config_repo_paths(&config_path),
+                );
+                if !in_daemon && !in_config {
+                    return Err(format!("Gortex track 失败: {}", e));
+                }
+                warn!("gortex track timeout while daemon accepted repo: {}", e);
+            }
+        }
+
+        let mut tracked = Self::get_tracked_projects();
+        if !tracked
+            .iter()
+            .any(|p| paths_refer_same(p, clean_path))
+        {
+            tracked.push(clean_path.to_string());
+        }
+        Self::save_tracked_projects(&tracked)?;
+
+        if let Ok(true) = upsert_project_in_gortex_config(&config_path, "default", clean_path) {
+            let _ = Self::run_gortex_cli_capture(
+                Duration::from_secs(15),
+                &exe,
+                &["daemon", "reload"],
+            )
+            .await;
+        }
+
         let ownership = read_gortex_ownership(&install_root).unwrap_or_default();
         let available = gortex_detected_mcp_agents();
-        let exe_str = exe.to_string_lossy().to_string();
 
         if ownership.project_mcp_enabled {
-            warnings.extend(gortex_register_project_mcp_for_project(clean_path, &exe_str, &install_root, Some(&available)));
+            warnings.extend(gortex_register_project_mcp_for_project(
+                clean_path,
+                &exe_str,
+                &install_root,
+                Some(&available),
+            ));
         }
 
         if available.get("cursor").copied().unwrap_or(false) {
@@ -1589,6 +2005,8 @@ impl GortexService {
             }
         }
 
+        refresh_watch_enforcer_snapshots(&config_path, &Self::get_project_registry_path());
+
         let msg = if warnings.is_empty() {
             "已建立 Gortex 项目代码图谱；后续深度分析由 AI 按任务需要调用 MCP。".to_string()
         } else {
@@ -1597,12 +2015,368 @@ impl GortexService {
 
         Ok(GortexOperationResponse {
             message: msg,
-            warnings: if warnings.is_empty() { None } else { Some(warnings) },
+            warnings: if warnings.is_empty() {
+                None
+            } else {
+                Some(warnings)
+            },
         })
+    }
+
+    fn collect_untrack_targets(
+        clean_path: &str,
+        daemon_projs: &[GortexProjectInfo],
+        config_paths: &[String],
+        local_tracked: &[String],
+    ) -> (String, Vec<String>) {
+        let mut keys: Vec<String> = Vec::new();
+        let push_unique = |list: &mut Vec<String>, candidate: &str| {
+            let c = clean_path_str(candidate);
+            if !c.is_empty() && !list.iter().any(|existing| existing.eq_ignore_ascii_case(&c)) {
+                list.push(c);
+            }
+        };
+
+        push_unique(&mut keys, clean_path);
+        let p = Path::new(clean_path);
+        if p.exists() {
+            if let Ok(canon) = canonicalize_clean(p) {
+                push_unique(&mut keys, &canon.to_string_lossy());
+            }
+        }
+
+        let mut expanded = true;
+        while expanded {
+            expanded = false;
+            let snapshot = keys.clone();
+            for candidate in daemon_projs
+                .iter()
+                .map(|d| d.path.as_str())
+                .chain(config_paths.iter().map(|s| s.as_str()))
+                .chain(local_tracked.iter().map(|s| s.as_str()))
+            {
+                if path_matches_any_key(candidate, &snapshot) {
+                    let before = keys.len();
+                    push_unique(&mut keys, candidate);
+                    let cp = clean_path_str(candidate);
+                    let p_cand = Path::new(&cp);
+                    if p_cand.exists() {
+                        if let Ok(canon) = canonicalize_clean(p_cand) {
+                            push_unique(&mut keys, &canon.to_string_lossy());
+                        }
+                    }
+                    if keys.len() != before {
+                        expanded = true;
+                    }
+                }
+            }
+        }
+
+        let primary = daemon_projs
+            .iter()
+            .find(|d| path_matches_any_key(&d.path, &keys))
+            .map(|d| clean_path_str(&d.path))
+            .or_else(|| {
+                config_paths
+                    .iter()
+                    .find(|c| path_matches_any_key(c, &keys))
+                    .map(|c| clean_path_str(c))
+            })
+            .or_else(|| {
+                local_tracked
+                    .iter()
+                    .find(|l| path_matches_any_key(l, &keys))
+                    .map(|l| clean_path_str(l))
+            })
+            .unwrap_or_else(|| keys.last().cloned().unwrap_or_else(|| clean_path.to_string()));
+
+        (primary, keys)
+    }
+
+    async fn execute_gortex_untrack_purge(
+        exe: &Path,
+        exe_str: &str,
+        config_path: &Path,
+        primary_target: &str,
+        target_keys: &[String],
+        daemon_alive: bool,
+    ) -> Result<(), String> {
+        if !daemon_alive {
+            let in_config_now = read_gortex_config_repo_paths(config_path)
+                .iter()
+                .any(|p| path_matches_any_key(p, target_keys));
+
+            if in_config_now {
+                let (ok, stdout, stderr) = Self::run_gortex_cli_capture(
+                    GORTEX_UNTRACK_TIMEOUT,
+                    exe,
+                    &["untrack", primary_target, "--confirm"],
+                )
+                .await?;
+                let outcome = match classify_gortex_untrack_cli_output(ok, &stdout, &stderr) {
+                    UntrackCliOutcome::UnsupportedFlagOrCmd(_) => {
+                        let (ok2, out2, err2) = Self::run_gortex_cli_capture(
+                            GORTEX_UNTRACK_TIMEOUT,
+                            exe,
+                            &["untrack", primary_target],
+                        )
+                        .await?;
+                        classify_gortex_untrack_cli_output(ok2, &out2, &err2)
+                    }
+                    other => other,
+                };
+                match outcome {
+                    UntrackCliOutcome::Blocked(msg) => {
+                        return Err(format!("Gortex 离线 untrack 失败: {}", msg));
+                    }
+                    UntrackCliOutcome::Failed(msg) => {
+                        if !msg.to_ascii_lowercase().contains("repository not found") {
+                            return Err(format!("Gortex 离线 untrack 失败: {}", msg));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            for key in target_keys {
+                let _ = remove_project_from_gortex_config(config_path, key)?;
+            }
+
+            let remaining_config = read_gortex_config_repo_paths(config_path);
+            if remaining_config
+                .iter()
+                .any(|p| path_matches_any_key(p, target_keys))
+            {
+                return Err(
+                    "彻底 untrack 未完成：Gortex config.yaml 中仍保留该项目（可能配置在 projects 节中，需手动移除）"
+                        .to_string(),
+                );
+            }
+            return Ok(());
+        }
+
+        // Wait briefly if target is currently indexing/loading before removing
+        let loading_deadline = Instant::now() + Duration::from_secs(60);
+        let mut daemon_projs = loop {
+            Self::clear_tracked_status_cache();
+            let (projs, _, alive_now, _) = Self::query_daemon_tracked_details(exe_str);
+            if !alive_now {
+                return Err("Gortex daemon 在清理前断开连接，请重试或执行“重置接管”。".to_string());
+            }
+            let is_loading = projs
+                .iter()
+                .any(|p| path_matches_any_key(&p.path, target_keys) && p.status == "indexing");
+            if !is_loading || Instant::now() >= loading_deadline {
+                break projs;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+
+        let in_daemon_now = daemon_projs
+            .iter()
+            .any(|p| path_matches_any_key(&p.path, target_keys));
+        let in_config_now = read_gortex_config_repo_paths(config_path)
+            .iter()
+            .any(|p| path_matches_any_key(p, target_keys));
+
+        let mut relay_candidates: Vec<String> = Vec::new();
+        for dp in &daemon_projs {
+            if path_matches_any_key(&dp.path, target_keys) && Path::new(&dp.path).is_dir() {
+                let c = clean_path_str(&dp.path);
+                if !relay_candidates.iter().any(|x| x.eq_ignore_ascii_case(&c)) {
+                    relay_candidates.push(c);
+                }
+            }
+        }
+        for dp in &daemon_projs {
+            if !path_matches_any_key(&dp.path, target_keys) && Path::new(&dp.path).is_dir() {
+                let c = clean_path_str(&dp.path);
+                if !relay_candidates.iter().any(|x| x.eq_ignore_ascii_case(&c)) {
+                    relay_candidates.push(c);
+                }
+            }
+        }
+        for dp in &daemon_projs {
+            if path_matches_any_key(&dp.path, target_keys) {
+                let c = clean_path_str(&dp.path);
+                if !relay_candidates.iter().any(|x| x.eq_ignore_ascii_case(&c)) {
+                    relay_candidates.push(c);
+                }
+            }
+        }
+
+        let need_catalog_probe =
+            !in_daemon_now && !in_config_now && !relay_candidates.is_empty() && Path::new(primary_target).is_absolute();
+        if in_daemon_now || in_config_now || need_catalog_probe {
+            let mut handled_by_forget = false;
+            let mut last_forget_err: Option<String> = None;
+            if (in_daemon_now || need_catalog_probe) && !relay_candidates.is_empty() {
+                for relay in &relay_candidates {
+                    let (ok, stdout, stderr) = Self::run_gortex_cli_capture(
+                        GORTEX_UNTRACK_TIMEOUT,
+                        exe,
+                        &[
+                            "repos",
+                            "forget",
+                            primary_target,
+                            "--index",
+                            relay,
+                            "--confirm",
+                            "--format",
+                            "json",
+                        ],
+                    )
+                    .await?;
+                    match classify_gortex_untrack_cli_output(ok, &stdout, &stderr) {
+                        UntrackCliOutcome::Forgotten | UntrackCliOutcome::Untracked => {
+                            handled_by_forget = true;
+                            last_forget_err = None;
+                            break;
+                        }
+                        UntrackCliOutcome::UnsupportedFlagOrCmd(_)
+                        | UntrackCliOutcome::NotTracked
+                        | UntrackCliOutcome::ConfigOnly => {
+                            last_forget_err = None;
+                            break;
+                        }
+                        UntrackCliOutcome::PreviewRequired => {
+                            return Err("Gortex repos forget 需要 --confirm 确认，未能清理数据库。".to_string());
+                        }
+                        UntrackCliOutcome::Demoted => {
+                            return Err("Gortex 返回了降级而非删除结果，未能清理数据库。".to_string());
+                        }
+                        UntrackCliOutcome::Blocked(msg) => {
+                            return Err(format!("Gortex 无法彻底遗忘该项目: {}", msg));
+                        }
+                        UntrackCliOutcome::Failed(msg) => {
+                            last_forget_err = Some(msg);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if (in_daemon_now || in_config_now) && !handled_by_forget {
+                let mut outcome = {
+                    let (ok, stdout, stderr) = Self::run_gortex_cli_capture(
+                        GORTEX_UNTRACK_TIMEOUT,
+                        exe,
+                        &["untrack", primary_target, "--confirm", "--format", "json"],
+                    )
+                    .await?;
+                    classify_gortex_untrack_cli_output(ok, &stdout, &stderr)
+                };
+                if matches!(outcome, UntrackCliOutcome::UnsupportedFlagOrCmd(_)) {
+                    let (ok, stdout, stderr) = Self::run_gortex_cli_capture(
+                        GORTEX_UNTRACK_TIMEOUT,
+                        exe,
+                        &["untrack", primary_target, "--confirm"],
+                    )
+                    .await?;
+                    outcome = classify_gortex_untrack_cli_output(ok, &stdout, &stderr);
+                }
+                if matches!(outcome, UntrackCliOutcome::UnsupportedFlagOrCmd(_)) {
+                    let (ok, stdout, stderr) = Self::run_gortex_cli_capture(
+                        GORTEX_UNTRACK_TIMEOUT,
+                        exe,
+                        &["untrack", primary_target],
+                    )
+                    .await?;
+                    outcome = classify_gortex_untrack_cli_output(ok, &stdout, &stderr);
+                }
+
+                match outcome {
+                    UntrackCliOutcome::Demoted => {
+                        return Err(
+                            "Gortex 仅将该工作树降级为 automatic 模式，未能从数据库彻底删除；请检查 Gortex 版本或同家族主仓库后重试。"
+                                .to_string(),
+                        );
+                    }
+                    UntrackCliOutcome::PreviewRequired => {
+                        return Err(
+                            "Gortex untrack 仅返回了预览结果（需要 --confirm），未能删除数据库记录。"
+                                .to_string(),
+                        );
+                    }
+                    UntrackCliOutcome::Blocked(msg) | UntrackCliOutcome::Failed(msg) => {
+                        if let Some(forget_err) = last_forget_err {
+                            return Err(format!(
+                                "Gortex 彻底 untrack 失败: {}（repos forget 尝试失败: {}）",
+                                msg, forget_err
+                            ));
+                        }
+                        return Err(format!("Gortex 彻底 untrack 失败: {}", msg));
+                    }
+                    UntrackCliOutcome::UnsupportedFlagOrCmd(msg) => {
+                        return Err(format!("当前 Gortex CLI 不支持彻底 untrack 参数: {}", msg));
+                    }
+                    UntrackCliOutcome::Forgotten
+                    | UntrackCliOutcome::Untracked
+                    | UntrackCliOutcome::NotTracked
+                    | UntrackCliOutcome::ConfigOnly => {}
+                }
+            }
+        }
+
+        // Remove any lingering top-level `repos:` entries (e.g. verbatim/case aliases or unindexed entries)
+        let mut config_cleaned = false;
+        for key in target_keys {
+            if remove_project_from_gortex_config(config_path, key)? {
+                config_cleaned = true;
+            }
+        }
+        if config_cleaned {
+            let _ = Self::run_gortex_cli_capture(
+                Duration::from_secs(15),
+                exe,
+                &["daemon", "reload"],
+            )
+            .await;
+        }
+
+        // Poll until daemon tracked_repos and config.yaml no longer contain the project
+        let verify_deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            Self::clear_tracked_status_cache();
+            let (cur_daemon, _, cur_alive, _) = Self::query_daemon_tracked_details(exe_str);
+            if !cur_alive {
+                return Err("Gortex daemon 在清理验证期间断开，无法确认数据库图谱已清理。".to_string());
+            }
+            daemon_projs = cur_daemon;
+            let still_in_daemon = daemon_projs
+                .iter()
+                .any(|p| path_matches_any_key(&p.path, target_keys));
+            let still_in_config = read_gortex_config_repo_paths(config_path)
+                .iter()
+                .any(|p| path_matches_any_key(p, target_keys));
+
+            if !still_in_daemon && !still_in_config {
+                return Ok(());
+            }
+            if Instant::now() >= verify_deadline {
+                if still_in_config {
+                    return Err(
+                        "彻底 untrack 未完成：Gortex config.yaml 仍保留该项目记录（可能受 projects 配置锁定），本地记录未移除。"
+                            .to_string(),
+                    );
+                }
+                return Err(
+                    "彻底 untrack 未完成：Gortex daemon 数据库仍保留该项目图谱记录，本地记录未移除。"
+                        .to_string(),
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
     }
 
     pub async fn untrack_project(path_str: &str) -> Result<GortexOperationResponse, String> {
         let clean = clean_path_str(path_str);
+        if clean.is_empty() {
+            return Err("无效的项目路径".to_string());
+        }
+
+        let _op_guard = gortex_lifecycle_lock().lock().await;
+        let _pause_guard = pause_reconcile();
         Self::set_active_task(&clean, "untrack");
         Self::clear_tracked_status_cache();
         let res = Self::untrack_project_inner(&clean).await;
@@ -1612,47 +2386,174 @@ impl GortexService {
     }
 
     async fn untrack_project_inner(clean_path: &str) -> Result<GortexOperationResponse, String> {
-        let exe = Self::get_managed_executable_path()
-            .ok_or_else(|| "未检测到受管 Gortex，请先安装到同级目录".to_string())?;
+        let install_root = Self::get_install_dir();
+        let config_path = install_root.join("config").join("gortex").join("config.yaml");
 
-        let _ = Self::run_gortex_command_with_timeout(
-            GORTEX_UNTRACK_TIMEOUT,
-            &exe,
-            &["untrack", clean_path],
-        ).await;
+        let Some(exe) = Self::get_managed_executable_path() else {
+            let any_process_running = is_process_running(GORTEX_EXECUTABLE_NAME);
+            if any_process_running {
+                return Err(
+                    "未检测到受管 Gortex，但仍有 Gortex 进程在运行，无法安全清理数据库；请先停止或安装 Gortex 后再执行 untrack。"
+                        .to_string(),
+                );
+            }
+            if has_gortex_database_files(&install_root) {
+                return Err(
+                    "未检测到受管 Gortex，但受管数据目录仍存在图谱数据库，无法彻底清理数据库残留；请先安装受管 Gortex 后再执行 untrack。"
+                        .to_string(),
+                );
+            }
 
-        let verbatim_path = format!(r"\\?\{}", clean_path);
-        let _ = Self::run_gortex_command_with_timeout(
-            Duration::from_secs(10),
+            let config_paths = read_gortex_config_repo_paths(&config_path);
+            let local_tracked = Self::get_tracked_projects();
+            let (_primary_target, target_keys) =
+                Self::collect_untrack_targets(clean_path, &[], &config_paths, &local_tracked);
+
+            for key in &target_keys {
+                let _ = remove_project_from_gortex_config(&config_path, key)?;
+            }
+            let remaining_config = read_gortex_config_repo_paths(&config_path);
+            if remaining_config
+                .iter()
+                .any(|p| path_matches_any_key(p, &target_keys))
+            {
+                return Err(
+                    "彻底 untrack 未完成：Gortex config.yaml 中仍保留该项目（可能配置在 projects 节中，需手动移除）"
+                        .to_string(),
+                );
+            }
+
+            let mut tracked = Self::get_tracked_projects();
+            let prev_len = tracked.len();
+            tracked.retain(|p| !path_matches_any_key(p, &target_keys));
+            if tracked.len() != prev_len || Self::get_project_registry_path().is_file() {
+                Self::save_tracked_projects(&tracked)?;
+            }
+
+            let exe_placeholder = install_root
+                .join("bin")
+                .join(GORTEX_EXECUTABLE_NAME)
+                .to_string_lossy()
+                .to_string();
+            let mut warnings = Vec::new();
+            for key in &target_keys {
+                for w in gortex_remove_project_mcp(&exe_placeholder, key, &install_root) {
+                    if !warnings.contains(&w) {
+                        warnings.push(w);
+                    }
+                }
+                let rule_path = gortex_cursor_rule_path(key);
+                let _ = remove_gortex_prompt(&rule_path, "");
+            }
+
+            refresh_watch_enforcer_snapshots(&config_path, &Self::get_project_registry_path());
+
+            let msg = if warnings.is_empty() {
+                "已清理该项目的本地 Gortex 记录与接入配置（未检测到受管 Gortex 与图谱数据库）。".to_string()
+            } else {
+                "已清理该项目的本地 Gortex 记录，但部分项目接入配置需要处理。".to_string()
+            };
+
+            return Ok(GortexOperationResponse {
+                message: msg,
+                warnings: if warnings.is_empty() {
+                    None
+                } else {
+                    Some(warnings)
+                },
+            });
+        };
+
+        let exe_str = exe.to_string_lossy().to_string();
+
+        let (proc_running, proc_starting, _, _) = Self::get_daemon_detailed_status();
+        let any_process_running = is_process_running(GORTEX_EXECUTABLE_NAME);
+        Self::clear_tracked_status_cache();
+        let (mut daemon_projs, _, mut daemon_alive, _) =
+            if proc_running || proc_starting || any_process_running {
+                Self::query_daemon_tracked_details(&exe_str)
+            } else {
+                (Vec::new(), "stopped".to_string(), false, None)
+            };
+
+        let mut started_for_cleanup = false;
+        if !daemon_alive {
+            if proc_starting {
+                Self::wait_for_daemon_ready(&exe)?;
+                daemon_alive = true;
+            } else if any_process_running || proc_running {
+                return Err(
+                    "检测到 Gortex 进程异常未响应，无法彻底清理数据库图谱；请先点击“重置接管”恢复服务后再执行 untrack。"
+                        .to_string(),
+                );
+            } else if has_gortex_database_files(&install_root) {
+                Self::start_daemon()?;
+                started_for_cleanup = true;
+                daemon_alive = true;
+            }
+        }
+
+        if daemon_alive {
+            Self::clear_tracked_status_cache();
+            let (fresh_projs, _, fresh_alive, _) = Self::query_daemon_tracked_details(&exe_str);
+            daemon_projs = fresh_projs;
+            daemon_alive = fresh_alive;
+        }
+
+        let config_paths = read_gortex_config_repo_paths(&config_path);
+        let local_tracked = Self::get_tracked_projects();
+        let (primary_target, target_keys) =
+            Self::collect_untrack_targets(clean_path, &daemon_projs, &config_paths, &local_tracked);
+
+        let purge_res = Self::execute_gortex_untrack_purge(
             &exe,
-            &["untrack", &verbatim_path],
-        ).await;
+            &exe_str,
+            &config_path,
+            &primary_target,
+            &target_keys,
+            daemon_alive,
+        )
+        .await;
+
+        if started_for_cleanup {
+            if let Err(stop_err) = Self::stop_daemon() {
+                warn!("清理完毕后停止临时 Gortex daemon 失败: {}", stop_err);
+            }
+            Self::clear_tracked_status_cache();
+        }
+
+        purge_res?;
 
         let mut tracked = Self::get_tracked_projects();
-        tracked.retain(|p| {
-            let cp = clean_path_str(p);
-            !cp.eq_ignore_ascii_case(clean_path) && !p.eq_ignore_ascii_case(clean_path)
-        });
+        tracked.retain(|p| !path_matches_any_key(p, &target_keys));
         Self::save_tracked_projects(&tracked)?;
 
-        let install_root = Self::get_install_dir();
-        let exe_str = exe.to_string_lossy().to_string();
-        let warnings = gortex_remove_project_mcp(&exe_str, clean_path, &install_root);
+        let mut warnings = Vec::new();
+        for key in &target_keys {
+            for w in gortex_remove_project_mcp(&exe_str, key, &install_root) {
+                if !warnings.contains(&w) {
+                    warnings.push(w);
+                }
+            }
+            let rule_path = gortex_cursor_rule_path(key);
+            let _ = remove_gortex_prompt(&rule_path, "");
+        }
 
-        let rule_path = gortex_cursor_rule_path(clean_path);
-        let _ = remove_gortex_prompt(&rule_path, "");
-
-        let _ = reconcile_gortex_workspaces("default");
+        refresh_watch_enforcer_snapshots(&config_path, &Self::get_project_registry_path());
 
         let msg = if warnings.is_empty() {
-            "已取消该项目的 Gortex track；不会删除项目文件。".to_string()
+            "已彻底取消该项目的 Gortex track，并清理数据库图谱与配置记录（不删除项目文件）。".to_string()
         } else {
-            "已取消该项目的 Gortex track，但部分项目接入配置需要处理。".to_string()
+            "已彻底取消该项目的 Gortex track 并清理数据库，但部分项目接入配置需要处理。".to_string()
         };
 
         Ok(GortexOperationResponse {
             message: msg,
-            warnings: if warnings.is_empty() { None } else { Some(warnings) },
+            warnings: if warnings.is_empty() {
+                None
+            } else {
+                Some(warnings)
+            },
         })
     }
 
@@ -1669,6 +2570,7 @@ impl GortexService {
         if running {
             return Err("Gortex daemon 正在运行，请先停止 daemon 后再卸载".to_string());
         }
+        let _pause_guard = pause_reconcile();
 
         let mut warnings = Vec::new();
 

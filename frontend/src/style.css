@@ -158,6 +158,9 @@ input:disabled { border-color: #243b52; color: #60738b; background: #08111c; cur
 .project-tag.external { background: rgba(102, 217, 239, 0.15); color: #66d9ef; border: 1px solid rgba(102, 217, 239, 0.3); }
 .project-tag.error { background: rgba(241, 70, 104, 0.15); color: #f14668; border: 1px solid rgba(241, 70, 104, 0.3); }
 .project-tag.warning { background: rgba(255, 170, 0, 0.15); color: #ffaa00; border: 1px solid rgba(255, 170, 0, 0.3); }
+.project-tag.tracked { background: rgba(88, 166, 255, 0.16); color: #7cc0ff; border: 1px solid rgba(88, 166, 255, 0.35); }
+.project-tag.untracked { background: rgba(148, 163, 184, 0.14); color: #9fb2c9; border: 1px solid rgba(148, 163, 184, 0.3); }
+.project-tag.stopped { background: rgba(148, 163, 184, 0.12); color: #8da2bc; border: 1px solid rgba(148, 163, 184, 0.25); }
 .gortex-project-item code { min-width: 0; overflow-wrap: anywhere; word-break: break-word; font-size: 12px; }
 .gortex-project-item button { padding-block: 6px; }
 .hint { margin: 26px 0 0; color: #7187a2; font-size: 13px; }
