@@ -68,15 +68,35 @@ pub fn format_managed_toml(host: &str, db_path: Option<&Path>) -> String {
 }
 
 pub fn sync_managed_llmtrim_config(upstream_url: &str, install_dir: Option<&Path>) -> Result<(), String> {
-    let host = extract_upstream_host(upstream_url)?;
     let config_dir = managed_config_dir()?;
-    let _ = fs::create_dir_all(&config_dir);
+    sync_managed_llmtrim_config_at(upstream_url, install_dir, &config_dir)
+}
 
-    let db_path = install_dir.and_then(|dir| tracking_db_path(dir).ok());
-    let toml_content = format_managed_toml(&host, db_path.as_deref());
-
+pub(super) fn sync_managed_llmtrim_config_at(
+    upstream_url: &str,
+    install_dir: Option<&Path>,
+    config_dir: &Path,
+) -> Result<(), String> {
+    let host = extract_upstream_host(upstream_url)?;
     let config_toml_path = config_dir.join("config.toml");
     let marker_path = config_dir.join(LLMTRIM_MARKER_FILE);
+    let managed = fs::read_to_string(&marker_path)
+        .map(|marker| marker == LLMTRIM_MARKER_CONTENT)
+        .unwrap_or(false);
+
+    if !managed && config_dir.exists() {
+        let mut entries = fs::read_dir(config_dir)
+            .map_err(|e| format!("读取 llmtrim 配置目录失败: {}", e))?;
+        if entries.next().transpose().map_err(|e| format!("读取 llmtrim 配置目录失败: {}", e))?.is_some() {
+            info!("保留非本项目管理的 llmtrim 配置目录: {:?}", config_dir);
+            return Ok(());
+        }
+    }
+
+    fs::create_dir_all(config_dir)
+        .map_err(|e| format!("创建 llmtrim 配置目录失败: {}", e))?;
+    let db_path = install_dir.and_then(|dir| tracking_db_path(dir).ok());
+    let toml_content = format_managed_toml(&host, db_path.as_deref());
 
     fs::write(&config_toml_path, toml_content)
         .map_err(|e| format!("写入 llmtrim config.toml 失败: {}", e))?;

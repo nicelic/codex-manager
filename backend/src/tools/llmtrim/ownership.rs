@@ -31,6 +31,15 @@ pub fn write_managed_tool_state(install_dir: &Path, state: &ManagedToolState) ->
     fs::write(&state_file, content).map_err(|e| format!("写入状态账本失败: {}", e))
 }
 
+pub fn set_managed_tool_desired_running(install_dir: &Path, desired: bool) -> Result<(), String> {
+    let mut state = read_managed_tool_state(install_dir)?;
+    state.desired_running = desired;
+    if !desired {
+        state.running = false;
+    }
+    write_managed_tool_state(install_dir, &state)
+}
+
 pub fn remove_managed_tool_state(install_dir: &Path) -> Result<(), String> {
     let state_file = install_dir.join(TOOL_STATE_FILE);
     if state_file.exists() {

@@ -1,8 +1,18 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
 use std::sync::Arc;
-use tokio::sync::{broadcast, oneshot, RwLock};
+use tokio::sync::{broadcast, oneshot, watch, RwLock};
 use crate::common::AppConfig;
+use crate::tools::llmtrim::ownership::read_managed_tool_state;
+use crate::tools::llmtrim::service::LlmtrimService;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LlmtrimRouteState {
+    pub selected: bool,
+    pub available: bool,
+    pub persisted: bool,
+    pub transitioning: bool,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,7 +28,12 @@ pub struct AppState {
     pub proxy_dedicated_cancel: Arc<RwLock<Option<oneshot::Sender<()>>>>,
     pub log_viewer_pid: Arc<RwLock<Option<u32>>>,
     pub llmtrim_log_viewer_pid: Arc<RwLock<Option<u32>>>,
-    pub llmtrim_client: Arc<RwLock<Option<reqwest::Client>>>,
+    pub llmtrim_client: Arc<RwLock<Option<(u64, reqwest::Client)>>>,
+    pub llmtrim_http1_client: Arc<RwLock<Option<(u64, reqwest::Client)>>>,
+    pub llmtrim_route: Arc<std::sync::Mutex<LlmtrimRouteState>>,
+    pub llmtrim_operation_lock: Arc<tokio::sync::Mutex<()>>,
+    pub proxy_route_changed: watch::Sender<u64>,
+    pub proxy_route_monitor_started: Arc<AtomicBool>,
     pub event_sender: broadcast::Sender<serde_json::Value>,
     pub shutdown_sender: broadcast::Sender<()>,
     pub active_requests: Arc<AtomicI64>,
@@ -32,12 +47,21 @@ impl AppState {
     pub fn new(config: AppConfig, config_path: PathBuf) -> Self {
         let (event_sender, _) = broadcast::channel(100);
         let (shutdown_sender, _) = broadcast::channel(1);
+        let (proxy_route_changed, _) = watch::channel(0);
 
         let http_client = reqwest::Client::builder()
+            .no_proxy()
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .pool_max_idle_per_host(50)
             .build()
             .unwrap_or_default();
+
+        let executable = LlmtrimService::get_executable_path(&config.llmtrim_path);
+        let llmtrim_selected = executable.parent()
+            .map(|directory| read_managed_tool_state(directory)
+                .map(|state| state.desired_running)
+                .unwrap_or(true))
+            .unwrap_or(true);
 
         let initial_addr = config.listen_address.clone();
         let default_web_port = 7788u16;
@@ -57,6 +81,16 @@ impl AppState {
             log_viewer_pid: Arc::new(RwLock::new(None)),
             llmtrim_log_viewer_pid: Arc::new(RwLock::new(None)),
             llmtrim_client: Arc::new(RwLock::new(None)),
+            llmtrim_http1_client: Arc::new(RwLock::new(None)),
+            llmtrim_route: Arc::new(std::sync::Mutex::new(LlmtrimRouteState {
+                selected: llmtrim_selected,
+                available: false,
+                persisted: llmtrim_selected,
+                transitioning: false,
+            })),
+            llmtrim_operation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            proxy_route_changed,
+            proxy_route_monitor_started: Arc::new(AtomicBool::new(false)),
             event_sender,
             shutdown_sender,
             active_requests: Arc::new(AtomicI64::new(0)),

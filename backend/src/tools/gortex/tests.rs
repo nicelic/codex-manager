@@ -262,18 +262,17 @@ sandbox = "elevated"
         assert!(prompt.contains("C:\\test\\gortex提示词.md"));
         assert!(prompt.contains(&expected_line_str));
         let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 300);
-        let expected_slice_count_str = format!("共 {} 个切片：", expected_slices.len());
         let expected_last_slice = expected_slices.last().unwrap();
-        assert!(prompt.contains(&expected_slice_count_str));
+        assert!(prompt.contains("初始计划为"));
         assert!(prompt.contains(expected_last_slice));
         assert!(prompt.contains(&expected_slices.join("、")));
         assert!(prompt.contains("外部文档只读豁免"));
         assert!(prompt.contains("宿主原生只读工具"));
-        assert!(prompt.contains("严禁调用 Gortex MCP 读取“gortex提示词.md”"));
+        assert!(prompt.contains("严禁调用 Gortex MCP 读取该文件"));
         assert!(prompt.contains("顺序分片读取与完整性验收"));
         assert!(prompt.contains("必须等待当前调用返回、验收并补全后"));
         assert!(prompt.contains("禁止并发、批量下发"));
-        assert!(prompt.contains("调用尚未返回时等待，不得重发"));
+        assert!(prompt.contains("调用尚未返回时必须等待，不得重发"));
         assert!(prompt.contains("仅补读未验收范围"));
         assert!(prompt.contains("若文档在读取过程中变化"));
         assert!(!prompt.contains("可在首轮同时发起各切片的独立读取"));
@@ -283,7 +282,7 @@ sandbox = "elevated"
         assert!(prompt.contains("全程编码规范"));
         assert!(prompt.contains("UTF-8"));
         assert!(prompt.contains("从开始读取“gortex提示词.md”就必须使用 UTF-8"));
-        assert!(prompt.contains("Git 与 GitHub 操作豁免"));
+        assert!(prompt.contains("Git、GitHub 与测试执行调试豁免"));
         assert!(!prompt.contains("禁绝补偿读取"));
         assert!(!prompt.contains("可免除预读此文档"));
         assert!(prompt.len() <= 24 * 1024, "delegated prompt exceeds 24KB: {} bytes", prompt.len());
@@ -304,6 +303,24 @@ sandbox = "elevated"
         assert!(small_prompt.contains("未达第 50 行"));
         assert!(small_prompt.contains("核验完整载入后"));
         assert!(small_prompt.len() <= 24 * 1024, "single-slice prompt exceeds 24KB: {} bytes", small_prompt.len());
+
+        for generated in [&prompt, &small_prompt] {
+            for required in [
+                "（如环境排查、外部构建与测试等）",
+                "全程从开始到结束必须使用 UTF-8",
+                "从开始读取“gortex提示词.md”就必须使用 UTF-8",
+                "所有操作仍须遵守更高优先级的系统指令和平台权限",
+                "测试进程的标准输出",
+                "无论测试与业务代码写在同一文件中",
+                "Rust 源文件内的 #[cfg(test)] 模块",
+                "pytest、npm test 等原生命令",
+                "Gortex 的 change.tests 等功能",
+                "不得仅因识别不完整而自动改用原生工具读写工程代码",
+                "若任务仅运行或调试已知测试",
+            ] {
+                assert!(generated.contains(required), "prompt missing: {}", required);
+            }
+        }
     }
 
     #[test]

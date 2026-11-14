@@ -6,6 +6,7 @@ pub struct LlmtrimStatusResponse {
     pub version: String,
     pub running: bool,
     pub desired_running: bool,
+    pub route_selected: bool,
     pub activation_state: String,
     pub installed: bool,
     pub configured: bool,

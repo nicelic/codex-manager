@@ -95,6 +95,13 @@ pub async fn update_setting(
             message = "本地 API Key 已更新".to_string();
         }
         "llmtrim_path" => {
+            let route_selected = state.llmtrim_route.lock().unwrap_or_else(|e| e.into_inner()).selected;
+            if route_selected && val != cfg.llmtrim_path {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({ "saved": false, "message": "请先停用 llmtrim 路由，再修改 llmtrim 路径" })),
+                ).into_response();
+            }
             cfg.llmtrim_path = val.clone();
             message = "llmtrim 路径已更新".to_string();
         }
@@ -180,3 +187,40 @@ pub fn router() -> Router<AppState> {
         .route("/api/settings", get(get_settings).post(get_settings))
         .route("/api/settings/{setting}", put(update_setting).post(update_setting))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::AppConfig;
+
+    #[tokio::test]
+    async fn llmtrim_path_cannot_change_while_the_route_is_selected() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("llmtrim-setting-{}-{}", std::process::id(), nonce));
+        std::fs::create_dir_all(&directory).unwrap();
+        let initial = directory.join("old").join("llmtrim.exe").to_string_lossy().to_string();
+        let replacement = directory.join("new").join("llmtrim.exe").to_string_lossy().to_string();
+        let state = AppState::new(AppConfig { llmtrim_path: initial.clone(), ..AppConfig::default() }, directory.join("config.yaml"));
+        crate::server::proxy::activate_llmtrim_route(&state);
+
+        let response = update_setting(
+            Path("llmtrim_path".to_string()),
+            State(state.clone()),
+            Json(SettingUpdateRequest { value: replacement.clone() }),
+        ).await.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(state.config.read().await.llmtrim_path, initial);
+
+        crate::server::proxy::deactivate_llmtrim_route(&state);
+        let response = update_setting(
+            Path("llmtrim_path".to_string()),
+            State(state.clone()),
+            Json(SettingUpdateRequest { value: replacement.clone() }),
+        ).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.config.read().await.llmtrim_path, replacement);
+        std::fs::remove_file(directory.join("config.yaml")).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+}
+

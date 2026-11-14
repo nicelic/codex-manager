@@ -83,7 +83,7 @@ const logViewer = reactive({ showing: false, loading: true, working: false })
 const logNotice = ref('')
 const llmtrimLogViewer = reactive({ showing: false, loading: true, working: false })
 const llmtrimLogNotice = ref('')
-const llmtrim = reactive({ path: '', version: '', running: false, desiredRunning: false, activationState: 'not_installed', installed: false, configured: false, directoryExists: false, stateDirExists: false, trayRunning: false, trayProcessId: 0, residual: false, statusMessage: '', loading: true, working: false, commandInFlight: false })
+const llmtrim = reactive({ path: '', version: '', running: false, desiredRunning: false, routeSelected: false, activationState: 'not_installed', installed: false, configured: false, directoryExists: false, stateDirExists: false, trayRunning: false, trayProcessId: 0, residual: false, statusMessage: '', loading: true, working: false, commandInFlight: false })
 const llmtrimNotice = ref('')
 const llmtrimProcess = reactive({ id: 0, port: '' })
 const llmtrimReleases = reactive({ items: [], page: 0, loading: false, loaded: false, hasMore: true })
@@ -220,8 +220,8 @@ const exitTitle = computed(() => {
   return '退出连接已断开'
 })
 const exitDescription = computed(() => {
-  if (exitState.value === 'stopping') return '正在安全停止代理、llmtrim、RTK、snip 和日志窗口。'
-  if (exitState.value === 'completed') return '所有受管服务和页面操作均已停止。此提示会保留在当前页面中央。'
+  if (exitState.value === 'stopping') return '正在停止 llmtrim 并退出程序。'
+  if (exitState.value === 'completed') return 'llmtrim 和程序已停止。'
   if (exitState.value === 'warning') return 'code-Manager 将退出；请根据下方信息查看清理记录。'
   return '为避免在退出过程中继续写入配置，本页面将保持锁定。'
 })
@@ -524,7 +524,7 @@ function requestApplicationUpdate(event) {
 
   openConfirmation({
     title: actionTitle,
-    description: `将在更新前自动停止顶部代理及运行中的 RTK、snip、llmtrim，并停止 Gortex daemon 且清理相关进程以释放文件锁，然后下载并安全替换程序。若替换失败将自动回滚恢复当前版本。`,
+    description: `更新时将停止顶部代理及运行中的 RTK、snip 和 Gortex，然后替换并重启程序。llmtrim 将继续运行，新程序会重新识别其状态。若替换失败将自动回滚恢复当前版本。`,
     confirmLabel: confirmBtn,
     onConfirm: installApplicationUpdate,
     trigger: event?.currentTarget,
@@ -549,10 +549,6 @@ async function installApplicationUpdate() {
     if (snip.running || snip.desiredRunning || snip.cleanupRequired) {
       applicationUpdateNotice.value = '正在停止 snip…'
       await controlSnip()
-    }
-    if (llmtrim.running || llmtrim.trayRunning) {
-      applicationUpdateNotice.value = '正在停止 llmtrim…'
-      await controlLLMTrim('stop')
     }
     if (gortex.running || gortex.anyProcessRunning) {
       applicationUpdateNotice.value = '正在停止 Gortex daemon…'
@@ -651,6 +647,7 @@ function applyLLMTrimStatus(data, { silent = false } = {}) {
   llmtrim.version = data.version || ''
   llmtrim.running = Boolean(data.running)
   llmtrim.desiredRunning = Boolean(data.desired_running)
+  llmtrim.routeSelected = Boolean(data.route_selected)
   llmtrim.activationState = data.activation_state || 'not_installed'
   llmtrim.installed = Boolean(data.installed)
   llmtrim.configured = Boolean(data.configured)
@@ -663,7 +660,7 @@ function applyLLMTrimStatus(data, { silent = false } = {}) {
   llmtrimProcess.id = Number(data.process_id) || 0
   llmtrimProcess.port = data.port || ''
   llmtrim.loading = false
-  const targetReached = pendingLLMTrimTarget !== null && (pendingLLMTrimTarget ? llmtrim.running : (!llmtrim.running && !llmtrim.trayRunning))
+  const targetReached = pendingLLMTrimTarget !== null && (pendingLLMTrimTarget ? llmtrim.running : (!llmtrim.running && !llmtrim.trayRunning && !llmtrim.desiredRunning && !llmtrim.routeSelected))
   if (targetReached) {
     // 真实状态优先于控制命令响应，目标状态一旦达到就立即结束处理中。
     pendingLLMTrimTarget = null
@@ -1035,7 +1032,7 @@ function handleConfirmationKeydown(event) {
 function exitApplication(event) {
   openConfirmation({
     title: '停止并退出 code-Manager？',
-    description: '将停止 llmtrim、RTK、snip、代理和日志窗口，并清理相关配置。',
+    description: '将停止 llmtrim 并退出程序，代理和日志窗口也会关闭。',
     onConfirm: confirmApplicationExit,
     trigger: event?.currentTarget,
   })
@@ -2608,6 +2605,9 @@ onBeforeUnmount(() => {
             </span>
             <button type="button" :class="{ stop: llmtrim.running || llmtrim.trayRunning }" :disabled="llmtrim.loading || llmtrim.commandInFlight || !llmtrimCanControl" @click="controlLLMTrim(llmtrim.running || llmtrim.trayRunning ? 'stop' : 'start')">
               {{ llmtrimActionLabel() }}
+            </button>
+            <button v-if="llmtrim.routeSelected && !llmtrim.running && !llmtrim.trayRunning" type="button" class="stop" :disabled="llmtrim.loading || llmtrim.commandInFlight" @click="controlLLMTrim('stop')">
+              停用 llmtrim 路由
             </button>
             <button type="button" :class="{ stop: llmtrimLogViewer.showing }" :disabled="llmtrim.loading || llmtrim.commandInFlight || llmtrimLogViewer.loading || llmtrimLogViewer.working || (!llmtrimLogViewer.showing && !llmtrim.installed)" @click="controlLLMTrimLogViewer(llmtrimLogViewer.showing ? 'hide' : 'show')">
               {{ llmtrimLogViewer.working ? '处理中…' : (llmtrimLogViewer.showing ? '关闭日志' : '显示日志') }}

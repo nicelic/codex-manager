@@ -413,17 +413,15 @@ ping -n 3 127.0.0.1 >nul
 echo [%date% %time%] Initial wait finished. >> "%LOG_FILE%"
 
 rem 2. 清理残留工具进程（独立守护模式：保持 Gortex daemon 常驻）
-taskkill /F /IM rtk.exe /T >nul 2>&1
-taskkill /F /IM snip.exe /T >nul 2>&1
-taskkill /F /IM llmtrim.exe /T >nul 2>&1
-taskkill /F /IM llmtrim-tray.exe /T >nul 2>&1
+taskkill /F /IM rtk.exe >nul 2>&1
+taskkill /F /IM snip.exe >nul 2>&1
 
 rem 3. 确保旧主进程已退出
 if not "%PARENT_PID%"=="" (
-    taskkill /F /PID %PARENT_PID% /T >nul 2>&1
+    taskkill /F /PID %PARENT_PID% >nul 2>&1
 )
-taskkill /F /IM code-Manager-rust.exe /T >nul 2>&1
-taskkill /F /IM code-Manager.exe /T >nul 2>&1
+taskkill /F /IM code-Manager-rust.exe >nul 2>&1
+taskkill /F /IM code-Manager.exe >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 
 rem 4. 备份现有程序（带 30 次重试）
@@ -535,6 +533,14 @@ ping -n 2 127.0.0.1 >nul
 }
 
 pub async fn exit_app(State(state): State<AppState>) -> impl IntoResponse {
+    let path = state.config.read().await.llmtrim_path.clone();
+    let status = crate::tools::llmtrim::router::llmtrim_status_data(&state, &path);
+    let mut warnings = Vec::new();
+    if status.installed || status.running || status.tray_running || status.desired_running || status.route_selected {
+        if let Err(err) = crate::tools::llmtrim::router::stop_managed_llmtrim(&state).await {
+            warnings.push(format!("停止 llmtrim 失败: {}", err));
+        }
+    }
     let sender = state.shutdown_sender.clone();
     tokio::spawn(async move {
         // 独立守护模式：主程序退出时不停止或杀死 Gortex daemon，保持后台常驻
@@ -546,10 +552,10 @@ pub async fn exit_app(State(state): State<AppState>) -> impl IntoResponse {
         StatusCode::OK,
         Json(json!({
             "completed": true,
-            "clean": true,
-            "message": "正在停止所有服务并退出...",
+            "clean": warnings.is_empty(),
+            "message": "正在退出程序...",
             "success": true,
-            "warnings": []
+            "warnings": warnings
         })),
     )
 }

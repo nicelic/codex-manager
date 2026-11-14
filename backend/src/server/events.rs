@@ -17,7 +17,7 @@ use crate::common::process::is_pid_alive;
 use crate::server::proxy::get_proxy_status_data;
 use crate::state::AppState;
 use crate::tools::gortex::service::GortexService;
-use crate::tools::llmtrim::service::LlmtrimService;
+use crate::tools::llmtrim::router::llmtrim_status_data;
 use crate::tools::rtk::service::RtkService;
 use crate::tools::snip::service::SnipService;
 
@@ -83,9 +83,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         let log_data = get_log_status_data(log_showing);
         let llmtrim_log_data = json!({
             "showing": llmtrim_log_showing,
-            "path": "llmtrim.log"
+            "path": "llmtrim status"
         });
-        let llmtrim_data = LlmtrimService::get_status(&cfg.llmtrim_path);
+        let llmtrim_data = llmtrim_status_data(&state, &cfg.llmtrim_path);
         let rtk_data = RtkService::get_status();
         let snip_data = SnipService::get_status();
         let gortex_data = GortexService::get_status();
@@ -154,9 +154,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 let log_data = get_log_status_data(log_showing);
                 let llmtrim_log_data = json!({
                     "showing": llmtrim_log_showing,
-                    "path": "llmtrim.log"
+                    "path": "llmtrim status"
                 });
-                let llmtrim_data = LlmtrimService::get_status(&cfg.llmtrim_path);
+                let llmtrim_data = llmtrim_status_data(&state, &cfg.llmtrim_path);
                 let rtk_data = RtkService::get_status();
                 let snip_data = SnipService::get_status();
                 let gortex_data = GortexService::get_status();

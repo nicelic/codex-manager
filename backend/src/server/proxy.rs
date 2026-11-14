@@ -22,7 +22,6 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use crate::common::config::is_upstream_placeholder;
-use crate::common::windows::get_user_profile_dir;
 use crate::state::AppState;
 use crate::tools::llmtrim::service::LlmtrimService;
 
@@ -142,34 +141,30 @@ pub async fn start_proxy(State(state): State<AppState>) -> impl IntoResponse {
         *msg = "正在建立上游 H2/H3 TLS 连接，并准备扩展 CONNECT。".to_string();
     }
 
-    // 预热上游探测（对齐 Go 版本的 prewarmUpstreamWithRetry）
+    // 预热必须使用与正式请求相同的上游路由。
     let probe_url = cfg.upstream_base_url.trim().to_string();
-    let client = state.http_client.clone();
-    let prewarm_res = client
-        .get(&probe_url)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await;
-
-    let prewarm_ok = match prewarm_res {
-        Ok(resp) => {
-            info!("上游预热握手成功: {} (状态: {})", probe_url, resp.status());
-            true
-        }
-        Err(e) => {
-            // 如果是 HTTP 状态码（如 401/403/404），说明网络与 TLS 握手已完成
-            if e.is_status() {
-                info!("上游预热握手连通: {} (状态: {:?})", probe_url, e.status());
-                true
-            } else {
-                warn!("上游预热连接失败: {} ({})", probe_url, e);
-                false
+    let (llmtrim_running, mut route_changed) = refresh_llmtrim_route(&state, &cfg.llmtrim_path);
+    let prewarm_client = if llmtrim_running && !llmtrim_route_available(&state) {
+        Err("llmtrim 未就绪，已禁止回退到默认路由".to_string())
+    } else {
+        select_upstream_client(&state, llmtrim_running, &cfg.outbound_proxy).await
+    };
+    let prewarm_result = match prewarm_client {
+        Ok(client) => tokio::select! {
+            biased;
+            _ = route_changed.changed() => Err("代理路由已切换，请重新启动代理".to_string()),
+            result = client.get(&probe_url).timeout(Duration::from_secs(5)).send() => {
+                result.map(|resp| {
+                    info!("上游预热握手成功: {} (状态: {})", probe_url, resp.status());
+                }).map_err(|e| e.to_string())
             }
-        }
+        },
+        Err(err) => Err(err),
     };
 
-    if !prewarm_ok {
-        let err_msg = "上游不可用: 无法连接到上游 Base URL，请检查网络或配置".to_string();
+    if let Err(reason) = prewarm_result {
+        warn!("上游预热连接失败: {} ({})", probe_url, reason);
+        let err_msg = format!("上游不可用: {}", reason);
         {
             let mut running = state.proxy_running.write().await;
             *running = false;
@@ -252,6 +247,7 @@ pub async fn start_proxy(State(state): State<AppState>) -> impl IntoResponse {
         state.upstream_h2_active.store(1, Ordering::SeqCst);
     }
 
+    start_llmtrim_route_monitor(&state);
     info!("HTTP/WS 反向代理已启动并就绪: {}", listen_addr);
     let data = get_proxy_status_data(&state, true, &listen_addr);
     (StatusCode::OK, Json(data))
@@ -337,27 +333,219 @@ impl Drop for RequestGuard {
     }
 }
 
-/// 构建 LLMTrim 专属代理客户端（加载 %USERPROFILE%\.llmtrim\ca.pem 根证书）
-fn build_llmtrim_proxy_client() -> Option<reqwest::Client> {
-    let ca_path = get_user_profile_dir().join(".llmtrim").join("ca.pem");
-    if !ca_path.exists() {
-        warn!("LLMTrim CA 证书不存在于 {:?}，使用通用代理配置", ca_path);
+struct SessionGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl SessionGuard {
+    fn new(counter: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter.clone())
+    }
+}
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+const LLMTRIM_PROXY_URL: &str = "http://127.0.0.1:43117";
+
+fn llmtrim_ca_path() -> std::path::PathBuf {
+    LlmtrimService::get_runtime_state_dir().join("ca.pem")
+}
+
+fn read_llmtrim_ca(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("读取 llmtrim CA 证书 {} 失败: {}", path.display(), e))
+}
+
+fn build_llmtrim_proxy_client_configured(
+    proxy_url: &str,
+    ca_path: &std::path::Path,
+    http1_only: bool,
+) -> Result<reqwest::Client, String> {
+    let pem = read_llmtrim_ca(ca_path)?;
+    let cert = reqwest::Certificate::from_pem(&pem)
+        .map_err(|e| format!("解析 llmtrim CA 证书 {} 失败: {}", ca_path.display(), e))?;
+    let proxy = reqwest::Proxy::all(proxy_url)
+        .map_err(|e| format!("创建 llmtrim 代理失败: {}", e))?;
+    let mut builder = reqwest::Client::builder()
+        .proxy(proxy)
+        .add_root_certificate(cert)
+        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_max_idle_per_host(16);
+    if http1_only {
+        builder = builder.http1_only();
+    }
+    builder.build().map_err(|e| format!("创建 llmtrim HTTP 客户端失败: {}", e))
+}
+
+fn build_llmtrim_proxy_client_with(proxy_url: &str, ca_path: &std::path::Path) -> Result<reqwest::Client, String> {
+    build_llmtrim_proxy_client_configured(proxy_url, ca_path, false)
+}
+
+async fn select_llmtrim_http1_client(state: &AppState) -> Result<reqwest::Client, String> {
+    let mut cached = state.llmtrim_http1_client.write().await;
+    let generation = *state.proxy_route_changed.borrow();
+    if cached.as_ref().map(|(cached_generation, _)| *cached_generation) != Some(generation) {
+        *cached = None;
+        *cached = Some((generation, build_llmtrim_proxy_client_configured(
+            LLMTRIM_PROXY_URL, &llmtrim_ca_path(), true,
+        )?));
+    }
+    Ok(cached.as_ref().expect("llmtrim HTTP/1.1 client initialized").1.clone())
+}
+
+async fn select_upstream_client(state: &AppState, llmtrim_running: bool, outbound_proxy: &str) -> Result<reqwest::Client, String> {
+    select_upstream_client_with_ca(state, llmtrim_running, outbound_proxy, &llmtrim_ca_path()).await
+}
+
+async fn select_upstream_client_with_ca(
+    state: &AppState,
+    llmtrim_running: bool,
+    outbound_proxy: &str,
+    ca_path: &std::path::Path,
+) -> Result<reqwest::Client, String> {
+    if llmtrim_running {
+        let mut cached = state.llmtrim_client.write().await;
+        let generation = *state.proxy_route_changed.borrow();
+        if cached.as_ref().map(|(cached_generation, _)| *cached_generation) != Some(generation) {
+            *cached = None;
+            *cached = Some((generation, build_llmtrim_proxy_client_with(LLMTRIM_PROXY_URL, ca_path)?));
+        }
+        return Ok(cached.as_ref().expect("llmtrim client initialized").1.clone());
     }
 
-    let mut builder = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all("http://127.0.0.1:43117").ok()?)
-        .pool_idle_timeout(Duration::from_secs(300))
-        .pool_max_idle_per_host(16)
-        .danger_accept_invalid_certs(false);
-
-    if let Ok(pem_data) = std::fs::read(&ca_path) {
-        if let Ok(cert) = reqwest::Certificate::from_pem(&pem_data) {
-            builder = builder.add_root_certificate(cert);
-            info!("已成功加载 LLMTrim 根证书并建立 43117 代理隧道");
+    *state.llmtrim_client.write().await = None;
+    if !outbound_proxy.trim().is_empty() {
+        if let Ok(proxy) = reqwest::Proxy::all(outbound_proxy.trim()) {
+            return Ok(reqwest::Client::builder()
+                .proxy(proxy)
+                .build()
+                .unwrap_or_else(|_| state.http_client.clone()));
         }
     }
+    Ok(state.http_client.clone())
+}
 
-    builder.build().ok()
+fn observe_llmtrim_route_with<F, P>(
+    state: &AppState,
+    is_running: F,
+    persist_intent: P,
+) -> (bool, tokio::sync::watch::Receiver<u64>)
+where
+    F: FnOnce() -> bool,
+    P: FnOnce() -> Result<(), String>,
+{
+    let mut route = state.llmtrim_route.lock().unwrap_or_else(|e| e.into_inner());
+    let running = is_running();
+    let selected = route.selected || running;
+    let mut persisted = route.persisted;
+    if selected && running && !persisted && !route.transitioning {
+        match persist_intent() {
+            Ok(()) => persisted = true,
+            Err(err) => warn!("无法持久化 llmtrim 路由，保持锁定: {}", err),
+        }
+    }
+    let next = crate::state::LlmtrimRouteState {
+        selected,
+        available: selected && running && persisted && !route.transitioning,
+        persisted,
+        transitioning: route.transitioning,
+    };
+    if *route != next {
+        *route = next;
+        state.proxy_route_changed.send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+    (selected, state.proxy_route_changed.subscribe())
+}
+
+#[cfg(test)]
+fn observe_llmtrim_route<F>(state: &AppState, is_running: F) -> (bool, tokio::sync::watch::Receiver<u64>)
+where
+    F: FnOnce() -> bool,
+{
+    observe_llmtrim_route_with(state, is_running, || Ok(()))
+}
+
+pub(crate) fn activate_llmtrim_route(state: &AppState) {
+    let mut route = state.llmtrim_route.lock().unwrap_or_else(|e| e.into_inner());
+    let next = crate::state::LlmtrimRouteState {
+        selected: true,
+        available: false,
+        persisted: route.persisted,
+        transitioning: true,
+    };
+    if *route != next {
+        *route = next;
+        state.proxy_route_changed.send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+}
+
+pub(crate) fn finish_llmtrim_route_transition(state: &AppState) {
+    let mut route = state.llmtrim_route.lock().unwrap_or_else(|e| e.into_inner());
+    if route.transitioning {
+        route.transitioning = false;
+        route.available = false;
+        state.proxy_route_changed.send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+}
+
+pub(crate) fn deactivate_llmtrim_route(state: &AppState) {
+    let mut route = state.llmtrim_route.lock().unwrap_or_else(|e| e.into_inner());
+    let next = crate::state::LlmtrimRouteState::default();
+    if *route != next {
+        *route = next;
+        state.proxy_route_changed.send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+}
+
+fn llmtrim_route_available(state: &AppState) -> bool {
+    state.llmtrim_route.lock().unwrap_or_else(|e| e.into_inner()).available
+}
+
+pub(crate) async fn clear_llmtrim_clients(state: &AppState) {
+    *state.llmtrim_client.write().await = None;
+    *state.llmtrim_http1_client.write().await = None;
+}
+
+pub(crate) fn refresh_llmtrim_route(state: &AppState, path: &str) -> (bool, tokio::sync::watch::Receiver<u64>) {
+    observe_llmtrim_route_with(state, || LlmtrimService::owns_listener(path), || {
+        let executable = LlmtrimService::get_executable_path(path);
+        let directory = executable.parent().ok_or_else(|| "无法确定 llmtrim 安装目录".to_string())?;
+        crate::tools::llmtrim::ownership::set_managed_tool_desired_running(directory, true)
+    })
+}
+
+fn start_llmtrim_route_monitor(state: &AppState) {
+    if state.proxy_route_monitor_started.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut shutdown = state.shutdown_sender.subscribe();
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                _ = shutdown.recv() => break,
+                _ = interval.tick() => {
+                    if *state.proxy_running.read().await {
+                        let path = state.config.read().await.llmtrim_path.clone();
+                        refresh_llmtrim_route(&state, &path);
+                    }
+                }
+            }
+        }
+        state.proxy_route_monitor_started.store(false, Ordering::SeqCst);
+    });
+}
+
+fn build_llmtrim_ws_connector(path: &std::path::Path) -> Result<tokio_tungstenite::Connector, String> {
+    let pem = read_llmtrim_ca(path)?;
+    let cert = native_tls::Certificate::from_pem(&pem)
+        .map_err(|e| format!("解析 llmtrim CA 证书 {} 失败: {}", path.display(), e))?;
+    let connector = native_tls::TlsConnector::builder()
+        .add_root_certificate(cert)
+        .build()
+        .map_err(|e| format!("创建 llmtrim WebSocket TLS 客户端失败: {}", e))?;
+    Ok(tokio_tungstenite::Connector::NativeTls(connector))
 }
 
 /// 处理 WebSocket 双向原始帧代理（支持直连及 HTTP CONNECT 代理隧道）
@@ -367,6 +555,7 @@ async fn handle_v1_websocket_tunnel(
     target_url: String,
     upstream_api_key: String,
     outbound_proxy: Option<String>,
+    llmtrim_running: bool,
     client_headers: HeaderMap,
 ) {
     let ws_target = if target_url.starts_with("https://") {
@@ -477,7 +666,12 @@ async fn handle_v1_websocket_tunnel(
                     }
 
                     if is_secure {
-                        tokio_tungstenite::client_async_tls(req, tcp)
+                        let connector = if llmtrim_running {
+                            Some(build_llmtrim_ws_connector(&llmtrim_ca_path())?)
+                        } else {
+                            None
+                        };
+                        tokio_tungstenite::client_async_tls_with_config(req, tcp, None, connector)
                             .await
                             .map_err(|e| format!("经代理 TLS WebSocket 握手失败: {}", e))
                     } else {
@@ -488,12 +682,7 @@ async fn handle_v1_websocket_tunnel(
                 }
                 .await
             }
-            Err(e) => {
-                warn!("解析出站代理 URL ({}) 失败: {}，回退到直连", proxy, e);
-                tokio_tungstenite::connect_async(req)
-                    .await
-                    .map_err(|e| format!("直连上游 WebSocket 失败: {}", e))
-            }
+            Err(e) => Err(format!("解析出站代理 URL ({}) 失败: {}", proxy, e)),
         }
     } else {
         tokio_tungstenite::connect_async(req)
@@ -513,8 +702,8 @@ async fn handle_v1_websocket_tunnel(
         }
     };
 
-    state.active_ws_sessions.fetch_add(1, Ordering::SeqCst);
-    state.upstream_ws_carriers.fetch_add(1, Ordering::SeqCst);
+    let _session_guard = SessionGuard::new(&state.active_ws_sessions);
+    let _carrier_guard = SessionGuard::new(&state.upstream_ws_carriers);
 
     let (mut client_sink, mut client_stream) = client_ws.split();
     let (mut upstream_sink, mut upstream_stream) = upstream_ws.split();
@@ -570,197 +759,379 @@ async fn handle_v1_websocket_tunnel(
         _ = upstream_to_client => {},
     }
 
-    state.active_ws_sessions.fetch_sub(1, Ordering::SeqCst);
-    state.upstream_ws_carriers.fetch_sub(1, Ordering::SeqCst);
     info!("WebSocket 代理隧道已断开");
 }
 
-/// 跨模态桥接：当客户端以 WebSocket 接入，但上游关闭 WS 或优先使用 SSE 时，
-/// 将客户端的 WS JSON 请求转发为上游标准 HTTP 流式调用，并将上游 SSE 打字机流实时转换推回给客户端。
+const MAX_BRIDGE_BUFFER: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+struct SseMessage {
+    event: Option<String>,
+    data: String,
+}
+
+#[derive(Default)]
+struct SseDecoder {
+    buffer: Vec<u8>,
+    data: Vec<String>,
+    event: Option<String>,
+    data_bytes: usize,
+    seen_line: bool,
+}
+
+impl SseDecoder {
+    fn dispatch(&mut self, messages: &mut Vec<SseMessage>) {
+        if !self.data.is_empty() {
+            messages.push(SseMessage {
+                event: self.event.take(),
+                data: self.data.join("\n"),
+            });
+        }
+        self.data.clear();
+        self.event = None;
+        self.data_bytes = 0;
+    }
+
+    fn process_line(&mut self, bytes: &[u8], messages: &mut Vec<SseMessage>) {
+        let decoded = String::from_utf8_lossy(bytes);
+        let line = if self.seen_line {
+            decoded.as_ref()
+        } else {
+            self.seen_line = true;
+            decoded.strip_prefix('\u{feff}').unwrap_or(decoded.as_ref())
+        };
+        if line.is_empty() {
+            self.dispatch(messages);
+        } else if !line.starts_with(':') {
+            let (field, value) = line.split_once(':').unwrap_or((line, ""));
+            let value = value.strip_prefix(' ').unwrap_or(value);
+            match field {
+                "data" => {
+                    self.data_bytes = self.data_bytes.saturating_add(value.len());
+                    self.data.push(value.to_string());
+                }
+                "event" => self.event = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    fn feed(&mut self, chunk: &[u8], finished: bool) -> Result<Vec<SseMessage>, String> {
+        if self.buffer.len().saturating_add(self.data_bytes).saturating_add(chunk.len()) > MAX_BRIDGE_BUFFER {
+            return Err("上游 SSE 事件超过大小限制".to_string());
+        }
+        self.buffer.extend_from_slice(chunk);
+        let mut messages = Vec::new();
+        loop {
+            let end = match self.buffer.iter().position(|byte| *byte == b'\n' || *byte == b'\r') {
+                Some(end) if self.buffer[end] == b'\r' && end + 1 == self.buffer.len() && !finished => break,
+                Some(end) => end,
+                None if finished && !self.buffer.is_empty() => self.buffer.len(),
+                None => break,
+            };
+            let mut consumed = end;
+            if consumed < self.buffer.len() {
+                consumed += 1;
+                if self.buffer[end] == b'\r' && self.buffer.get(consumed) == Some(&b'\n') {
+                    consumed += 1;
+                }
+            }
+            let mut line: Vec<u8> = self.buffer.drain(..consumed).collect();
+            line.truncate(end);
+            self.process_line(&line, &mut messages);
+        }
+        if finished {
+            self.dispatch(&mut messages);
+        }
+        Ok(messages)
+    }
+}
+
+fn ws_bridge_error(kind: &str, message: impl std::fmt::Display) -> AxumWsMessage {
+    AxumWsMessage::Text(json!({
+        "type": "error",
+        "error": { "type": kind, "message": message.to_string() }
+    }).to_string().into())
+}
+
+fn normalize_ws_bridge_request(text: &str, responses_protocol: bool) -> Result<(Vec<u8>, bool), String> {
+    let mut payload: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| "请求体格式无效，期待 JSON 对象".to_string())?;
+    let object = payload.as_object_mut().ok_or_else(|| "请求体必须是 JSON 对象".to_string())?;
+
+    if responses_protocol {
+        if let Some(kind) = object.remove("type") {
+            if kind.as_str() != Some("response.create") {
+                return Err("当前仅支持 response.create 请求事件".to_string());
+            }
+        }
+        if object.contains_key("stream_id") {
+            return Err("HTTP 桥接暂不支持 stream_id 并发通道".to_string());
+        }
+        if let Some(generate) = object.remove("generate") {
+            if generate != serde_json::Value::Bool(true) {
+                return Err("HTTP 桥接暂不支持 generate=false".to_string());
+            }
+        }
+    }
+
+    let wants_stream = match object.get("stream") {
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(_) => return Err("stream 必须是布尔值".to_string()),
+        None => {
+            object.insert("stream".to_string(), serde_json::Value::Bool(true));
+            true
+        }
+    };
+    let body = serde_json::to_vec(&payload).map_err(|e| format!("编码请求体失败: {}", e))?;
+    Ok((body, wants_stream))
+}
+
+fn is_ws_bridge_cancel(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text).ok()
+        .and_then(|value| value.get("type").and_then(|kind| kind.as_str()).map(str::to_string))
+        .as_deref() == Some("response.cancel")
+}
+
+async fn send_sse_messages(
+    socket: &mut AxumWebSocket,
+    messages: Vec<SseMessage>,
+    responses_protocol: bool,
+) -> bool {
+    for message in messages {
+        let data = if message.data.trim() == "[DONE]" {
+            if responses_protocol {
+                continue;
+            }
+            json!({ "choices": [], "done": true }).to_string()
+        } else if responses_protocol {
+            match (message.event, serde_json::from_str::<serde_json::Value>(&message.data)) {
+                (Some(event), Ok(mut value)) if event != "message" && value.is_object() => {
+                    if value.get("type").is_none() {
+                        value["type"] = serde_json::Value::String(event);
+                    }
+                    value.to_string()
+                }
+                _ => message.data,
+            }
+        } else {
+            message.data
+        };
+        if socket.send(AxumWsMessage::Text(data.into())).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Bridges supported JSON WebSocket requests to HTTP and relays SSE events.
 async fn handle_v1_ws_to_sse_bridge(
     mut client_ws: AxumWebSocket,
     state: AppState,
     target_url: String,
     upstream_api_key: String,
-    outbound_proxy: Option<String>,
+    client: reqwest::Client,
     client_headers: HeaderMap,
 ) {
-    state.active_ws_sessions.fetch_add(1, Ordering::SeqCst);
-    info!("已开启 WebSocket -> 上游默认 SSE 流式转码桥接: {}", target_url);
+    let _session_guard = SessionGuard::new(&state.active_ws_sessions);
+    let responses_protocol = Url::parse(&target_url).ok()
+        .map(|url| url.path().trim_end_matches('/').ends_with("/responses"))
+        .unwrap_or(false);
+    info!("已开启 WebSocket -> HTTP/SSE 桥接: {}", target_url);
 
-    let llmtrim_running = LlmtrimService::is_port_open();
-    let client = if llmtrim_running {
-        let mut cached = state.llmtrim_client.write().await;
-        if cached.is_none() {
-            *cached = build_llmtrim_proxy_client();
-        }
-        cached.clone().unwrap_or_else(|| state.http_client.clone())
-    } else if let Some(proxy_url) = outbound_proxy.as_deref().filter(|p| !p.trim().is_empty()) {
-        if let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim()) {
-            reqwest::Client::builder()
-                .proxy(proxy)
-                .build()
-                .unwrap_or_else(|_| state.http_client.clone())
-        } else {
-            state.http_client.clone()
-        }
-    } else {
-        state.http_client.clone()
-    };
-
-    while let Some(msg_res) = client_ws.recv().await {
-        let msg = match msg_res {
-            Ok(m) => m,
-            Err(e) => {
-                warn!("读取客户端 WebSocket 帧出错: {}", e);
+    while let Some(message) = client_ws.recv().await {
+        let text = match message {
+            Ok(AxumWsMessage::Text(text)) => text,
+            Ok(AxumWsMessage::Ping(payload)) => {
+                if client_ws.send(AxumWsMessage::Pong(payload)).await.is_err() { break; }
+                continue;
+            }
+            Ok(AxumWsMessage::Pong(_)) => continue,
+            Ok(AxumWsMessage::Close(frame)) => {
+                let _ = client_ws.send(AxumWsMessage::Close(frame)).await;
+                break;
+            }
+            Ok(AxumWsMessage::Binary(_)) => {
+                if client_ws.send(ws_bridge_error("unsupported_message", "HTTP 桥接不支持二进制 WebSocket 消息")).await.is_err() { break; }
+                continue;
+            }
+            Err(err) => {
+                warn!("读取客户端 WebSocket 帧出错: {}", err);
                 break;
             }
         };
+        let text = text.trim();
+        if text.is_empty() { continue; }
 
-        match msg {
-            AxumWsMessage::Text(text) => {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
+        let (body, wants_stream) = match normalize_ws_bridge_request(text, responses_protocol) {
+            Ok(request) => request,
+            Err(err) => {
+                if client_ws.send(ws_bridge_error("invalid_request_error", err)).await.is_err() { break; }
+                continue;
+            }
+        };
+        let mut request = client.post(&target_url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "text/event-stream");
+        for (key, value) in client_headers.iter() {
+            let name = key.as_str().to_ascii_lowercase();
+            if matches!(name.as_str(), "host" | "connection" | "upgrade" | "content-length"
+                | "content-type" | "accept" | "keep-alive" | "transfer-encoding" | "proxy-connection")
+                || name.starts_with("sec-websocket-")
+                || (name == "authorization" && !is_upstream_placeholder(&upstream_api_key))
+            {
+                continue;
+            }
+            if let (Ok(name), Ok(value)) = (
+                reqwest::header::HeaderName::from_bytes(key.as_ref()),
+                reqwest::header::HeaderValue::from_bytes(value.as_bytes()),
+            ) {
+                request = request.header(name, value);
+            }
+        }
+        if !is_upstream_placeholder(&upstream_api_key) {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
+                request = request.header(reqwest::header::AUTHORIZATION, value);
+            }
+        }
 
-                // 尝试解析为 JSON 并补齐 stream=true
-                let mut payload: serde_json::Value = match serde_json::from_str(trimmed) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        let err_resp = json!({
-                            "error": {
-                                "message": "请求体格式无效，期待 JSON 格式载荷",
-                                "type": "invalid_request_error"
-                            }
-                        });
-                        let _ = client_ws.send(AxumWsMessage::Text(err_resp.to_string().into())).await;
-                        continue;
+        let pending = request.body(body).send();
+        tokio::pin!(pending);
+        let response = loop {
+            tokio::select! {
+                result = &mut pending => break Some(result),
+                frame = client_ws.recv() => match frame {
+                    Some(Ok(AxumWsMessage::Ping(payload))) => {
+                        if client_ws.send(AxumWsMessage::Pong(payload)).await.is_err() { return; }
                     }
-                };
-
-                if payload.is_object() && payload.get("stream").is_none() {
-                    payload["stream"] = serde_json::Value::Bool(true);
-                }
-
-                let body_bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| trimmed.as_bytes().to_vec());
-
-                let mut req_builder = client.post(&target_url)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .header(header::ACCEPT, "text/event-stream");
-
-                for (k, v) in client_headers.iter() {
-                    let name = k.as_str().to_lowercase();
-                    if name == "host"
-                        || name == "connection"
-                        || name == "upgrade"
-                        || name == "content-length"
-                        || name == "content-type"
-                        || name == "accept"
-                        || name.starts_with("sec-websocket-")
-                    {
-                        continue;
+                    Some(Ok(AxumWsMessage::Pong(_))) => {}
+                    Some(Ok(AxumWsMessage::Close(frame))) => {
+                        let _ = client_ws.send(AxumWsMessage::Close(frame)).await;
+                        return;
                     }
-                    if let Ok(hname) = reqwest::header::HeaderName::from_bytes(k.as_ref()) {
-                        if let Ok(hval) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) {
-                            req_builder = req_builder.header(hname, hval);
-                        }
+                    Some(Ok(AxumWsMessage::Text(text))) if is_ws_bridge_cancel(&text) => {
+                        let _ = client_ws.send(ws_bridge_error("request_cancelled", "请求已取消")).await;
+                        break None;
                     }
-                }
-
-                if !is_upstream_placeholder(&upstream_api_key) {
-                    if let Ok(auth_val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
-                        req_builder = req_builder.header(reqwest::header::AUTHORIZATION, auth_val);
+                    Some(Ok(AxumWsMessage::Text(_))) | Some(Ok(AxumWsMessage::Binary(_))) => {
+                        if client_ws.send(ws_bridge_error("request_in_progress", "请等待当前请求完成后再发送新消息")).await.is_err() { return; }
                     }
-                }
-
-                match req_builder.body(body_bytes).send().await {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        if !status.is_success() {
-                            let err_text = resp.text().await.unwrap_or_default();
-                            let err_payload = json!({
-                                "error": {
-                                    "message": format!("上游返回错误状态 {}: {}", status, err_text),
-                                    "type": "upstream_error",
-                                    "code": status.as_u16()
-                                }
-                            });
-                            let _ = client_ws.send(AxumWsMessage::Text(err_payload.to_string().into())).await;
-                            continue;
-                        }
-
-                        let mut stream = resp.bytes_stream();
-                        let mut line_buf = String::new();
-
-                        while let Some(chunk_res) = stream.next().await {
-                            match chunk_res {
-                                Ok(chunk) => {
-                                    line_buf.push_str(&String::from_utf8_lossy(&chunk));
-                                    while let Some(newline_pos) = line_buf.find('\n') {
-                                        let line = line_buf[..newline_pos].trim_end().to_string();
-                                        line_buf = line_buf[newline_pos + 1..].to_string();
-
-                                        if line.is_empty() {
-                                            continue;
-                                        }
-
-                                        let payload_to_send = if let Some(stripped) = line.strip_prefix("data:") {
-                                            let s = stripped.trim();
-                                            if s == "[DONE]" {
-                                                json!({ "choices": [], "done": true }).to_string()
-                                            } else {
-                                                s.to_string()
-                                            }
-                                        } else {
-                                            line
-                                        };
-
-                                        if client_ws.send(AxumWsMessage::Text(payload_to_send.into())).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("读取上游 SSE 流中断: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let err_payload = json!({
-                            "error": {
-                                "message": format!("调用上游 SSE 接口失败: {}", e),
-                                "type": "gateway_error"
-                            }
-                        });
-                        let _ = client_ws.send(AxumWsMessage::Text(err_payload.to_string().into())).await;
-                    }
+                    Some(Err(_)) | None => return,
                 }
             }
-            AxumWsMessage::Ping(p) => {
-                if client_ws.send(AxumWsMessage::Pong(p)).await.is_err() {
-                    break;
+        };
+        let Some(response) = response else { continue; };
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                if client_ws.send(ws_bridge_error("gateway_error", format!("调用上游 HTTP 接口失败: {}", err))).await.is_err() { break; }
+                continue;
+            }
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            let detail = response.text().await.unwrap_or_default();
+            if client_ws.send(ws_bridge_error("upstream_error", format!("上游返回错误状态 {}: {}", status, detail))).await.is_err() { break; }
+            continue;
+        }
+
+        let content_type = response.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok());
+        let is_sse = content_type.map(|value| value.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/event-stream"))
+            .unwrap_or(wants_stream);
+        let mut stream = response.bytes_stream();
+        let mut decoder = SseDecoder::default();
+        let mut plain_body = Vec::new();
+        loop {
+            tokio::select! {
+                chunk = stream.next() => match chunk {
+                    Some(Ok(chunk)) if is_sse => match decoder.feed(&chunk, false) {
+                        Ok(messages) => {
+                            if !send_sse_messages(&mut client_ws, messages, responses_protocol).await { return; }
+                        }
+                        Err(err) => {
+                            let _ = client_ws.send(ws_bridge_error("upstream_error", err)).await;
+                            break;
+                        }
+                    },
+                    Some(Ok(chunk)) => {
+                        if plain_body.len().saturating_add(chunk.len()) > MAX_BRIDGE_BUFFER {
+                            let _ = client_ws.send(ws_bridge_error("upstream_error", "上游响应超过大小限制")).await;
+                            break;
+                        }
+                        plain_body.extend_from_slice(&chunk);
+                    }
+                    Some(Err(err)) => {
+                        let _ = client_ws.send(ws_bridge_error("upstream_error", format!("读取上游响应失败: {}", err))).await;
+                        break;
+                    }
+                    None => {
+                        if is_sse {
+                            match decoder.feed(&[], true) {
+                                Ok(messages) => {
+                                    if !send_sse_messages(&mut client_ws, messages, responses_protocol).await { return; }
+                                }
+                                Err(err) => { let _ = client_ws.send(ws_bridge_error("upstream_error", err)).await; }
+                            }
+                        } else if !plain_body.is_empty() {
+                            let text = String::from_utf8_lossy(&plain_body).into_owned();
+                            if client_ws.send(AxumWsMessage::Text(text.into())).await.is_err() { return; }
+                        }
+                        break;
+                    }
+                },
+                frame = client_ws.recv() => match frame {
+                    Some(Ok(AxumWsMessage::Ping(payload))) => {
+                        if client_ws.send(AxumWsMessage::Pong(payload)).await.is_err() { return; }
+                    }
+                    Some(Ok(AxumWsMessage::Pong(_))) => {}
+                    Some(Ok(AxumWsMessage::Close(frame))) => {
+                        let _ = client_ws.send(AxumWsMessage::Close(frame)).await;
+                        return;
+                    }
+                    Some(Ok(AxumWsMessage::Text(text))) if is_ws_bridge_cancel(&text) => {
+                        let _ = client_ws.send(ws_bridge_error("request_cancelled", "请求已取消")).await;
+                        break;
+                    }
+                    Some(Ok(AxumWsMessage::Text(_))) | Some(Ok(AxumWsMessage::Binary(_))) => {
+                        if client_ws.send(ws_bridge_error("request_in_progress", "请等待当前请求完成后再发送新消息")).await.is_err() { return; }
+                    }
+                    Some(Err(_)) | None => return,
                 }
             }
-            AxumWsMessage::Pong(_) => {}
-            AxumWsMessage::Close(c) => {
-                let _ = client_ws.send(AxumWsMessage::Close(c)).await;
-                break;
-            }
-            AxumWsMessage::Binary(_) => {}
         }
     }
-
-    state.active_ws_sessions.fetch_sub(1, Ordering::SeqCst);
-    info!("WebSocket -> 上游 SSE 转码会话已结束");
+    info!("WebSocket -> HTTP/SSE 桥接会话已结束");
 }
 
 /// 核心反向代理处理函数：流式转发 /v1/* 请求到配置的 upstream_base_url
 pub async fn forward_handler(
     State(state): State<AppState>,
     req: Request,
+) -> Response {
+    let path = state.config.read().await.llmtrim_path.clone();
+    let (llmtrim_running, mut route_changed) = refresh_llmtrim_route(&state, &path);
+    if llmtrim_running && !llmtrim_route_available(&state) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": { "type": "llmtrim_unavailable", "message": "llmtrim 未就绪，禁止回退到默认路由" } })),
+        ).into_response();
+    }
+    let response_route_changed = route_changed.clone();
+    tokio::select! {
+        biased;
+        _ = route_changed.changed() => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "代理路由已切换，请重新连接",
+        ).into_response(),
+        response = forward_handler_selected(state, req, llmtrim_running, response_route_changed) => response,
+    }
+}
+
+async fn forward_handler_selected(
+    state: AppState,
+    req: Request,
+    llmtrim_running: bool,
+    route_changed: tokio::sync::watch::Receiver<u64>,
 ) -> Response {
     let running = *state.proxy_running.read().await;
     let cfg = state.config.read().await.clone();
@@ -815,9 +1186,8 @@ pub async fn forward_handler(
         .map(|s| s.eq_ignore_ascii_case("websocket"))
         .unwrap_or(false);
 
-    let llmtrim_running = LlmtrimService::is_port_open();
     let effective_ws_proxy = if llmtrim_running {
-        Some("http://127.0.0.1:43117".to_string())
+        Some(LLMTRIM_PROXY_URL.to_string())
     } else if !cfg.outbound_proxy.trim().is_empty() {
         Some(cfg.outbound_proxy.trim().to_string())
     } else {
@@ -825,15 +1195,22 @@ pub async fn forward_handler(
     };
 
     if is_ws {
-        if cfg.upstream_websocket_enabled {
+        if cfg.upstream_websocket_enabled && !llmtrim_running {
             if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
                 let ws_target = target_url.clone();
                 let key = cfg.upstream_api_key.clone();
                 let ws_state = state.clone();
                 let ws_proxy = effective_ws_proxy.clone();
                 let client_headers = parts.headers.clone();
+                let mut ws_route_changed = route_changed.clone();
                 return ws
-                    .on_upgrade(move |socket| handle_v1_websocket_tunnel(socket, ws_state, ws_target, key, ws_proxy, client_headers))
+                    .on_upgrade(move |socket| async move {
+                        tokio::select! {
+                            biased;
+                            _ = ws_route_changed.changed() => {},
+                            _ = handle_v1_websocket_tunnel(socket, ws_state, ws_target, key, ws_proxy, llmtrim_running, client_headers) => {},
+                        }
+                    })
                     .into_response();
             }
         } else {
@@ -843,10 +1220,25 @@ pub async fn forward_handler(
                 let ws_target = target_url.clone();
                 let key = cfg.upstream_api_key.clone();
                 let ws_state = state.clone();
-                let ws_proxy = effective_ws_proxy.clone();
+                let client_result = if llmtrim_running {
+                    select_llmtrim_http1_client(&state).await
+                } else {
+                    select_upstream_client(&state, false, &cfg.outbound_proxy).await
+                };
+                let client = match client_result {
+                    Ok(client) => client,
+                    Err(err) => return (StatusCode::BAD_GATEWAY, err).into_response(),
+                };
                 let client_headers = parts.headers.clone();
+                let mut ws_route_changed = route_changed.clone();
                 return ws
-                    .on_upgrade(move |socket| handle_v1_ws_to_sse_bridge(socket, ws_state, ws_target, key, ws_proxy, client_headers))
+                    .on_upgrade(move |socket| async move {
+                        tokio::select! {
+                            biased;
+                            _ = ws_route_changed.changed() => {},
+                            _ = handle_v1_ws_to_sse_bridge(socket, ws_state, ws_target, key, client, client_headers) => {},
+                        }
+                    })
                     .into_response();
             }
         }
@@ -883,28 +1275,10 @@ pub async fn forward_handler(
         }
     }
 
-    // 7. 确定 HTTP 转发客户端（优先 LLMTrim 43117 代理隧道）
-    let client = if llmtrim_running {
-        let mut cached = state.llmtrim_client.write().await;
-        if cached.is_none() {
-            *cached = build_llmtrim_proxy_client();
-        }
-        cached.clone().unwrap_or_else(|| state.http_client.clone())
-    } else {
-        let mut cached = state.llmtrim_client.write().await;
-        *cached = None;
-        if !cfg.outbound_proxy.trim().is_empty() {
-            if let Ok(proxy) = reqwest::Proxy::all(cfg.outbound_proxy.trim()) {
-                reqwest::Client::builder()
-                    .proxy(proxy)
-                    .build()
-                    .unwrap_or_else(|_| state.http_client.clone())
-            } else {
-                state.http_client.clone()
-            }
-        } else {
-            state.http_client.clone()
-        }
+    // llmtrim 运行时只能使用其专属客户端，初始化失败不得回退。
+    let client = match select_upstream_client(&state, llmtrim_running, &cfg.outbound_proxy).await {
+        Ok(client) => client,
+        Err(err) => return (StatusCode::BAD_GATEWAY, err).into_response(),
     };
 
     // 8. 原子计数与退出守卫
@@ -995,7 +1369,10 @@ pub async fn forward_handler(
                 }
 
                 // 流式透传上游响应（完全支持 SSE / 打字机输出）
-                let stream = upstream_resp.bytes_stream();
+                let mut response_route_changed = route_changed;
+                let stream = upstream_resp.bytes_stream().take_until(async move {
+                    let _ = response_route_changed.changed().await;
+                });
                 let body = Body::from_stream(stream);
                 return response_builder.body(body).unwrap_or_else(|_| {
                     (StatusCode::INTERNAL_SERVER_ERROR, "构建响应体失败").into_response()
@@ -1049,6 +1426,660 @@ pub fn router() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::common::AppConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn test_state(upstream: String, outbound_proxy: String) -> AppState {
+        let config = AppConfig {
+            upstream_base_url: upstream,
+            outbound_proxy,
+            llmtrim_path: std::env::temp_dir().join(format!("llmtrim-route-test-{}", std::process::id()))
+                .join("llmtrim.exe").to_string_lossy().to_string(),
+            ..AppConfig::default()
+        };
+        let mut state = AppState::new(config, std::env::temp_dir().join("llmtrim-route-test.yaml"));
+        state.http_client = reqwest::Client::builder().no_proxy().build().unwrap();
+        state
+    }
+
+    async fn serve_mock_http_proxy(
+        listener: TcpListener,
+        count: usize,
+        content_type: &str,
+        body: &str,
+    ) -> Vec<String> {
+        let mut requests = Vec::new();
+        for _ in 0..count {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 2048];
+            let header_end = loop {
+                let size = socket.read(&mut buf).await.unwrap();
+                assert!(size > 0, "request ended before headers");
+                request.extend_from_slice(&buf[..size]);
+                if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok()).flatten()
+            }).unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let size = socket.read(&mut buf).await.unwrap();
+                assert!(size > 0, "request ended before its body");
+                request.extend_from_slice(&buf[..size]);
+            }
+            requests.push(String::from_utf8(request).unwrap());
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                content_type, body.len(), body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+        requests
+    }
+
+    fn mock_proxy_client(address: std::net::SocketAddr) -> reqwest::Client {
+        reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{}", address)).unwrap())
+            .build()
+            .unwrap()
+    }
+
+    async fn set_mock_llmtrim_client(state: &AppState, address: std::net::SocketAddr) {
+        let generation = *state.proxy_route_changed.borrow();
+        *state.llmtrim_client.write().await = Some((generation, mock_proxy_client(address)));
+        let http1_client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(format!("http://{}", address)).unwrap())
+            .http1_only()
+            .build().unwrap();
+        *state.llmtrim_http1_client.write().await = Some((generation, http1_client));
+    }
+
+    #[tokio::test]
+    async fn llmtrim_has_priority_for_all_http_methods_and_errors_do_not_fall_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let normal_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let normal_address = normal_listener.local_addr().unwrap();
+        let state = test_state(
+            format!("http://{}/v1", normal_address),
+            format!("http://{}", normal_address),
+        );
+        *state.proxy_running.write().await = true;
+        observe_llmtrim_route(&state, || true);
+        set_mock_llmtrim_client(&state, proxy_address).await;
+        let server = tokio::spawn(async move {
+            serve_mock_http_proxy(listener, 5, "application/json", "{\"via\":\"llmtrim\"}").await
+        });
+
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+            let (_, route_changed) = observe_llmtrim_route(&state, || true);
+            let request = Request::builder()
+                .method(method)
+                .uri("/v1/chat/completions")
+                .body(Body::from("payload"))
+                .unwrap();
+            let response = forward_handler_selected(state.clone(), request, true, route_changed).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(axum::body::to_bytes(response.into_body(), 1024).await.unwrap(), "{\"via\":\"llmtrim\"}");
+        }
+        let requests = tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+        for (request, method) in requests.iter().zip(["GET", "POST", "PUT", "PATCH", "DELETE"]) {
+            assert!(request.starts_with(&format!("{} http://{}/v1/chat/completions ", method, normal_address)), "{}", request);
+            assert!(request.ends_with("payload"));
+        }
+
+        let closed_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_address = closed_listener.local_addr().unwrap();
+        drop(closed_listener);
+        set_mock_llmtrim_client(&state, closed_address).await;
+        let (_, route_changed) = observe_llmtrim_route(&state, || true);
+        let request = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+        let response = forward_handler_selected(state, request, true, route_changed).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(tokio::time::timeout(Duration::from_millis(200), normal_listener.accept()).await.is_err());
+    }
+
+    #[test]
+    fn direct_gateway_client_ignores_inherited_proxy_environment() {
+        const CHILD_FLAG: &str = "CODE_MANAGER_PROXY_ENV_TEST_CHILD";
+        if std::env::var_os(CHILD_FLAG).is_some() {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let state = AppState::new(AppConfig::default(), std::env::temp_dir().join("unused-config.yaml"));
+                let result = state.http_client.get("http://127.0.0.1:1/")
+                    .timeout(Duration::from_millis(500)).send().await;
+                assert!(result.is_err());
+            });
+            return;
+        }
+
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child.args(["--exact", "server::proxy::tests::direct_gateway_client_ignores_inherited_proxy_environment"])
+            .env(CHILD_FLAG, "1")
+            .env("HTTP_PROXY", &proxy_url)
+            .env("http_proxy", &proxy_url)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            child.creation_flags(0x08000000);
+        }
+        let result = child.output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        assert!(matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+    }
+
+    #[tokio::test]
+    async fn stopped_llmtrim_uses_the_configured_normal_proxy() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = test_state("http://unreachable.invalid/v1".into(), format!("http://{}", address));
+        *state.proxy_running.write().await = true;
+        set_mock_llmtrim_client(&state, address).await;
+        let server = tokio::spawn(async move {
+            serve_mock_http_proxy(listener, 1, "text/plain", "normal").await
+        });
+        let (_, route_changed) = observe_llmtrim_route(&state, || false);
+        let request = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+        let response = forward_handler_selected(state.clone(), request, false, route_changed).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(axum::body::to_bytes(response.into_body(), 1024).await.unwrap(), "normal");
+        assert!(state.llmtrim_client.read().await.is_none());
+        let requests = tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+        assert!(requests[0].starts_with("GET http://unreachable.invalid/v1/models "));
+    }
+
+    #[tokio::test]
+    async fn missing_or_invalid_llmtrim_ca_never_uses_the_normal_client() {
+        let state = test_state("http://unreachable.invalid/v1".into(), String::new());
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("llmtrim-route-ca-{}-{}.pem", std::process::id(), nonce));
+        let error = select_upstream_client_with_ca(&state, true, "", &path).await.unwrap_err();
+        assert!(error.contains("读取 llmtrim CA"));
+        assert!(build_llmtrim_ws_connector(&path).is_err());
+        std::fs::write(&path, b"invalid certificate").unwrap();
+        let error = select_upstream_client_with_ca(&state, true, "", &path).await.unwrap_err();
+        assert!(error.contains("解析 llmtrim CA"));
+        assert!(build_llmtrim_ws_connector(&path).is_err());
+        assert!(state.llmtrim_client.read().await.is_none());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn llmtrim_restart_invalidates_cached_certificate_and_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let state = test_state("http://unreachable.invalid/v1".into(), String::new());
+        observe_llmtrim_route(&state, || true);
+        set_mock_llmtrim_client(&state, listener.local_addr().unwrap()).await;
+        observe_llmtrim_route(&state, || false);
+        observe_llmtrim_route(&state, || true);
+        let missing_ca = std::env::temp_dir().join(format!("missing-ca-for-llmtrim-test-{}", std::process::id()));
+        let result = select_upstream_client_with_ca(&state, true, "", &missing_ca).await;
+        assert!(result.is_err());
+        assert!(state.llmtrim_client.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn forward_handler_cancels_an_inflight_request_when_the_route_changes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted, request_seen) = tokio::sync::oneshot::channel();
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            socket.read(&mut request).await.unwrap();
+            let _ = accepted.send(());
+            let mut byte = [0; 1];
+            let _ = socket.read(&mut byte).await;
+        });
+        let state = test_state(format!("http://{}/v1", address), String::new());
+        *state.proxy_running.write().await = true;
+        let request = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+        let task_state = state.clone();
+        let request_task = tokio::spawn(async move {
+            forward_handler(State(task_state), request).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), request_seen).await.unwrap().unwrap();
+        observe_llmtrim_route(&state, || true);
+        let response = tokio::time::timeout(Duration::from_secs(2), request_task).await.unwrap().unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        tokio::time::timeout(Duration::from_secs(2), upstream).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn changing_routes_stops_an_existing_http_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n").await.unwrap();
+            let mut byte = [0; 1];
+            let _ = socket.read(&mut byte).await;
+        });
+        let state = test_state(format!("http://{}/v1", address), String::new());
+        *state.proxy_running.write().await = true;
+        let (_, route_changed) = observe_llmtrim_route(&state, || false);
+        let request = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+        let response = forward_handler_selected(state.clone(), request, false, route_changed).await;
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "hello");
+        observe_llmtrim_route(&state, || true);
+        assert!(tokio::time::timeout(Duration::from_secs(2), stream.next()).await.unwrap().is_none());
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_tunnel_uses_the_selected_proxy() {
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = proxy_listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (mut socket, _) = proxy_listener.accept().await.unwrap();
+            let mut connect_request = Vec::new();
+            let mut byte = [0; 1];
+            while !connect_request.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).await.unwrap();
+                connect_request.push(byte[0]);
+            }
+            socket.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await.unwrap();
+            let mut upstream = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let message = upstream.next().await.unwrap().unwrap();
+            upstream.send(message).await.unwrap();
+            String::from_utf8(connect_request).unwrap()
+        });
+        let state = test_state("http://unused.invalid/v1".into(), String::new());
+        let app = Router::new().route("/ws", get({
+            let state = state.clone();
+            move |ws: WebSocketUpgrade| {
+                let state = state.clone();
+                async move {
+                    ws.on_upgrade(move |socket| handle_v1_websocket_tunnel(
+                        socket,
+                        state,
+                        "http://example.invalid:9000/v1".into(),
+                        String::new(),
+                        Some(format!("http://{}", proxy_address)),
+                        true,
+                        HeaderMap::new(),
+                    ))
+                }
+            }
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let gateway = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws", address)).await.unwrap();
+        client.send(TungsteniteMessage::Text("hello".into())).await.unwrap();
+        assert_eq!(client.next().await.unwrap().unwrap().into_text().unwrap(), "hello");
+        let request = tokio::time::timeout(Duration::from_secs(2), proxy_task).await.unwrap().unwrap();
+        assert!(request.starts_with("CONNECT example.invalid:9000 HTTP/1.1\r\n"));
+        drop(client);
+        gateway.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_sse_bridge_uses_llmtrim_and_closes_when_route_changes() {
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = proxy_listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            serve_mock_http_proxy(proxy_listener, 1, "text/event-stream", "data: {\"ok\":true}\n\n").await
+        });
+        let state = test_state("http://unreachable.invalid/v1".into(), "http://127.0.0.1:1".into());
+        state.config.write().await.upstream_websocket_enabled = false;
+        *state.proxy_running.write().await = true;
+        observe_llmtrim_route(&state, || true);
+        set_mock_llmtrim_client(&state, proxy_address).await;
+        let app = Router::new()
+            .route("/v1/{*path}", axum::routing::any(|State(state): State<AppState>, req: Request| async move {
+                let (_, route_changed) = observe_llmtrim_route(&state, || true);
+                forward_handler_selected(state, req, true, route_changed).await
+            }))
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let gateway = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{}/v1/chat/completions", address)).await.unwrap();
+        client.send(TungsteniteMessage::Text("{\"messages\":[]}".into())).await.unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+        assert_eq!(message.into_text().unwrap(), "{\"ok\":true}");
+        let requests = tokio::time::timeout(Duration::from_secs(2), proxy_task).await.unwrap().unwrap();
+        assert!(requests[0].starts_with("POST http://unreachable.invalid/v1/chat/completions "));
+        assert!(requests[0].contains("\"stream\":true"));
+        observe_llmtrim_route(&state, || false);
+        let closed = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap();
+        assert!(closed.is_none() || closed.unwrap().is_err());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state.active_ws_sessions.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        gateway.abort();
+    }
+
+    #[test]
+    fn llmtrim_route_stays_unavailable_during_management_transitions() {
+        let state = test_state("http://unreachable.invalid/v1".into(), String::new());
+        activate_llmtrim_route(&state);
+        let (selected, _) = observe_llmtrim_route(&state, || true);
+        assert!(selected);
+        assert!(!llmtrim_route_available(&state));
+        finish_llmtrim_route_transition(&state);
+        observe_llmtrim_route(&state, || true);
+        assert!(llmtrim_route_available(&state));
+    }
+
+    #[test]
+    fn llmtrim_route_blocks_until_its_intent_can_be_persisted() {
+        let state = test_state("http://unreachable.invalid/v1".into(), String::new());
+        let (selected, _) = observe_llmtrim_route_with(&state, || true, || Err("ledger unavailable".into()));
+        assert!(selected);
+        assert!(!llmtrim_route_available(&state));
+        let (selected, _) = observe_llmtrim_route_with(&state, || true, || Ok(()));
+        assert!(selected);
+        assert!(llmtrim_route_available(&state));
+    }
+
+    #[test]
+    fn llmtrim_route_stays_selected_after_listener_loss() {
+        let state = test_state("http://unreachable.invalid/v1".into(), String::new());
+        assert!(!observe_llmtrim_route(&state, || false).0);
+        let (selected, changed) = observe_llmtrim_route(&state, || true);
+        assert!(selected);
+        assert!(llmtrim_route_available(&state));
+
+        let (selected, _) = observe_llmtrim_route(&state, || false);
+        assert!(selected);
+        assert!(!llmtrim_route_available(&state));
+        assert!(changed.has_changed().unwrap());
+
+        deactivate_llmtrim_route(&state);
+        assert!(!observe_llmtrim_route(&state, || false).0);
+    }
+
+    #[tokio::test]
+    async fn unavailable_llmtrim_never_sends_requests_to_the_default_upstream() {
+        let normal = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = normal.local_addr().unwrap();
+        let state = test_state(format!("http://{}/v1", address), String::new());
+        *state.proxy_running.write().await = true;
+        observe_llmtrim_route(&state, || true);
+        observe_llmtrim_route(&state, || false);
+
+        let request = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+        let response = forward_handler(State(state.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(tokio::time::timeout(Duration::from_millis(200), normal.accept()).await.is_err());
+
+        deactivate_llmtrim_route(&state);
+        let server = tokio::spawn(async move {
+            serve_mock_http_proxy(normal, 1, "text/plain", "normal").await
+        });
+        let request = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+        let response = forward_handler(State(state.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(axum::body::to_bytes(response.into_body(), 1024).await.unwrap(), "normal");
+        tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn desired_llmtrim_route_is_restored_from_the_state_ledger() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("llmtrim-route-ledger-{}-{}", std::process::id(), nonce));
+        std::fs::create_dir_all(&directory).unwrap();
+        crate::tools::llmtrim::ownership::set_managed_tool_desired_running(&directory, true).unwrap();
+        let config = AppConfig {
+            llmtrim_path: directory.join("llmtrim.exe").to_string_lossy().to_string(),
+            ..AppConfig::default()
+        };
+        let state = AppState::new(config, directory.join("config.yaml"));
+        assert!(observe_llmtrim_route(&state, || false).0);
+        assert!(!llmtrim_route_available(&state));
+        std::fs::remove_file(directory.join(crate::tools::llmtrim::ownership::TOOL_STATE_FILE)).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn running_llmtrim_is_adopted_and_route_survives_app_restart() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("llmtrim-adopt-{}-{}", std::process::id(), nonce));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config = AppConfig {
+            llmtrim_path: directory.join("llmtrim.exe").to_string_lossy().to_string(),
+            ..AppConfig::default()
+        };
+        let state = AppState::new(config.clone(), directory.join("config.yaml"));
+        assert!(!state.llmtrim_route.lock().unwrap().selected);
+        let (selected, _) = observe_llmtrim_route_with(&state, || true, || {
+            crate::tools::llmtrim::ownership::set_managed_tool_desired_running(&directory, true)
+        });
+        assert!(selected);
+        assert!(llmtrim_route_available(&state));
+
+        let restarted = AppState::new(config, directory.join("config.yaml"));
+        assert!(restarted.llmtrim_route.lock().unwrap().selected);
+        assert!(!llmtrim_route_available(&restarted));
+        observe_llmtrim_route(&restarted, || true);
+        assert!(llmtrim_route_available(&restarted));
+        std::fs::remove_file(directory.join(crate::tools::llmtrim::ownership::TOOL_STATE_FILE)).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn sse_decoder_preserves_split_utf8_and_multiline_events() {
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.feed(b"event: response.output_text.delta\r\ndata: \xe4", false).unwrap().is_empty());
+        assert!(decoder.feed(b"\xbd\xa0\r", false).unwrap().is_empty());
+        let messages = decoder.feed(b"\ndata: second\r\n\r\n", false).unwrap();
+        assert_eq!(messages, vec![SseMessage {
+            event: Some("response.output_text.delta".into()),
+            data: "你\nsecond".into(),
+        }]);
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.feed(b"\xef\xbb", false).unwrap().is_empty());
+        let messages = decoder.feed(b"\xbfdata: tail", true).unwrap();
+        assert_eq!(messages, vec![SseMessage { event: None, data: "tail".into() }]);
+    }
+
+    #[test]
+    fn response_create_is_converted_to_an_http_request_body() {
+        let (body, streaming) = normalize_ws_bridge_request(
+            r#"{"type":"response.create","model":"example","input":"hello"}"#, true,
+        ).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(streaming);
+        assert_eq!(payload["stream"], true);
+        assert!(payload.get("type").is_none());
+        assert!(normalize_ws_bridge_request(r#"{"type":"response.create","stream_id":"lane"}"#, true).is_err());
+        assert!(normalize_ws_bridge_request(r#"{"type":"response.create","generate":false}"#, true).is_err());
+        assert!(normalize_ws_bridge_request(r#"{"type":"response.steer"}"#, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn llmtrim_websocket_bridge_uses_http1_for_both_ws_settings() {
+        for websocket_enabled in [true, false] {
+            let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_address = proxy_listener.local_addr().unwrap();
+            let proxy_task = tokio::spawn(async move {
+                serve_mock_http_proxy(
+                    proxy_listener, 1, "text/event-stream",
+                    "event: response.completed\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+                ).await
+            });
+            let state = test_state("http://unreachable.invalid/v1".into(), "http://127.0.0.1:1".into());
+            state.config.write().await.upstream_websocket_enabled = websocket_enabled;
+            *state.proxy_running.write().await = true;
+            observe_llmtrim_route(&state, || true);
+            set_mock_llmtrim_client(&state, proxy_address).await;
+            let app = Router::new()
+                .route("/v1/{*path}", axum::routing::any(|State(state): State<AppState>, req: Request| async move {
+                    let (_, route_changed) = observe_llmtrim_route(&state, || true);
+                    forward_handler_selected(state, req, true, route_changed).await
+                }))
+                .with_state(state);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let gateway = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{}/v1/responses", address)).await.unwrap();
+            client.send(TungsteniteMessage::Text(r#"{"type":"response.create","model":"example","input":"hi"}"#.into())).await.unwrap();
+            let message = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+            let event: serde_json::Value = serde_json::from_str(message.into_text().unwrap().as_str()).unwrap();
+            assert_eq!(event["type"], "response.completed");
+
+            let requests = tokio::time::timeout(Duration::from_secs(2), proxy_task).await.unwrap().unwrap();
+            assert!(requests[0].starts_with("POST http://unreachable.invalid/v1/responses HTTP/1.1\r\n"));
+            assert!(!requests[0].to_ascii_lowercase().contains("\r\nupgrade:"));
+            let body = requests[0].split_once("\r\n\r\n").unwrap().1;
+            let payload: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(payload["stream"], true);
+            assert!(payload.get("type").is_none());
+
+            client.send(TungsteniteMessage::Binary(vec![1, 2, 3].into())).await.unwrap();
+            let message = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+            let error: serde_json::Value = serde_json::from_str(message.into_text().unwrap().as_str()).unwrap();
+            assert_eq!(error["error"]["type"], "unsupported_message");
+            drop(client);
+            gateway.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_bridge_forwards_a_non_streaming_http_response() {
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = proxy_listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            serve_mock_http_proxy(proxy_listener, 1, "application/json", "{\"id\":\"resp_2\"}").await
+        });
+        let state = test_state("http://unreachable.invalid/v1".into(), String::new());
+        *state.proxy_running.write().await = true;
+        observe_llmtrim_route(&state, || true);
+        set_mock_llmtrim_client(&state, proxy_address).await;
+        let app = Router::new()
+            .route("/v1/{*path}", axum::routing::any(|State(state): State<AppState>, req: Request| async move {
+                let (_, route_changed) = observe_llmtrim_route(&state, || true);
+                forward_handler_selected(state, req, true, route_changed).await
+            }))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let gateway = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{}/v1/responses", address)).await.unwrap();
+        client.send(TungsteniteMessage::Text(r#"{"type":"response.create","stream":false}"#.into())).await.unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+        assert_eq!(message.into_text().unwrap(), "{\"id\":\"resp_2\"}");
+        let requests = tokio::time::timeout(Duration::from_secs(2), proxy_task).await.unwrap().unwrap();
+        assert!(requests[0].contains("\"stream\":false"));
+        drop(client);
+        gateway.abort();
+    }
+
+    #[tokio::test]
+    async fn upstream_prewarm_uses_the_normal_proxy_when_llmtrim_is_stopped() {
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = proxy_listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            serve_mock_http_proxy(proxy_listener, 1, "text/plain", "ok").await
+        });
+        let state = test_state("http://unreachable.invalid/v1".into(), format!("http://{}", proxy_address));
+        *state.web_port.write().await = 7788;
+        let response = start_proxy(State(state.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let requests = tokio::time::timeout(Duration::from_secs(2), proxy_task).await.unwrap().unwrap();
+        assert!(requests[0].starts_with("GET http://unreachable.invalid/v1 "));
+        let _ = state.shutdown_sender.send(());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated llmtrim executable supplied through LLMTRIM_TEST_EXECUTABLE"]
+    async fn real_llmtrim_proxy_accepts_local_gateway_requests() {
+        struct IsolatedDaemon {
+            child: std::process::Child,
+            directory: std::path::PathBuf,
+        }
+        impl Drop for IsolatedDaemon {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                let _ = std::fs::remove_dir_all(&self.directory);
+            }
+        }
+
+        let executable = std::env::var_os("LLMTRIM_TEST_EXECUTABLE").expect("isolated llmtrim executable");
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("llmtrim-integration-{}-{}", std::process::id(), nonce));
+        let daemon_home = directory.join(".llmtrim");
+        std::fs::create_dir_all(&daemon_home).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let log = std::fs::File::create(directory.join("serve.log")).unwrap();
+        let port_reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = port_reservation.local_addr().unwrap().port();
+        drop(port_reservation);
+
+        let mut command = std::process::Command::new(executable);
+        command.args(["serve", "--port", &port.to_string()])
+            .env("LLMTRIM_HOME", &daemon_home)
+            .env("LLMTRIM_CONFIG", &config_path)
+            .env("HOME", &directory)
+            .env("USERPROFILE", &directory)
+            .env("APPDATA", &directory)
+            .env("LOCALAPPDATA", &directory)
+            .env("XDG_CONFIG_HOME", &directory)
+            .env("XDG_DATA_HOME", &directory)
+            .env("TEMP", &directory)
+            .env("TMP", &directory)
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("ALL_PROXY")
+            .env_remove("http_proxy")
+            .env_remove("https_proxy")
+            .env_remove("all_proxy")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(log.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(log));
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let child = command.spawn().unwrap();
+        let mut daemon = IsolatedDaemon { child, directory };
+        let ca_path = daemon_home.join("ca.pem");
+        let proxy_address = format!("127.0.0.1:{}", port);
+        let ready = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if daemon.child.try_wait().unwrap().is_some() {
+                    break false;
+                }
+                if ca_path.is_file() && tokio::net::TcpStream::connect(&proxy_address).await.is_ok() {
+                    break true;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await.unwrap_or(false);
+        assert!(ready, "isolated llmtrim failed to start: {}", std::fs::read_to_string(daemon.directory.join("serve.log")).unwrap_or_default());
+
+        assert!(build_llmtrim_ws_connector(&ca_path).is_ok());
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_address = upstream.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            serve_mock_http_proxy(upstream, 1, "text/plain", "through real llmtrim").await
+        });
+        let client = build_llmtrim_proxy_client_with(&format!("http://{}", proxy_address), &ca_path).unwrap();
+        let response = client.get(format!("http://{}/v1/models", upstream_address))
+            .timeout(Duration::from_secs(5)).send().await.unwrap();
+        assert_eq!(response.text().await.unwrap(), "through real llmtrim");
+        let requests = tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+        assert!(requests[0].starts_with("GET /v1/models "));
+    }
 
     #[test]
     fn test_join_upstream_url_variations() {
