@@ -6,32 +6,54 @@ use tracing::{info, warn};
 use zip::ZipArchive;
 
 use super::types::{LlmtrimReleaseListResponse, LlmtrimReleaseOption};
-use crate::common::downloader::{build_http_client, fetch_github_releases};
+use crate::common::downloader::{build_http_client, fetch_github_releases, parse_sha256_manifest, GithubReleaseAsset};
 
 pub const LLMTRIM_REPO: &str = "fkiene/llmtrim";
 pub const LLMTRIM_RELEASE_PAGE_SIZE: usize = 5;
 
+fn windows_asset_for_arch(arch: &str) -> &'static str {
+    match arch {
+        "x86_64" => "llmtrim-x86_64-pc-windows-msvc.zip",
+        "aarch64" => "llmtrim-aarch64-pc-windows-msvc.zip",
+        _ => "",
+    }
+}
+
 pub fn target_windows_asset_name() -> &'static str {
-    "llmtrim-x86_64-pc-windows-msvc.zip"
+    windows_asset_for_arch(std::env::consts::ARCH)
 }
 
 pub fn target_checksum_asset_name() -> &'static str {
-    "llmtrim-x86_64-pc-windows-msvc.zip.sha256"
+    match std::env::consts::ARCH {
+        "x86_64" => "llmtrim-x86_64-pc-windows-msvc.sha256",
+        "aarch64" => "llmtrim-aarch64-pc-windows-msvc.sha256",
+        _ => "",
+    }
 }
 
 pub fn is_windows_zip_asset(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.ends_with(".zip") && (lower.contains("windows") || lower.contains("x86_64") || lower.contains("amd64"))
+    let expected = target_windows_asset_name();
+    !expected.is_empty() && name == expected
+}
+
+fn checksum_asset_for_zip<'a>(
+    assets: &'a [GithubReleaseAsset],
+    zip_name: &str,
+) -> Option<&'a GithubReleaseAsset> {
+    let base = zip_name.strip_suffix(".zip")?;
+    let checksum_name = format!("{}.sha256", base);
+    let alternate_name = format!("{}.sha256", zip_name);
+    assets.iter().find(|asset| asset.name == checksum_name)
+        .or_else(|| assets.iter().find(|asset| asset.name == alternate_name))
 }
 
 pub fn parse_sha256_hash(text: &str) -> Option<String> {
-    for word in text.split_whitespace() {
-        let clean = word.trim();
-        if clean.len() == 64 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Some(clean.to_lowercase());
-        }
+    let hash = text.trim();
+    if hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(hash.to_ascii_lowercase())
+    } else {
+        None
     }
-    None
 }
 
 pub fn compute_file_sha256(path: &Path) -> Result<String, String> {
@@ -48,6 +70,47 @@ pub fn compute_file_sha256(path: &Path) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    fn asset(name: &str) -> GithubReleaseAsset {
+        GithubReleaseAsset {
+            name: name.to_string(),
+            browser_download_url: String::new(),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn selects_the_exact_windows_architecture() {
+        assert_eq!(windows_asset_for_arch("x86_64"), "llmtrim-x86_64-pc-windows-msvc.zip");
+        assert_eq!(windows_asset_for_arch("aarch64"), "llmtrim-aarch64-pc-windows-msvc.zip");
+        assert_eq!(windows_asset_for_arch("x86"), "");
+        assert!(!is_windows_zip_asset("llmtrim-x86_64-unknown-linux.zip"));
+        if !target_windows_asset_name().is_empty() {
+            assert!(is_windows_zip_asset(target_windows_asset_name()));
+        }
+    }
+
+    #[test]
+    fn checksum_selection_is_bound_to_the_chosen_zip() {
+        let assets = vec![
+            asset("llmtrim-aarch64-apple-darwin.sha256"),
+            asset("llmtrim-aarch64-pc-windows-msvc.sha256"),
+            asset("llmtrim-x86_64-pc-windows-msvc.sha256"),
+        ];
+        let x64 = "llmtrim-x86_64-pc-windows-msvc.zip";
+        let arm = "llmtrim-aarch64-pc-windows-msvc.zip";
+        assert_eq!(checksum_asset_for_zip(&assets, x64).unwrap().name, "llmtrim-x86_64-pc-windows-msvc.sha256");
+        assert_eq!(checksum_asset_for_zip(&assets, arm).unwrap().name, "llmtrim-aarch64-pc-windows-msvc.sha256");
+        assert!(checksum_asset_for_zip(&assets[..1], x64).is_none());
+
+        let legacy = vec![asset("llmtrim-x86_64-pc-windows-msvc.zip.sha256")];
+        assert_eq!(checksum_asset_for_zip(&legacy, x64).unwrap().name, legacy[0].name);
+    }
+}
+
 pub async fn fetch_llmtrim_releases(
     page: usize,
     proxy_url: Option<&str>,
@@ -58,7 +121,9 @@ pub async fn fetch_llmtrim_releases(
     let options = releases
         .into_iter()
         .map(|rel| {
-            let asset = rel.assets.iter().find(|a| is_windows_zip_asset(&a.name));
+            let asset = rel.assets.iter()
+                .find(|a| is_windows_zip_asset(&a.name))
+                .filter(|a| checksum_asset_for_zip(&rel.assets, &a.name).is_some());
             let (available, asset_name) = match asset {
                 Some(a) => (true, a.name.clone()),
                 None => (false, String::new()),
@@ -104,11 +169,8 @@ pub async fn download_and_install_llmtrim(
         .find(|a| is_windows_zip_asset(&a.name))
         .ok_or_else(|| format!("版本 {} 没有适用于 Windows 的 llmtrim 安装包", version_tag))?;
 
-    let checksum_asset = target_release
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with(".sha256") || a.name == format!("{}.sha256", zip_asset.name))
-        .ok_or_else(|| format!("版本 {} 没有校验文件 {}.sha256", version_tag, zip_asset.name))?;
+    let checksum_asset = checksum_asset_for_zip(&target_release.assets, &zip_asset.name)
+        .ok_or_else(|| format!("版本 {} 缺少安装包 {} 对应的 SHA-256 校验文件", version_tag, zip_asset.name))?;
 
     let client = build_http_client(proxy_url);
 
@@ -125,8 +187,10 @@ pub async fn download_and_install_llmtrim(
         .text()
         .await
         .map_err(|e| format!("读取校验文件内容失败: {}", e))?;
-    let expected_hash = parse_sha256_hash(&checksum_text)
-        .ok_or_else(|| "校验文件中没有找到有效的 64 位 SHA-256 摘要".to_string())?;
+    let expected_hash = match parse_sha256_hash(&checksum_text) {
+        Some(hash) => hash,
+        None => parse_sha256_manifest(&checksum_text, &zip_asset.name)?,
+    };
 
     // 2. 下载 ZIP 安装包到临时文件
     let temp_dir = std::env::temp_dir();

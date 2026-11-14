@@ -27,6 +27,31 @@ pub struct GithubRelease {
     pub assets: Vec<GithubReleaseAsset>,
 }
 
+pub fn parse_sha256_manifest(text: &str, asset_name: &str) -> Result<String, String> {
+    let mut matched_hash = None;
+
+    for line in text.lines() {
+        let Some((hash, filename)) = line.trim().split_once(char::is_whitespace) else {
+            continue;
+        };
+        let filename = filename.trim();
+        let filename = filename.strip_prefix('*').unwrap_or(filename);
+        let filename = filename.strip_prefix("./").unwrap_or(filename);
+        if filename != asset_name {
+            continue;
+        }
+
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("校验清单中 {} 的 SHA-256 摘要无效", asset_name));
+        }
+        if matched_hash.replace(hash.to_ascii_lowercase()).is_some() {
+            return Err(format!("校验清单中 {} 存在重复条目", asset_name));
+        }
+    }
+
+    matched_hash.ok_or_else(|| format!("校验清单中没有找到 {} 的 SHA-256 摘要", asset_name))
+}
+
 pub fn build_http_client(proxy_url: Option<&str>) -> Client {
     let mut builder = Client::builder()
         .user_agent(concat!("code-Manager/", env!("CARGO_PKG_VERSION"), " (Windows NT 10.0; Win64; x64)"))
@@ -202,6 +227,42 @@ pub fn extract_zip<P: AsRef<Path>, D: AsRef<Path>>(zip_path: P, dest_dir: D) -> 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod checksum_tests {
+    use super::parse_sha256_manifest;
+
+    #[test]
+    fn matches_only_the_complete_asset_name() {
+        let expected = "a".repeat(64);
+        let unrelated = "b".repeat(64);
+        let asset = "tool_windows_amd64.zip";
+        let manifest = format!(
+            "{}  {}.sig\n{}  *./{}\n",
+            unrelated, asset, expected, asset
+        );
+
+        assert_eq!(parse_sha256_manifest(&manifest, asset).unwrap(), expected);
+        assert!(parse_sha256_manifest(&format!("{}  {}.sig", unrelated, asset), asset).is_err());
+        assert!(parse_sha256_manifest(&expected, asset).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_and_duplicate_entries() {
+        let hash = "A".repeat(64);
+        let asset = "tool_windows_amd64.zip";
+
+        assert_eq!(
+            parse_sha256_manifest(&format!("{}  {}", hash, asset), asset).unwrap(),
+            hash.to_ascii_lowercase()
+        );
+        assert!(parse_sha256_manifest(&format!("invalid  {}", asset), asset).is_err());
+        assert!(parse_sha256_manifest(
+            &format!("{}  {}\n{}  {}", hash, asset, hash, asset),
+            asset,
+        ).is_err());
+    }
 }
 
 pub async fn download_and_extract_zip(

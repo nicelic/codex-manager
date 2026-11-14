@@ -125,10 +125,7 @@ fn test_format_managed_toml() {
 #[test]
 fn test_parse_sha256_hash() {
     let content = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  llmtrim-x86_64-pc-windows-msvc.zip\n";
-    assert_eq!(
-        parse_sha256_hash(content),
-        Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string())
-    );
+    assert_eq!(parse_sha256_hash(content), None);
 
     let upper = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855";
     assert_eq!(

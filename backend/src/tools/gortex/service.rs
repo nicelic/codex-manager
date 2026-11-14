@@ -16,7 +16,7 @@ use super::reconcile::{
 };
 use super::types::*;
 use super::windows::{configure_gortex_path, query_gortex_path_status, remove_owned_gortex_path};
-use crate::common::downloader::fetch_github_releases;
+use crate::common::downloader::{fetch_github_releases, parse_sha256_manifest};
 use crate::common::process::{
     find_all_process_ids, invalidate_process_cache, is_pid_alive, is_process_running,
     new_silent_command,
@@ -1313,7 +1313,9 @@ impl GortexService {
             .into_iter()
             .filter(|r| !r.tag_name.trim().is_empty())
             .map(|rel| {
-                let asset = rel.assets.iter().find(|a| a.name == GORTEX_WINDOWS_ASSET_NAME);
+                let asset = rel.assets.iter()
+                    .find(|a| std::env::consts::ARCH == "x86_64" && a.name == GORTEX_WINDOWS_ASSET_NAME)
+                    .filter(|_| rel.assets.iter().any(|a| a.name == "checksums.txt"));
                 let (available, asset_name) = match asset {
                     Some(a) => (true, a.name.clone()),
                     None => (false, String::new()),
@@ -1354,6 +1356,10 @@ impl GortexService {
     }
 
     async fn install_inner(tag_name: Option<String>, proxy_url: Option<&str>) -> Result<(), String> {
+        if std::env::consts::ARCH != "x86_64" {
+            return Err("当前架构没有可用的 Gortex Windows 安装包".to_string());
+        }
+
         let install_root = Self::get_install_dir();
         let bin_dir = install_root.join("bin");
 
@@ -1367,8 +1373,6 @@ impl GortexService {
         ] {
             fs::create_dir_all(dir).map_err(|e| format!("创建目录失败 ({}): {}", dir.display(), e))?;
         }
-
-        let _ = Self::stop_all_processes(GORTEX_PROCESS_STOP_TIMEOUT);
 
         let releases = fetch_github_releases(GORTEX_REPO, 1, 10, proxy_url).await?;
         let target_release = if let Some(tag) = &tag_name {
@@ -1386,7 +1390,8 @@ impl GortexService {
         let checksum_asset = target_release
             .assets
             .iter()
-            .find(|a| a.name == "checksums.txt");
+            .find(|a| a.name == "checksums.txt")
+            .ok_or_else(|| format!("版本 {} 缺少 checksums.txt，无法校验 Gortex 安装包", target_release.tag_name))?;
 
         let client = reqwest::Client::builder();
         let client = if let Some(p) = proxy_url {
@@ -1396,7 +1401,22 @@ impl GortexService {
         };
         let client = client.build().map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
-        // 1. Download ZIP to temp dir
+        // 1. Download and validate the checksum manifest.
+        let checksum_text = client
+            .get(&checksum_asset.browser_download_url)
+            .header("User-Agent", "code-Manager-rust")
+            .send()
+            .await
+            .map_err(|e| format!("下载 Gortex 校验文件失败: {}", e))?
+            .error_for_status()
+            .map_err(|e| format!("下载 Gortex 校验文件失败: {}", e))?
+            .text()
+            .await
+            .map_err(|e| format!("读取 Gortex 校验文件失败: {}", e))?;
+        let expected_hash = parse_sha256_manifest(&checksum_text, &zip_asset.name)
+            .map_err(|e| format!("Gortex 校验文件无效: {}", e))?;
+
+        // 2. Download and verify the ZIP before staging it.
         let temp_dir = std::env::temp_dir();
         let temp_zip = temp_dir.join(format!("gortex-{}.zip", std::process::id()));
         info!("Downloading Gortex ZIP from {}", zip_asset.browser_download_url);
@@ -1406,34 +1426,19 @@ impl GortexService {
             .header("User-Agent", "code-Manager-rust")
             .send()
             .await
+            .map_err(|e| format!("下载 Gortex ZIP 失败: {}", e))?
+            .error_for_status()
             .map_err(|e| format!("下载 Gortex ZIP 失败: {}", e))?;
 
         let zip_bytes = zip_resp.bytes().await.map_err(|e| format!("读取 Gortex ZIP 数据失败: {}", e))?;
-        fs::write(&temp_zip, &zip_bytes).map_err(|e| format!("写入临时 ZIP 文件失败: {}", e))?;
-
-        // 2. Validate Checksum
-        if let Some(cs_asset) = checksum_asset {
-            if let Ok(cs_resp) = client.get(&cs_asset.browser_download_url).header("User-Agent", "code-Manager-rust").send().await {
-                if let Ok(cs_text) = cs_resp.text().await {
-                    for line in cs_text.lines() {
-                        if line.contains(GORTEX_WINDOWS_ASSET_NAME) {
-                            let parts: Vec<&str> = line.split_whitespace().collect();
-                            if let Some(expected_hash) = parts.first() {
-                                let mut hasher = Sha256::new();
-                                hasher.update(&zip_bytes);
-                                let actual_hash = hex::encode(hasher.finalize());
-                                if !actual_hash.eq_ignore_ascii_case(expected_hash) {
-                                    let _ = fs::remove_file(&temp_zip);
-                                    return Err(format!("Gortex 安装包 SHA-256 校验失败: 期望 {}, 实际 {}", expected_hash, actual_hash));
-                                }
-                                info!("Gortex ZIP checksum verification passed.");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
+        let mut hasher = Sha256::new();
+        hasher.update(&zip_bytes);
+        let actual_hash = hex::encode(hasher.finalize());
+        if !actual_hash.eq_ignore_ascii_case(&expected_hash) {
+            return Err(format!("Gortex 安装包 SHA-256 校验失败: 期望 {}, 实际 {}", expected_hash, actual_hash));
         }
+        info!("Gortex ZIP checksum verification passed.");
+        fs::write(&temp_zip, &zip_bytes).map_err(|e| format!("写入临时 ZIP 文件失败: {}", e))?;
 
         // 3. Extract to staging directory
         let staging_dir = bin_dir.join(format!(".gortex-install-{}", std::process::id()));
@@ -1460,6 +1465,11 @@ impl GortexService {
         if !found_exe || !staged_exe.is_file() {
             let _ = fs::remove_dir_all(&staging_dir);
             return Err("Gortex ZIP 中未找到 gortex.exe".to_string());
+        }
+
+        if let Err(err) = Self::stop_all_processes(GORTEX_PROCESS_STOP_TIMEOUT) {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(format!("停止 Gortex 进程失败: {}", err));
         }
 
         // 4. Atomic replacement with backup

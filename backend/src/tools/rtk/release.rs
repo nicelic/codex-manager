@@ -9,7 +9,7 @@ use super::assistant::{
     RTK_CLAUDE_AGENT_INSTRUCTIONS, RTK_CODEX_AGENT_INSTRUCTIONS, RTK_CODEX_COMMANDS,
 };
 use super::types::{RtkReleaseListResponse, RtkReleaseOption};
-use crate::common::downloader::{build_http_client, fetch_github_releases, GithubRelease};
+use crate::common::downloader::{build_http_client, fetch_github_releases, parse_sha256_manifest, GithubRelease};
 
 const RTK_REPO: &str = "rtk-ai/rtk";
 const RTK_WINDOWS_ASSET_NAME: &str = "rtk-x86_64-pc-windows-msvc.zip";
@@ -27,17 +27,7 @@ pub fn rtk_windows_asset_name() -> &'static str {
 }
 
 pub fn parse_checksum(text: &str, asset_name: &str) -> Result<String, String> {
-    for line in text.lines() {
-        if line.contains(asset_name) {
-            for word in line.split_whitespace() {
-                let trimmed = word.trim();
-                if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Ok(trimmed.to_lowercase());
-                }
-            }
-        }
-    }
-    Err(format!("checksums.txt 中没有找到 {} 的 SHA-256 摘要", asset_name))
+    parse_sha256_manifest(text, asset_name)
 }
 
 pub async fn fetch_rtk_releases(page: usize, proxy_url: Option<&str>) -> Result<RtkReleaseListResponse, String> {
@@ -58,7 +48,8 @@ pub async fn fetch_rtk_releases(page: usize, proxy_url: Option<&str>) -> Result<
         .into_iter()
         .filter(|rel| !rel.tag_name.trim().is_empty())
         .map(|rel| {
-            let available = rel.assets.iter().any(|a| a.name.eq_ignore_ascii_case(asset_name));
+            let available = rel.assets.iter().any(|a| a.name == asset_name)
+                && rel.assets.iter().any(|a| a.name == "checksums.txt");
             RtkReleaseOption {
                 tag_name: rel.tag_name,
                 name: rel.name.unwrap_or_default(),
@@ -113,13 +104,13 @@ pub async fn download_and_install_rtk(
     let zip_asset = release
         .assets
         .iter()
-        .find(|a| a.name.eq_ignore_ascii_case(asset_name))
+        .find(|a| a.name == asset_name)
         .ok_or_else(|| format!("版本 {} 没有 Windows 安装包 {}", tag_name, asset_name))?;
 
     let checksum_asset = release
         .assets
         .iter()
-        .find(|a| a.name.eq_ignore_ascii_case("checksums.txt"))
+        .find(|a| a.name == "checksums.txt")
         .ok_or_else(|| format!("版本 {} 没有校验文件 checksums.txt", tag_name))?;
 
     // 2. 下载并校验 checksums.txt
@@ -128,11 +119,13 @@ pub async fn download_and_install_rtk(
         .send()
         .await
         .map_err(|e| format!("下载校验文件失败: {}", e))?
+        .error_for_status()
+        .map_err(|e| format!("下载校验文件失败: {}", e))?
         .text()
         .await
         .map_err(|e| format!("读取校验文件内容失败: {}", e))?;
 
-    let expected_hash = parse_checksum(&checksum_text, asset_name)?;
+    let expected_hash = parse_checksum(&checksum_text, &zip_asset.name)?;
 
     // 3. 下载 ZIP 文件到临时目录
     let temp_zip_path = std::env::temp_dir().join(format!("rtk_download_{}.zip", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
@@ -140,6 +133,8 @@ pub async fn download_and_install_rtk(
         .get(&zip_asset.browser_download_url)
         .send()
         .await
+        .map_err(|e| format!("下载 RTK 安装包失败: {}", e))?
+        .error_for_status()
         .map_err(|e| format!("下载 RTK 安装包失败: {}", e))?
         .bytes()
         .await
