@@ -1,4 +1,5 @@
 pub mod events;
+pub mod llmtrim_transport;
 pub mod proxy;
 
 use axum::Router;

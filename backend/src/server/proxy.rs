@@ -4,11 +4,12 @@ use axum::{
         ws::{Message as AxumWsMessage, WebSocket as AxumWebSocket, WebSocketUpgrade},
         FromRequestParts, Request, State,
     },
-    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -22,6 +23,7 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use crate::common::config::is_upstream_placeholder;
+use crate::server::llmtrim_transport::LlmtrimTransport;
 use crate::state::AppState;
 use crate::tools::llmtrim::service::LlmtrimService;
 
@@ -144,22 +146,47 @@ pub async fn start_proxy(State(state): State<AppState>) -> impl IntoResponse {
     // 预热必须使用与正式请求相同的上游路由。
     let probe_url = cfg.upstream_base_url.trim().to_string();
     let (llmtrim_running, mut route_changed) = refresh_llmtrim_route(&state, &cfg.llmtrim_path);
-    let prewarm_client = if llmtrim_running && !llmtrim_route_available(&state) {
-        Err("llmtrim 未就绪，已禁止回退到默认路由".to_string())
-    } else {
-        select_upstream_client(&state, llmtrim_running, &cfg.outbound_proxy).await
-    };
-    let prewarm_result = match prewarm_client {
-        Ok(client) => tokio::select! {
-            biased;
-            _ = route_changed.changed() => Err("代理路由已切换，请重新启动代理".to_string()),
-            result = client.get(&probe_url).timeout(Duration::from_secs(5)).send() => {
-                result.map(|resp| {
-                    info!("上游预热握手成功: {} (状态: {})", probe_url, resp.status());
-                }).map_err(|e| e.to_string())
+    let prewarm_result = if llmtrim_running {
+        if !llmtrim_route_available(&state) {
+            Err("llmtrim 未就绪，已禁止回退到默认路由".to_string())
+        } else {
+            match select_llmtrim_http1_client(&state).await {
+                Ok(client) => {
+                    let empty_headers = HeaderMap::new();
+                    tokio::select! {
+                    biased;
+                    _ = route_changed.changed() => Err("代理路由已切换，请重新启动代理".to_string()),
+                    result = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        client.request(&Method::GET, &probe_url, &empty_headers, Bytes::new()),
+                    ) => {
+                        match result {
+                            Ok(Ok(response)) => {
+                                info!("上游预热经 LLMTrim 成功: {} (状态: {})", probe_url, response.status);
+                                Ok(())
+                            }
+                            Ok(Err(err)) => Err(err),
+                            Err(_) => Err("经 LLMTrim 的上游预热超时".to_string()),
+                        }
+                    }
+                    }
+                }
+                Err(err) => Err(err),
             }
-        },
-        Err(err) => Err(err),
+        }
+    } else {
+        match select_upstream_client(&state, false, &cfg.outbound_proxy).await {
+            Ok(client) => tokio::select! {
+                biased;
+                _ = route_changed.changed() => Err("代理路由已切换，请重新启动代理".to_string()),
+                result = client.get(&probe_url).timeout(Duration::from_secs(5)).send() => {
+                    result.map(|resp| {
+                        info!("上游预热握手成功: {} (状态: {})", probe_url, resp.status());
+                    }).map_err(|e| e.to_string())
+                }
+            },
+            Err(err) => Err(err),
+        }
     };
 
     if let Err(reason) = prewarm_result {
@@ -381,14 +408,12 @@ fn build_llmtrim_proxy_client_with(proxy_url: &str, ca_path: &std::path::Path) -
     build_llmtrim_proxy_client_configured(proxy_url, ca_path, false)
 }
 
-async fn select_llmtrim_http1_client(state: &AppState) -> Result<reqwest::Client, String> {
+async fn select_llmtrim_http1_client(state: &AppState) -> Result<LlmtrimTransport, String> {
     let mut cached = state.llmtrim_http1_client.write().await;
     let generation = *state.proxy_route_changed.borrow();
     if cached.as_ref().map(|(cached_generation, _)| *cached_generation) != Some(generation) {
         *cached = None;
-        *cached = Some((generation, build_llmtrim_proxy_client_configured(
-            LLMTRIM_PROXY_URL, &llmtrim_ca_path(), true,
-        )?));
+        *cached = Some((generation, LlmtrimTransport::plain()));
     }
     Ok(cached.as_ref().expect("llmtrim HTTP/1.1 client initialized").1.clone())
 }
@@ -930,7 +955,7 @@ async fn handle_v1_ws_to_sse_bridge(
     state: AppState,
     target_url: String,
     upstream_api_key: String,
-    client: reqwest::Client,
+    client: LlmtrimTransport,
     client_headers: HeaderMap,
 ) {
     let _session_guard = SessionGuard::new(&state.active_ws_sessions);
@@ -970,9 +995,9 @@ async fn handle_v1_ws_to_sse_bridge(
                 continue;
             }
         };
-        let mut request = client.post(&target_url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "text/event-stream");
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        request_headers.insert(header::ACCEPT, HeaderValue::from_static("text/event-stream"));
         for (key, value) in client_headers.iter() {
             let name = key.as_str().to_ascii_lowercase();
             if matches!(name.as_str(), "host" | "connection" | "upgrade" | "content-length"
@@ -983,19 +1008,24 @@ async fn handle_v1_ws_to_sse_bridge(
                 continue;
             }
             if let (Ok(name), Ok(value)) = (
-                reqwest::header::HeaderName::from_bytes(key.as_ref()),
-                reqwest::header::HeaderValue::from_bytes(value.as_bytes()),
+                HeaderName::from_bytes(key.as_ref()),
+                HeaderValue::from_bytes(value.as_bytes()),
             ) {
-                request = request.header(name, value);
+                request_headers.append(name, value);
             }
         }
         if !is_upstream_placeholder(&upstream_api_key) {
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
-                request = request.header(reqwest::header::AUTHORIZATION, value);
+            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
+                request_headers.insert(header::AUTHORIZATION, value);
             }
         }
 
-        let pending = request.body(body).send();
+        let pending = client.request(
+            &Method::POST,
+            &target_url,
+            &request_headers,
+            Bytes::from(body),
+        );
         tokio::pin!(pending);
         let response = loop {
             tokio::select! {
@@ -1028,17 +1058,28 @@ async fn handle_v1_ws_to_sse_bridge(
                 continue;
             }
         };
-        if !response.status().is_success() {
-            let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
+        if !response.status.is_success() {
+            let status = response.status;
+            let mut detail_bytes = Vec::new();
+            let mut error_body = response.body;
+            while let Some(chunk) = error_body.next().await {
+                match chunk {
+                    Ok(chunk) => detail_bytes.extend_from_slice(&chunk),
+                    Err(_) => break,
+                }
+                if detail_bytes.len() >= MAX_BRIDGE_BUFFER {
+                    break;
+                }
+            }
+            let detail = String::from_utf8_lossy(&detail_bytes).into_owned();
             if client_ws.send(ws_bridge_error("upstream_error", format!("上游返回错误状态 {}: {}", status, detail))).await.is_err() { break; }
             continue;
         }
 
-        let content_type = response.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok());
+        let content_type = response.headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok());
         let is_sse = content_type.map(|value| value.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/event-stream"))
             .unwrap_or(wants_stream);
-        let mut stream = response.bytes_stream();
+        let mut stream = response.body;
         let mut decoder = SseDecoder::default();
         let mut plain_body = Vec::new();
         loop {
@@ -1124,6 +1165,128 @@ pub async fn forward_handler(
             "代理路由已切换，请重新连接",
         ).into_response(),
         response = forward_handler_selected(state, req, llmtrim_running, response_route_changed) => response,
+    }
+}
+
+async fn forward_via_llmtrim(
+    state: AppState,
+    method: Method,
+    path: String,
+    target_url: String,
+    fwd_headers: HeaderMap,
+    body_bytes: Bytes,
+    mut route_changed: tokio::sync::watch::Receiver<u64>,
+    retry_enabled: bool,
+    retry_count: usize,
+    retry_interval: u64,
+    retry_ranges: Vec<(u16, u16)>,
+) -> Response {
+    let transport = match select_llmtrim_http1_client(&state).await {
+        Ok(client) => client,
+        Err(err) => return (StatusCode::BAD_GATEWAY, err).into_response(),
+    };
+
+    state.active_requests.fetch_add(1, Ordering::SeqCst);
+    let _guard = RequestGuard(state.active_requests.clone());
+    let start_time = Instant::now();
+    let mut attempts = 0usize;
+
+    loop {
+        attempts += 1;
+        let response = transport
+            .request(&method, &target_url, &fwd_headers, body_bytes.clone())
+            .await;
+
+        match response {
+            Ok(response) => {
+                let status_u16 = response.status.as_u16();
+                if retry_enabled
+                    && attempts <= retry_count
+                    && retry_ranges
+                        .iter()
+                        .any(|&(start, end)| status_u16 >= start && status_u16 <= end)
+                {
+                    let retry_after_secs = response
+                        .headers
+                        .get(header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.trim().parse::<u64>().ok())
+                        .map(|value| value.clamp(1, 60));
+                    let base_delay = retry_after_secs.unwrap_or_else(|| retry_interval.max(1));
+                    let jitter_ms = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| u64::from(duration.subsec_millis() % 100 + 50))
+                        .unwrap_or(50)) as u64;
+                    let total_delay = Duration::from_millis(base_delay * 1000 + jitter_ms);
+                    warn!(
+                        "LLMTrim 上游返回状态码 {}，命中重试规则，等待 {:.2}s 后进行第 {} 次重试...",
+                        status_u16,
+                        total_delay.as_secs_f64(),
+                        attempts
+                    );
+                    drop(response);
+                    tokio::time::sleep(total_delay).await;
+                    continue;
+                }
+
+                info!(
+                    "{} {} via llmtrim completed in {:?}",
+                    method,
+                    path,
+                    start_time.elapsed()
+                );
+                let mut response_builder = Response::builder().status(response.status);
+                for (name, value) in response.headers.iter() {
+                    let lower = name.as_str().to_ascii_lowercase();
+                    if lower == "connection" || lower == "transfer-encoding" {
+                        continue;
+                    }
+                    response_builder = response_builder.header(name, value);
+                }
+                let stream = response.body.take_until(async move {
+                    let _ = route_changed.changed().await;
+                });
+                return response_builder
+                    .body(Body::from_stream(stream))
+                    .unwrap_or_else(|_| {
+                        (StatusCode::INTERNAL_SERVER_ERROR, "构建响应体失败").into_response()
+                    });
+            }
+            Err(err) => {
+                if retry_enabled && attempts <= retry_count {
+                    let jitter_ms = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| u64::from(duration.subsec_millis() % 100 + 50))
+                        .unwrap_or(50)) as u64;
+                    let total_delay = Duration::from_millis(retry_interval.max(1) * 1000 + jitter_ms);
+                    warn!(
+                        "请求 LLMTrim/上游发生网络错误: {}，等待 {:.2}s 进行第 {} 次重试...",
+                        err,
+                        total_delay.as_secs_f64(),
+                        attempts
+                    );
+                    tokio::time::sleep(total_delay).await;
+                    continue;
+                }
+                error!(
+                    "{} {} 经 LLMTrim 请求最终失败: {} (耗时: {:?})",
+                    method,
+                    path,
+                    err,
+                    start_time.elapsed()
+                );
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": {
+                            "message": format!("LLMTrim/上游连接失败: {}", err),
+                            "type": "bad_gateway"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
     }
 }
 
@@ -1223,7 +1386,9 @@ async fn forward_handler_selected(
                 let client_result = if llmtrim_running {
                     select_llmtrim_http1_client(&state).await
                 } else {
-                    select_upstream_client(&state, false, &cfg.outbound_proxy).await
+                    select_upstream_client(&state, false, &cfg.outbound_proxy)
+                        .await
+                        .map(LlmtrimTransport::from_reqwest)
                 };
                 let client = match client_result {
                     Ok(client) => client,
@@ -1275,8 +1440,29 @@ async fn forward_handler_selected(
         }
     }
 
+    // When LLMTrim is selected, keep the whole outbound request on the local
+    // plain HTTP/1.1 proxy hop. The absolute target URI is sent to LLMTrim;
+    // LLMTrim then owns the external upstream connection and response stream.
+    if llmtrim_running {
+        let (_, parsed_retry_ranges) = crate::common::config::normalize_retry_status_codes(&cfg.retry_status_codes);
+        return forward_via_llmtrim(
+            state,
+            parts.method,
+            path,
+            target_url,
+            fwd_headers,
+            body_bytes,
+            route_changed,
+            cfg.retry_enabled,
+            cfg.retry_count.parse().unwrap_or(5),
+            cfg.retry_interval_seconds.parse().unwrap_or(1),
+            parsed_retry_ranges,
+        )
+        .await;
+    }
+
     // llmtrim 运行时只能使用其专属客户端，初始化失败不得回退。
-    let client = match select_upstream_client(&state, llmtrim_running, &cfg.outbound_proxy).await {
+    let client = match select_upstream_client(&state, false, &cfg.outbound_proxy).await {
         Ok(client) => client,
         Err(err) => return (StatusCode::BAD_GATEWAY, err).into_response(),
     };
@@ -1494,7 +1680,10 @@ mod tests {
             .proxy(reqwest::Proxy::all(format!("http://{}", address)).unwrap())
             .http1_only()
             .build().unwrap();
-        *state.llmtrim_http1_client.write().await = Some((generation, http1_client));
+        *state.llmtrim_http1_client.write().await = Some((
+            generation,
+            LlmtrimTransport::from_reqwest(http1_client),
+        ));
     }
 
     #[tokio::test]
@@ -2067,16 +2256,28 @@ mod tests {
         }).await.unwrap_or(false);
         assert!(ready, "isolated llmtrim failed to start: {}", std::fs::read_to_string(daemon.directory.join("serve.log")).unwrap_or_default());
 
-        assert!(build_llmtrim_ws_connector(&ca_path).is_ok());
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_address = upstream.local_addr().unwrap();
         let server = tokio::spawn(async move {
             serve_mock_http_proxy(upstream, 1, "text/plain", "through real llmtrim").await
         });
-        let client = build_llmtrim_proxy_client_with(&format!("http://{}", proxy_address), &ca_path).unwrap();
-        let response = client.get(format!("http://{}/v1/models", upstream_address))
-            .timeout(Duration::from_secs(5)).send().await.unwrap();
-        assert_eq!(response.text().await.unwrap(), "through real llmtrim");
+        let client = LlmtrimTransport::plain_at(proxy_address.parse().unwrap());
+        let response = client
+            .request(
+                &Method::GET,
+                &format!("http://{}/v1/models", upstream_address),
+                &HeaderMap::new(),
+                Bytes::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, StatusCode::OK);
+        let mut response_body = Vec::new();
+        let mut body = response.body;
+        while let Some(chunk) = body.next().await {
+            response_body.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(response_body, b"through real llmtrim");
         let requests = tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
         assert!(requests[0].starts_with("GET /v1/models "));
     }

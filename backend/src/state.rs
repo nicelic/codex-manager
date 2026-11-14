@@ -1,6 +1,7 @@
 use crate::common::AppConfig;
 use crate::tools::llmtrim::ownership::read_managed_tool_state;
 use crate::tools::llmtrim::service::LlmtrimService;
+use crate::server::llmtrim_transport::LlmtrimTransport;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
 use std::sync::Arc;
@@ -29,7 +30,7 @@ pub struct AppState {
     pub log_viewer_pid: Arc<RwLock<Option<u32>>>,
     pub llmtrim_log_viewer_pid: Arc<RwLock<Option<u32>>>,
     pub llmtrim_client: Arc<RwLock<Option<(u64, reqwest::Client)>>>,
-    pub llmtrim_http1_client: Arc<RwLock<Option<(u64, reqwest::Client)>>>,
+    pub llmtrim_http1_client: Arc<RwLock<Option<(u64, LlmtrimTransport)>>>,
     pub llmtrim_route: Arc<std::sync::Mutex<LlmtrimRouteState>>,
     pub llmtrim_operation_lock: Arc<tokio::sync::Mutex<()>>,
     pub proxy_route_changed: watch::Sender<u64>,
