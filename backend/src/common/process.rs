@@ -14,6 +14,7 @@ pub fn new_silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process
     cmd
 }
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -121,6 +122,43 @@ pub fn find_all_process_ids(name: &str) -> Vec<u32> {
         }
     }
     pids
+}
+
+/// Resolve a process image path without invoking a shell.  LLMTrim startup
+/// adoption uses this to distinguish a running, user-managed executable from
+/// an unrelated process with the same file name.
+pub fn executable_path_for_pid(pid: u32) -> Option<PathBuf> {
+    if pid == 0 {
+        return None;
+    }
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buffer = vec![0u16; 32768];
+        let mut length = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length) != 0;
+        CloseHandle(handle);
+        if !ok || length == 0 {
+            return None;
+        }
+        return Some(PathBuf::from(String::from_utf16_lossy(
+            &buffer[..length as usize],
+        )));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 pub fn is_pid_alive(pid: u32) -> bool {
@@ -272,7 +310,12 @@ mod tests {
             let mut cmd = std::process::Command::new("powershell.exe");
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            cmd.args(["-NoLogo", "-NoProfile", "-Command", "Start-Sleep -Seconds 60"]);
+            cmd.args([
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                "Start-Sleep -Seconds 60",
+            ]);
             if let Ok(child) = cmd.spawn() {
                 let pid = child.id();
                 assert!(is_pid_alive(pid), "Process should be alive after spawn");

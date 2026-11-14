@@ -1,10 +1,10 @@
+use crate::common::AppConfig;
+use crate::tools::llmtrim::ownership::read_managed_tool_state;
+use crate::tools::llmtrim::service::LlmtrimService;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
 use std::sync::Arc;
 use tokio::sync::{broadcast, oneshot, watch, RwLock};
-use crate::common::AppConfig;
-use crate::tools::llmtrim::ownership::read_managed_tool_state;
-use crate::tools::llmtrim::service::LlmtrimService;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LlmtrimRouteState {
@@ -57,11 +57,14 @@ impl AppState {
             .unwrap_or_default();
 
         let executable = LlmtrimService::get_executable_path(&config.llmtrim_path);
-        let llmtrim_selected = executable.parent()
-            .map(|directory| read_managed_tool_state(directory)
-                .map(|state| state.desired_running)
-                .unwrap_or(true))
-            .unwrap_or(true);
+        let llmtrim_selected = executable
+            .parent()
+            .map(|directory| {
+                read_managed_tool_state(directory)
+                    .map(|state| state.desired_running)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
 
         let initial_addr = config.listen_address.clone();
         let default_web_port = 7788u16;
@@ -72,7 +75,9 @@ impl AppState {
             config_path,
             proxy_running: Arc::new(RwLock::new(false)),
             proxy_state: Arc::new(RwLock::new("stopped".to_string())),
-            proxy_message: Arc::new(RwLock::new("代理转发已停止，请在网页中点击“启动代理”。".to_string())),
+            proxy_message: Arc::new(RwLock::new(
+                "代理转发已停止，请在网页中点击“启动代理”。".to_string(),
+            )),
             proxy_address: Arc::new(RwLock::new(initial_addr.clone())),
             management_address: Arc::new(RwLock::new(initial_addr)),
             web_port: Arc::new(RwLock::new(default_web_port)),

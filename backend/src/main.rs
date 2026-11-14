@@ -16,6 +16,49 @@ use std::path::Path;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+use crate::tools::llmtrim::ownership::{read_managed_tool_state, TOOL_STATE_FILE};
+use crate::tools::llmtrim::service::{discover_running_executable, LlmtrimService};
+
+async fn restore_llmtrim_if_requested(state: AppState) {
+    let _operation = state.llmtrim_operation_lock.lock().await;
+    let config = state.config.read().await.clone();
+    let executable = LlmtrimService::get_executable_path(&config.llmtrim_path);
+    let Some(install_dir) = executable.parent() else {
+        return;
+    };
+    let state_file = install_dir.join(TOOL_STATE_FILE);
+    if !state_file.is_file() {
+        return;
+    }
+    let ledger = match read_managed_tool_state(install_dir) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!("读取 llmtrim 恢复状态失败: {}", err);
+            return;
+        }
+    };
+    if !ledger.desired_running {
+        return;
+    }
+
+    info!("检测到 llmtrim 状态账本要求恢复运行，正在执行 setup...");
+    let path = config.llmtrim_path.clone();
+    let upstream = config.upstream_base_url.clone();
+    let result = tokio::task::spawn_blocking(move || LlmtrimService::start(&path, &upstream)).await;
+    match result.unwrap_or_else(|err| Err(format!("llmtrim 恢复任务失败: {}", err))) {
+        Ok(()) => {
+            let path = state.config.read().await.llmtrim_path.clone();
+            crate::server::proxy::refresh_llmtrim_route(&state, &path);
+            info!("llmtrim 已按状态账本恢复并确认 43117 端口监听");
+        }
+        Err(err) => {
+            warn!("恢复 llmtrim 失败: {}", err);
+            let path = state.config.read().await.llmtrim_path.clone();
+            crate::server::proxy::refresh_llmtrim_route(&state, &path);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_path = common::config::runtime_config_dir().join("code-Manager-rust.log");
@@ -64,23 +107,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|a| a == "gortex-bridge") {
         crate::tools::gortex::bridge::run_gortex_bridge(&args);
     }
+    let is_startup = args.iter().any(|a| a == "--startup");
     let is_background = args.iter().any(|a| a == "--background" || a == "--startup");
 
-    let _single_instance = match common::windows::acquire_single_instance(common::windows::SINGLE_INSTANCE_MUTEX) {
-        Ok(guard) => guard,
-        Err(err) => {
-            warn!("{}", err);
-            eprintln!("{}", err);
-            // 遵循单实例语义：如果已经在运行，手动双击启动时自动唤起已有实例的网页
-            if !is_background {
-                let launch_url = "http://127.0.0.1:7788".to_string();
-                let _ = open::that(&launch_url);
+    if is_startup {
+        // Match the original Windows Run behavior: give the desktop, user
+        // profile and network stack time to settle before restoring daemons.
+        tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
+    }
+
+    let _single_instance =
+        match common::windows::acquire_single_instance(common::windows::SINGLE_INSTANCE_MUTEX) {
+            Ok(guard) => guard,
+            Err(err) => {
+                warn!("{}", err);
+                eprintln!("{}", err);
+                // 遵循单实例语义：如果已经在运行，手动双击启动时自动唤起已有实例的网页
+                if !is_background {
+                    let launch_url = "http://127.0.0.1:7788".to_string();
+                    let _ = open::that(&launch_url);
+                }
+                // 即使旧版进程仍在运行，也让新 EXE 修复已有快捷方式的图标资源
+                common::windows::refresh_shortcut_icons();
+                return Ok(());
             }
-            // 即使旧版进程仍在运行，也让新 EXE 修复已有快捷方式的图标资源
-            common::windows::refresh_shortcut_icons();
-            return Ok(());
+        };
+
+    let mut config = config;
+    if config.llmtrim_path.trim().is_empty() {
+        if let Some(path) = discover_running_executable() {
+            let discovered = path.to_string_lossy().to_string();
+            config.llmtrim_path = discovered.clone();
+            if let Err(err) = config.save(&config_path) {
+                warn!("保存发现的 llmtrim_path 失败: {}", err);
+            } else {
+                info!("已接管正在运行的 llmtrim.exe: {}", discovered);
+            }
         }
-    };
+    }
+    if let Err(err) =
+        common::windows::sync_startup_registry(config.startup_enabled, config.background_start)
+    {
+        warn!("同步 code-Manager 开机启动项失败: {}", err);
+    }
 
     let state = AppState::new(config.clone(), config_path.clone());
     let mut shutdown_rx = state.shutdown_sender.subscribe();
@@ -107,7 +176,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 actual_addr = Some(local_addr);
                 listener = Some(l);
                 if offset > 0 {
-                    warn!("网页服务默认端口 {} 被占用，已自动递增至端口 {} 启动", base_web_port, actual_port);
+                    warn!(
+                        "网页服务默认端口 {} 被占用，已自动递增至端口 {} 启动",
+                        base_web_port, actual_port
+                    );
                 }
                 break;
             }
@@ -123,7 +195,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let l = TcpListener::bind(SocketAddr::new(host_ip, 0)).await?;
             let local_addr = l.local_addr()?;
             actual_port = local_addr.port();
-            warn!("连续 100 个端口均被占用，网页服务已由系统分配临时端口 {} 启动", actual_port);
+            warn!(
+                "连续 100 个端口均被占用，网页服务已由系统分配临时端口 {} 启动",
+                actual_port
+            );
             (l, local_addr)
         }
     };
@@ -157,7 +232,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("正在启动 Windows 系统托盘与任务栏服务...");
     let tray_handle = tray::start_tray(state.shutdown_sender.clone(), browser_url.clone());
-    info!("Windows 系统托盘与任务栏服务启动完成: is_some={}", tray_handle.is_some());
+    info!(
+        "Windows 系统托盘与任务栏服务启动完成: is_some={}",
+        tray_handle.is_some()
+    );
+
+    // Restore LLMTrim independently of the management page.  The operation
+    // lock also serializes a user click that arrives while restoration is in
+    // progress.
+    tokio::spawn(restore_llmtrim_if_requested(state.clone()));
 
     // 后台异步刷新相关快捷方式图标指向当前可执行文件，并修复已激活工具的环境变量
     tokio::task::spawn_blocking(|| {

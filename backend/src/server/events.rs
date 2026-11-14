@@ -1,3 +1,12 @@
+use crate::api::logs::get_log_status_data;
+use crate::common::process::is_pid_alive;
+use crate::server::proxy::get_proxy_status_data;
+use crate::state::AppState;
+use crate::tools::gortex::service::GortexService;
+use crate::tools::llmtrim::router::llmtrim_status_data;
+use crate::tools::llmtrim::service::LlmtrimService;
+use crate::tools::rtk::service::RtkService;
+use crate::tools::snip::service::SnipService;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -12,14 +21,6 @@ use chrono::Utc;
 use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
-use crate::api::logs::get_log_status_data;
-use crate::common::process::is_pid_alive;
-use crate::server::proxy::get_proxy_status_data;
-use crate::state::AppState;
-use crate::tools::gortex::service::GortexService;
-use crate::tools::llmtrim::router::llmtrim_status_data;
-use crate::tools::rtk::service::RtkService;
-use crate::tools::snip::service::SnipService;
 
 pub async fn events_handler(
     headers: HeaderMap,
@@ -42,7 +43,10 @@ pub async fn events_handler(
             || origin.is_empty();
 
         if !is_allowed {
-            tracing::warn!("拒绝来自不受信任 Origin 的 WebSocket 事件订阅请求: {}", origin_val);
+            tracing::warn!(
+                "拒绝来自不受信任 Origin 的 WebSocket 事件订阅请求: {}",
+                origin_val
+            );
             return Err((StatusCode::FORBIDDEN, "Forbidden: Invalid WebSocket Origin"));
         }
     }
@@ -83,7 +87,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         let log_data = get_log_status_data(log_showing);
         let llmtrim_log_data = json!({
             "showing": llmtrim_log_showing,
-            "path": "llmtrim status"
+            "path": LlmtrimService::get_log_path().to_string_lossy().to_string()
         });
         let llmtrim_data = llmtrim_status_data(&state, &cfg.llmtrim_path);
         let rtk_data = RtkService::get_status();
@@ -154,7 +158,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 let log_data = get_log_status_data(log_showing);
                 let llmtrim_log_data = json!({
                     "showing": llmtrim_log_showing,
-                    "path": "llmtrim status"
+                    "path": LlmtrimService::get_log_path().to_string_lossy().to_string()
                 });
                 let llmtrim_data = llmtrim_status_data(&state, &cfg.llmtrim_path);
                 let rtk_data = RtkService::get_status();

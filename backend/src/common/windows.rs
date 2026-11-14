@@ -21,7 +21,8 @@ pub fn sync_startup_registry(enabled: bool, background: bool) -> Result<(), Stri
             return Ok(());
         }
 
-        let exe_path = std::env::current_exe().map_err(|e| format!("获取当前可执行文件路径失败: {}", e))?;
+        let exe_path =
+            std::env::current_exe().map_err(|e| format!("获取当前可执行文件路径失败: {}", e))?;
         let exe_str = exe_path.to_string_lossy();
 
         let mut cmd = format!("\"{}\" --startup", exe_str);
@@ -88,7 +89,11 @@ pub fn strip_windows_verbatim_prefix<P: AsRef<Path>>(path: P) -> PathBuf {
     if s.starts_with("//?/UNC/") || s.starts_with("/??/UNC/") {
         return PathBuf::from(format!(r"\\{}", &s[8..].replace('/', "\\")));
     }
-    if s.starts_with(r"\\?\") || s.starts_with(r"\??\") || s.starts_with("//?/") || s.starts_with("/??/") {
+    if s.starts_with(r"\\?\")
+        || s.starts_with(r"\??\")
+        || s.starts_with("//?/")
+        || s.starts_with("/??/")
+    {
         let stripped = &s[4..];
         return PathBuf::from(stripped.replace('/', "\\"));
     }
@@ -213,8 +218,9 @@ pub fn remove_from_user_path(target_dir: &Path) -> Result<(), String> {
                         let p = Path::new(trimmed);
                         let p_clean = canonicalize_or_clean(p);
                         !(p_clean == target_clean
-                            || clean_path_str(&p.to_string_lossy())
-                                .eq_ignore_ascii_case(&clean_path_str(&target_dir.to_string_lossy())))
+                            || clean_path_str(&p.to_string_lossy()).eq_ignore_ascii_case(
+                                &clean_path_str(&target_dir.to_string_lossy()),
+                            ))
                     })
                     .collect();
 
@@ -241,7 +247,8 @@ pub fn encode_powershell_base64(command: &str) -> String {
         .flat_map(|u| u.to_le_bytes())
         .collect();
 
-    const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const BASE64_ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut encoded = String::new();
     for chunk in utf16_bytes.chunks(3) {
         let b0 = chunk[0];
@@ -265,9 +272,9 @@ pub fn encode_powershell_base64(command: &str) -> String {
 }
 
 pub fn launch_visible_powershell(command: &str, workdir: Option<&Path>) -> Result<u32, String> {
-    use std::process::Command;
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
+    use std::process::Command;
 
     let encoded = encode_powershell_base64(command);
     let mut cmd = Command::new("powershell.exe");
@@ -292,7 +299,9 @@ pub fn launch_visible_powershell(command: &str, workdir: Option<&Path>) -> Resul
         cmd.current_dir(dir);
     }
 
-    let child = cmd.spawn().map_err(|e| format!("启动 PowerShell 失败: {}", e))?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("启动 PowerShell 失败: {}", e))?;
     Ok(child.id())
 }
 
@@ -302,7 +311,36 @@ pub fn open_log_viewer(title: &str, log_path: &Path) -> Result<u32, String> {
         title.replace('\'', "''"),
         log_path.to_string_lossy().replace('\'', "''")
     );
-    launch_visible_powershell(&script, log_path.parent())
+
+    // A GUI-subsystem parent can inherit detached standard handles.  Starting
+    // PowerShell directly in that situation may create a window whose output is
+    // still redirected.  The legacy implementation deliberately created a new
+    // CMD console first, then ran the encoded PowerShell viewer inside it.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        let encoded = encode_powershell_base64(&script);
+        let command = format!(
+            "chcp 65001>nul & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -EncodedCommand {}",
+            encoded
+        );
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/d", "/k", &command]).creation_flags(0x00000010);
+        if let Some(dir) = log_path.parent() {
+            cmd.current_dir(dir);
+        }
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("启动日志 CMD 窗口失败: {}", e))?;
+        return Ok(child.id());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        launch_visible_powershell(&script, log_path.parent())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -325,7 +363,7 @@ impl Drop for SingleInstanceGuard {
 pub fn acquire_single_instance(name: &str) -> Result<Option<SingleInstanceGuard>, String> {
     #[cfg(target_os = "windows")]
     unsafe {
-        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
         use windows_sys::Win32::System::Threading::CreateMutexW;
 
         let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
@@ -398,11 +436,38 @@ pub fn refresh_shortcut_icons() {
         let need_uninit = co_init_res == 0;
 
         let roots = [
-            std::env::var("USERPROFILE").map(|p| PathBuf::from(p).join("Desktop")).ok(),
-            std::env::var("PUBLIC").map(|p| PathBuf::from(p).join("Desktop")).ok(),
-            std::env::var("APPDATA").map(|p| PathBuf::from(p).join("Microsoft").join("Windows").join("Start Menu")).ok(),
-            std::env::var("PROGRAMDATA").map(|p| PathBuf::from(p).join("Microsoft").join("Windows").join("Start Menu")).ok(),
-            std::env::var("APPDATA").map(|p| PathBuf::from(p).join("Microsoft").join("Windows").join("Start Menu").join("Programs").join("Startup")).ok(),
+            std::env::var("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("Desktop"))
+                .ok(),
+            std::env::var("PUBLIC")
+                .map(|p| PathBuf::from(p).join("Desktop"))
+                .ok(),
+            std::env::var("APPDATA")
+                .map(|p| {
+                    PathBuf::from(p)
+                        .join("Microsoft")
+                        .join("Windows")
+                        .join("Start Menu")
+                })
+                .ok(),
+            std::env::var("PROGRAMDATA")
+                .map(|p| {
+                    PathBuf::from(p)
+                        .join("Microsoft")
+                        .join("Windows")
+                        .join("Start Menu")
+                })
+                .ok(),
+            std::env::var("APPDATA")
+                .map(|p| {
+                    PathBuf::from(p)
+                        .join("Microsoft")
+                        .join("Windows")
+                        .join("Start Menu")
+                        .join("Programs")
+                        .join("Startup")
+                })
+                .ok(),
         ];
 
         let exe_str = exe_path.to_string_lossy();
@@ -412,10 +477,21 @@ pub fn refresh_shortcut_icons() {
             if !root_opt.exists() {
                 continue;
             }
-            walk_and_refresh(&root_opt, &exe_wide, &CLSID_SHELL_LINK, &IID_ISHELL_LINK_W, &IID_IPERSIST_FILE);
+            walk_and_refresh(
+                &root_opt,
+                &exe_wide,
+                &CLSID_SHELL_LINK,
+                &IID_ISHELL_LINK_W,
+                &IID_IPERSIST_FILE,
+            );
         }
 
-        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, std::ptr::null(), std::ptr::null());
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
 
         if need_uninit {
             CoUninitialize();
@@ -438,9 +514,25 @@ unsafe fn walk_and_refresh(
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            walk_and_refresh(&p, exe_wide, clsid_shell_link, iid_shell_link, iid_persist_file);
-        } else if p.extension().map(|e| e.eq_ignore_ascii_case("lnk")).unwrap_or(false) {
-            let _ = refresh_single_shortcut(&p, exe_wide, clsid_shell_link, iid_shell_link, iid_persist_file);
+            walk_and_refresh(
+                &p,
+                exe_wide,
+                clsid_shell_link,
+                iid_shell_link,
+                iid_persist_file,
+            );
+        } else if p
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(false)
+        {
+            let _ = refresh_single_shortcut(
+                &p,
+                exe_wide,
+                clsid_shell_link,
+                iid_shell_link,
+                iid_persist_file,
+            );
         }
     }
 }
@@ -471,13 +563,25 @@ unsafe fn refresh_single_shortcut(
     }
 
     let mut link: *mut std::ffi::c_void = std::ptr::null_mut();
-    if CoCreateInstance(clsid_shell_link, std::ptr::null_mut(), CLSCTX_INPROC_SERVER, iid_shell_link, &mut link) < 0 || link.is_null() {
+    if CoCreateInstance(
+        clsid_shell_link,
+        std::ptr::null_mut(),
+        CLSCTX_INPROC_SERVER,
+        iid_shell_link,
+        &mut link,
+    ) < 0
+        || link.is_null()
+    {
         return Err(());
     }
 
     let link_vtable = *(link as *mut *mut usize);
 
-    type FnQueryInterface = unsafe extern "system" fn(*mut std::ffi::c_void, *const windows_sys::core::GUID, *mut *mut std::ffi::c_void) -> i32;
+    type FnQueryInterface = unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        *const windows_sys::core::GUID,
+        *mut *mut std::ffi::c_void,
+    ) -> i32;
     let query_interface: FnQueryInterface = std::mem::transmute(*link_vtable.add(0));
     let mut persist: *mut std::ffi::c_void = std::ptr::null_mut();
     if query_interface(link, iid_persist_file, &mut persist) < 0 || persist.is_null() {
@@ -502,10 +606,23 @@ unsafe fn refresh_single_shortcut(
         return Err(());
     }
 
-    type FnGetPath = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, i32, *mut std::ffi::c_void, u32) -> i32;
+    type FnGetPath = unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        *mut u16,
+        i32,
+        *mut std::ffi::c_void,
+        u32,
+    ) -> i32;
     let get_path: FnGetPath = std::mem::transmute(*link_vtable.add(3));
     let mut target_buf = vec![0u16; 32768];
-    if get_path(link, target_buf.as_mut_ptr(), target_buf.len() as i32, std::ptr::null_mut(), SLGP_RAWPATH) < 0 {
+    if get_path(
+        link,
+        target_buf.as_mut_ptr(),
+        target_buf.len() as i32,
+        std::ptr::null_mut(),
+        SLGP_RAWPATH,
+    ) < 0
+    {
         type FnRelease = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
         let release_persist: FnRelease = std::mem::transmute(*persist_vtable.add(2));
         release_persist(persist);
@@ -517,13 +634,17 @@ unsafe fn refresh_single_shortcut(
     let len = target_buf.iter().position(|&c| c == 0).unwrap_or(0);
     let target_str = String::from_utf16_lossy(&target_buf[..len]);
     let target_path = Path::new(&target_str);
-    let target_name = target_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let target_name = target_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
 
     let is_match = target_name.eq_ignore_ascii_case("code-Manager-rust.exe");
 
     let mut updated = false;
     if is_match {
-        type FnSetIconLocation = unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32;
+        type FnSetIconLocation =
+            unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32;
         let set_icon_location: FnSetIconLocation = std::mem::transmute(*link_vtable.add(17));
         if set_icon_location(link, exe_wide.as_ptr(), 0) >= 0 {
             type FnSave = unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32;
@@ -575,9 +696,15 @@ mod tests {
 
     #[test]
     fn test_clean_path_str() {
-        assert_eq!(clean_path_str(r#"  "\\?\C:\EXEXX\edit\"  "#), r"C:\EXEXX\edit");
+        assert_eq!(
+            clean_path_str(r#"  "\\?\C:\EXEXX\edit\"  "#),
+            r"C:\EXEXX\edit"
+        );
         assert_eq!(clean_path_str(r"\\?\C:\"), r"C:\");
         assert_eq!(clean_path_str(r"C:/EXEXX/edit/"), r"C:\EXEXX\edit");
-        assert_eq!(clean_path_str(r#"\\?\UNC\server/share\dir\"#), r"\\server\share\dir");
+        assert_eq!(
+            clean_path_str(r#"\\?\UNC\server/share\dir\"#),
+            r"\\server\share\dir"
+        );
     }
 }

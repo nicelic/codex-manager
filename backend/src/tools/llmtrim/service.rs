@@ -6,23 +6,22 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use super::config::{
-    is_config_managed, remove_default_tracking_database,
-    remove_managed_config_dir, remove_tracking_database, sync_managed_llmtrim_config, tracking_db_path,
+    is_config_managed, remove_default_tracking_database, remove_managed_config_dir,
+    remove_tracking_database, sync_managed_llmtrim_config, tracking_db_path,
 };
 use super::ownership::{
-    mark_managed_tool_attention, read_managed_tool_state, set_managed_tool_desired_running,
-    write_managed_tool_state, ManagedToolState,
+    mark_managed_tool_attention, read_managed_tool_state, write_managed_tool_state,
+    ManagedToolState,
 };
 use super::release::{download_and_install_llmtrim, fetch_llmtrim_releases};
-use super::types::{
-    LlmtrimActivationSnapshot, LlmtrimReleaseListResponse, LlmtrimStatusResponse,
-};
+use super::types::{LlmtrimActivationSnapshot, LlmtrimReleaseListResponse, LlmtrimStatusResponse};
 use super::windows::{
     clear_llmtrim_user_environment, query_llmtrim_residual, remove_llmtrim_autostart,
     remove_llmtrim_user_trust, verify_llmtrim_windows_setup,
 };
 use crate::common::process::{
-    find_all_process_ids, invalidate_process_cache, is_pid_alive, kill_process_by_pid,
+    executable_path_for_pid, find_all_process_ids, invalidate_process_cache, is_pid_alive,
+    kill_process_by_pid,
 };
 use crate::common::windows::get_user_profile_dir;
 
@@ -52,7 +51,9 @@ fn process_matches_executable(pid: u32, executable: &Path) -> bool {
         let actual = PathBuf::from(String::from_utf16_lossy(&buffer[..len as usize]));
         let actual = crate::common::windows::canonicalize_or_clean(actual);
         let expected = crate::common::windows::canonicalize_or_clean(executable);
-        actual.to_string_lossy().eq_ignore_ascii_case(&expected.to_string_lossy())
+        actual
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&expected.to_string_lossy())
     }
 }
 
@@ -82,7 +83,14 @@ pub(super) fn listener_pid_for_executable(executable: &Path, port: u16) -> Optio
 
     unsafe {
         let mut size = 0u32;
-        GetExtendedTcpTable(std::ptr::null_mut(), &mut size, 0, AF_INET as u32, TCP_TABLE_OWNER_PID_LISTENER, 0);
+        GetExtendedTcpTable(
+            std::ptr::null_mut(),
+            &mut size,
+            0,
+            AF_INET as u32,
+            TCP_TABLE_OWNER_PID_LISTENER,
+            0,
+        );
         if size == 0 {
             return None;
         }
@@ -90,19 +98,32 @@ pub(super) fn listener_pid_for_executable(executable: &Path, port: u16) -> Optio
         let capacity = (size as usize).max(std::mem::size_of::<MIB_TCPTABLE_OWNER_PID>());
         let mut buffer = vec![0u32; (capacity + 3) / 4];
         size = (buffer.len() * 4) as u32;
-        if GetExtendedTcpTable(buffer.as_mut_ptr().cast(), &mut size, 0, AF_INET as u32, TCP_TABLE_OWNER_PID_LISTENER, 0) != 0 {
+        if GetExtendedTcpTable(
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            0,
+            AF_INET as u32,
+            TCP_TABLE_OWNER_PID_LISTENER,
+            0,
+        ) != 0
+        {
             return None;
         }
         let table = &*(buffer.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>());
         let count = table.dwNumEntries as usize;
         let header_size = std::mem::offset_of!(MIB_TCPTABLE_OWNER_PID, table);
-        if count > (size as usize).saturating_sub(header_size) / std::mem::size_of::<MIB_TCPROW_OWNER_PID>() {
+        if count
+            > (size as usize).saturating_sub(header_size)
+                / std::mem::size_of::<MIB_TCPROW_OWNER_PID>()
+        {
             return None;
         }
         let rows = std::slice::from_raw_parts(table.table.as_ptr(), count);
         rows.iter()
             .filter(|row| u16::from_be(row.dwLocalPort as u16) == port)
-            .filter(|row| row.dwLocalAddr == 0 || row.dwLocalAddr == u32::from_ne_bytes([127, 0, 0, 1]))
+            .filter(|row| {
+                row.dwLocalAddr == 0 || row.dwLocalAddr == u32::from_ne_bytes([127, 0, 0, 1])
+            })
             .find(|row| process_matches_executable(row.dwOwningPid, executable))
             .map(|row| row.dwOwningPid)
     }
@@ -113,18 +134,54 @@ pub(super) fn listener_pid_for_executable(_executable: &Path, _port: u16) -> Opt
     None
 }
 
+/// Adopt an already-running LLMTrim daemon when an older code-Manager launch
+/// did not persist `llmtrim_path`.  The listener ownership check prevents a
+/// same-named executable that is not serving 43117 from being adopted.
+pub fn discover_running_executable() -> Option<PathBuf> {
+    invalidate_process_cache();
+    for pid in find_all_process_ids(LLMTRIM_EXECUTABLE_NAME) {
+        let Some(path) = executable_path_for_pid(pid) else {
+            continue;
+        };
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case(LLMTRIM_EXECUTABLE_NAME))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if listener_pid_for_executable(&path, 43117) == Some(pid) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let log_path = std::env::temp_dir().join(format!("code-manager-llmtrim-{}-{}.log", std::process::id(), nonce));
+    let log_path = std::env::temp_dir().join(format!(
+        "code-manager-llmtrim-{}-{}.log",
+        std::process::id(),
+        nonce
+    ));
     let result = (|| {
-        let log = fs::OpenOptions::new().write(true).create_new(true).open(&log_path)
+        let log = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&log_path)
             .map_err(|e| format!("创建 llmtrim setup 输出文件失败: {}", e))?;
-        let stderr = log.try_clone().map_err(|e| format!("准备 llmtrim setup 输出失败: {}", e))?;
+        let stderr = log
+            .try_clone()
+            .map_err(|e| format!("准备 llmtrim setup 输出失败: {}", e))?;
         let mut cmd = Command::new(executable);
-        cmd.args(["setup", "--port", LLMTRIM_PORT])
+        // The upstream CLI owns the default 43117 port.  Keep the command
+        // identical to the original Go implementation so setup can manage its
+        // own autostart/CA state without receiving an unsupported flag.
+        cmd.args(llmtrim_setup_arguments())
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(stderr));
@@ -133,12 +190,16 @@ pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000);
         }
-        let mut child = cmd.spawn().map_err(|e| format!("启动 llmtrim setup 失败: {}", e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("启动 llmtrim setup 失败: {}", e))?;
         let deadline = Instant::now() + Duration::from_secs(40);
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100))
+                }
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -163,47 +224,39 @@ pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
     result
 }
 
-#[cfg(target_os = "windows")]
-fn launch_status_console(script: &str, working_dir: &Path) -> Result<u32, String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW, CREATE_NEW_CONSOLE,
-    };
+pub(super) fn llmtrim_setup_arguments() -> &'static [&'static str] {
+    &["setup"]
+}
 
-    let encoded = crate::common::windows::encode_powershell_base64(script);
-    let command = format!("powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -EncodedCommand {}", encoded);
-    let mut command: Vec<u16> = std::ffi::OsStr::new(&command).encode_wide().chain(Some(0)).collect();
-    let directory: Vec<u16> = working_dir.as_os_str().encode_wide().chain(Some(0)).collect();
-    unsafe {
-        let mut startup: STARTUPINFOW = std::mem::zeroed();
-        startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        let mut process: PROCESS_INFORMATION = std::mem::zeroed();
-        let created = CreateProcessW(
-            std::ptr::null(), command.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 0,
-            CREATE_NEW_CONSOLE, std::ptr::null(), directory.as_ptr(), &startup, &mut process,
-        );
-        if created == 0 {
-            return Err(format!("启动 llmtrim 状态窗口失败: {}", std::io::Error::last_os_error()));
-        }
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-        Ok(process.dwProcessId)
+pub(super) fn build_llmtrim_status_command() -> &'static str {
+    "chcp 65001>nul & title llmtrim status & .\\llmtrim.exe status"
+}
+
+fn launch_llmtrim_status_console(working_dir: &Path) -> Result<u32, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        // LLMTrim's supported diagnostic surface is `status`, not a plain log
+        // tail.  Run it from its installation directory in a real CMD console;
+        // this is also how the original Go UI avoided detached GUI stdio.
+        let command = build_llmtrim_status_command();
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/d", "/k", command])
+            .current_dir(working_dir)
+            .creation_flags(0x00000010);
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("启动 llmtrim 状态窗口失败: {}", e))?;
+        return Ok(child.id());
     }
-}
 
-#[cfg(not(target_os = "windows"))]
-fn launch_status_console(script: &str, working_dir: &Path) -> Result<u32, String> {
-    crate::common::windows::launch_visible_powershell(script, Some(working_dir))
-}
-
-pub(super) fn build_llmtrim_log_script(executable: &Path, log_path: &Path) -> String {
-    let executable = executable.to_string_lossy().replace('\'', "''");
-    let log_path = log_path.to_string_lossy().replace('\'', "''");
-    format!(
-        "$host.UI.RawUI.WindowTitle = 'llmtrim logs'; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $logPath = '{}'; if (Test-Path -LiteralPath $logPath -PathType Leaf) {{ Write-Host \"llmtrim 日志: $logPath\"; Get-Content -LiteralPath $logPath -Encoding UTF8 -Tail 200 -Wait }} else {{ Write-Host \"llmtrim 尚未生成守护进程日志: $logPath\"; & '{}' status }}",
-        log_path, executable,
-    )
+    #[cfg(not(target_os = "windows"))]
+    {
+        let script = "$host.UI.RawUI.WindowTitle = 'llmtrim status'; & './llmtrim' status";
+        crate::common::windows::launch_visible_powershell(script, Some(working_dir))
+    }
 }
 
 pub struct LlmtrimService;
@@ -348,13 +401,16 @@ impl LlmtrimService {
 
         let configured_path_available = exe_path.exists() && exe_path.is_file();
         let default_exe = install_dir.join(LLMTRIM_EXECUTABLE_NAME);
-        let installed = configured_path_available || (default_exe.exists() && default_exe.is_file());
+        let installed =
+            configured_path_available || (default_exe.exists() && default_exe.is_file());
         let directory_exists = install_dir.is_dir();
         let state_dir_exists = state_dir.is_dir();
 
         let port_listening = Self::is_port_open();
         let listener_pid = listener_pid_for_executable(&exe_path, 43117);
-        let pid = listener_pid.or_else(|| recorded_daemon_pid(&state_dir, &exe_path)).unwrap_or(0);
+        let pid = listener_pid
+            .or_else(|| recorded_daemon_pid(&state_dir, &exe_path))
+            .unwrap_or(0);
         let running = port_listening && listener_pid.is_some();
 
         let tray_path = exe_path.with_file_name(LLMTRIM_TRAY_EXECUTABLE_NAME);
@@ -466,12 +522,15 @@ impl LlmtrimService {
 
         // 1. 停止现有进程
         Self::stop("")?;
-        set_managed_tool_desired_running(&install_dir, true)?;
 
         // 2. 下载并校验解压
-        let version = download_and_install_llmtrim(tag_name.as_deref(), &install_dir, proxy_url).await?;
+        let version =
+            download_and_install_llmtrim(tag_name.as_deref(), &install_dir, proxy_url).await?;
 
-        let exe = install_dir.join(LLMTRIM_EXECUTABLE_NAME).to_string_lossy().to_string();
+        let exe = install_dir
+            .join(LLMTRIM_EXECUTABLE_NAME)
+            .to_string_lossy()
+            .to_string();
         let upstream_url = upstream_url.to_string();
         tokio::task::spawn_blocking(move || Self::start(&exe, &upstream_url))
             .await
@@ -490,6 +549,7 @@ impl LlmtrimService {
 
         let install_dir = exe.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
 
+        let previous_state = read_managed_tool_state(&install_dir).unwrap_or_default();
         let start_result = (|| {
             if Self::is_port_open() && !Self::is_running(configured_path) {
                 return Err("43117 端口已被其他程序或其他路径的 llmtrim 占用".to_string());
@@ -501,12 +561,7 @@ impl LlmtrimService {
             let deadline = Instant::now() + Duration::from_secs(8);
             while Instant::now() < deadline {
                 if Self::is_running(configured_path) {
-                    let (configured, message) = verify_llmtrim_windows_setup();
-                    return if configured {
-                        Ok(())
-                    } else {
-                        Err(format!("llmtrim daemon 已启动，但 Windows 配置未通过校验: {}", message))
-                    };
+                    return Ok(());
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
@@ -522,18 +577,21 @@ impl LlmtrimService {
                 Err("llmtrim 在完成启动检查后停止运行".to_string())
             }
         });
+        if let Err(err) = start_result {
+            let mut failed_state = previous_state;
+            failed_state.running = false;
+            let _ = write_managed_tool_state(&install_dir, &failed_state);
+            let _ = mark_managed_tool_attention(&install_dir, &err);
+            warn!("llmtrim 启动失败: {}", err);
+            return Err(err);
+        }
+
         let state = ManagedToolState {
             desired_running: true,
             running,
             metadata: Default::default(),
         };
         let _ = write_managed_tool_state(&install_dir, &state);
-
-        if let Err(err) = start_result {
-            let _ = mark_managed_tool_attention(&install_dir, &err);
-            warn!("llmtrim 启动失败: {}", err);
-            return Err(err);
-        }
 
         info!("llmtrim 已成功启动并确认 43117 端口监听");
         Ok(())
@@ -546,7 +604,11 @@ impl LlmtrimService {
         }
         if let Ok(content) = fs::read(Self::get_state_dir().join("serve.pid")) {
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&content) {
-                if let Some(pid) = value.get("pid").and_then(|pid| pid.as_u64()).and_then(|pid| u32::try_from(pid).ok()) {
+                if let Some(pid) = value
+                    .get("pid")
+                    .and_then(|pid| pid.as_u64())
+                    .and_then(|pid| u32::try_from(pid).ok())
+                {
                     if is_pid_alive(pid) && !process_matches_executable(pid, &exe) {
                         return Err("llmtrim 状态文件指向其他路径的进程，未停止该进程".to_string());
                     }
@@ -579,7 +641,10 @@ impl LlmtrimService {
         invalidate_process_cache();
         for (name, path) in [
             (LLMTRIM_EXECUTABLE_NAME, exe.clone()),
-            (LLMTRIM_TRAY_EXECUTABLE_NAME, exe.with_file_name(LLMTRIM_TRAY_EXECUTABLE_NAME)),
+            (
+                LLMTRIM_TRAY_EXECUTABLE_NAME,
+                exe.with_file_name(LLMTRIM_TRAY_EXECUTABLE_NAME),
+            ),
         ] {
             for pid in find_all_process_ids(name) {
                 if process_matches_executable(pid, &path) {
@@ -660,9 +725,11 @@ impl LlmtrimService {
     pub fn show_logs(configured_path: &str) -> Result<u32, String> {
         let executable = Self::get_executable_path(configured_path);
         if !executable.is_file() {
-            return Err(format!("llmtrim 可执行文件不存在: {}", executable.display()));
+            return Err(format!(
+                "llmtrim 可执行文件不存在: {}",
+                executable.display()
+            ));
         }
-        let script = build_llmtrim_log_script(&executable, &Self::get_log_path());
-        launch_status_console(&script, executable.parent().unwrap_or_else(|| Path::new(".")))
+        launch_llmtrim_status_console(executable.parent().unwrap_or_else(|| Path::new(".")))
     }
 }

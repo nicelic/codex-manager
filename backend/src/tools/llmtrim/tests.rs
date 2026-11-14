@@ -9,7 +9,10 @@ use std::path::Path;
 fn test_llmtrim_activation_state() {
     // 1. not installed
     let snap = LlmtrimActivationSnapshot::default();
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "not_installed");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "not_installed"
+    );
 
     // 2. installed and stopped
     let snap = LlmtrimActivationSnapshot {
@@ -18,7 +21,10 @@ fn test_llmtrim_activation_state() {
         configured_path_available: true,
         ..Default::default()
     };
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "installed_stopped");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "installed_stopped"
+    );
 
     // 3. healthy daemon is running
     let snap = LlmtrimActivationSnapshot {
@@ -40,7 +46,10 @@ fn test_llmtrim_activation_state() {
         windows_configured: false,
         ..Default::default()
     };
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "attention");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "attention"
+    );
 
     // 5. requested daemon did not recover
     let snap = LlmtrimActivationSnapshot {
@@ -50,7 +59,10 @@ fn test_llmtrim_activation_state() {
         desired_running: true,
         ..Default::default()
     };
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "attention");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "attention"
+    );
 
     // 6. tray left behind
     let snap = LlmtrimActivationSnapshot {
@@ -60,7 +72,10 @@ fn test_llmtrim_activation_state() {
         tray_running: true,
         ..Default::default()
     };
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "attention");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "attention"
+    );
 
     // 7. configured path is unavailable
     let snap = LlmtrimActivationSnapshot {
@@ -69,21 +84,30 @@ fn test_llmtrim_activation_state() {
         configured_path_available: false,
         ..Default::default()
     };
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "attention");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "attention"
+    );
 
     // 8. orphaned install directory
     let snap = LlmtrimActivationSnapshot {
         directory_exists: true,
         ..Default::default()
     };
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "attention");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "attention"
+    );
 
     // 9. unavailable state ledger
     let snap = LlmtrimActivationSnapshot {
         state_read_failed: true,
         ..Default::default()
     };
-    assert_eq!(LlmtrimService::calculate_activation_state(&snap), "attention");
+    assert_eq!(
+        LlmtrimService::calculate_activation_state(&snap),
+        "attention"
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -92,8 +116,14 @@ fn listener_must_belong_to_the_selected_executable() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let executable = std::env::current_exe().unwrap();
-    assert_eq!(super::service::listener_pid_for_executable(&executable, port), Some(std::process::id()));
-    assert_eq!(super::service::listener_pid_for_executable(&executable.with_file_name("other.exe"), port), None);
+    assert_eq!(
+        super::service::listener_pid_for_executable(&executable, port),
+        Some(std::process::id())
+    );
+    assert_eq!(
+        super::service::listener_pid_for_executable(&executable.with_file_name("other.exe"), port),
+        None
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -103,66 +133,58 @@ fn daemon_pid_must_match_the_recorded_executable() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let directory = std::env::temp_dir().join(format!("llmtrim-pid-test-{}-{}", std::process::id(), nonce));
+    let directory =
+        std::env::temp_dir().join(format!("llmtrim-pid-test-{}-{}", std::process::id(), nonce));
     std::fs::create_dir(&directory).unwrap();
     let pid_file = directory.join("serve.pid");
     let executable = std::env::current_exe().unwrap();
-    assert_eq!(super::service::recorded_daemon_pid(&directory, &executable), None);
+    assert_eq!(
+        super::service::recorded_daemon_pid(&directory, &executable),
+        None
+    );
     std::fs::write(&pid_file, format!("{{\"pid\":{}}}", std::process::id())).unwrap();
-    assert_eq!(super::service::recorded_daemon_pid(&directory, &executable), Some(std::process::id()));
-    assert_eq!(super::service::recorded_daemon_pid(&directory, &executable.with_file_name("other.exe")), None);
+    assert_eq!(
+        super::service::recorded_daemon_pid(&directory, &executable),
+        Some(std::process::id())
+    );
+    assert_eq!(
+        super::service::recorded_daemon_pid(&directory, &executable.with_file_name("other.exe")),
+        None
+    );
     std::fs::remove_file(pid_file).unwrap();
     std::fs::remove_dir(directory).unwrap();
 }
 
 #[test]
-fn log_viewer_reads_the_real_daemon_log_and_escapes_paths() {
-    let executable = Path::new(r"C:\test's tools\llmtrim.exe");
-    let log = Path::new(r"C:\test's state\serve.log");
-    let script = super::service::build_llmtrim_log_script(executable, log);
-    assert!(script.contains("test''s state"));
-    assert!(script.contains("Get-Content -LiteralPath $logPath -Encoding UTF8 -Tail 200 -Wait"));
-    assert!(script.contains("test''s tools"));
-    assert!(script.contains(" status"));
-    assert!(!script.contains("日志监视器已就绪"));
-}
-
-#[cfg(windows)]
-#[test]
-fn log_viewer_displays_real_file_content() {
-    use std::os::windows::process::CommandExt;
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let directory = std::env::temp_dir().join(format!("llm'trim-log-test-{}-{}", std::process::id(), nonce));
-    std::fs::create_dir(&directory).unwrap();
-    let log = directory.join("serve.log");
-    std::fs::write(&log, "actual daemon output\n").unwrap();
-    let script = super::service::build_llmtrim_log_script(&directory.join("llmtrim.exe"), &log).replace(" -Wait", "");
-    let encoded = crate::common::windows::encode_powershell_base64(&script);
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
-        .creation_flags(0x08000000)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("actual daemon output"));
-    std::fs::remove_file(log).unwrap();
-    std::fs::remove_dir(directory).unwrap();
+fn log_viewer_runs_the_original_status_command_in_its_install_directory() {
+    let command = super::service::build_llmtrim_status_command();
+    assert!(command.contains("title llmtrim status"));
+    assert!(command.contains(".\\llmtrim.exe status"));
+    assert!(command.contains("chcp 65001"));
 }
 
 #[test]
 fn setup_failures_include_the_child_process_error() {
-    let executable = std::env::current_exe().unwrap();
-    let error = super::service::run_llmtrim_setup(&executable).unwrap_err();
-    assert!(error.contains("llmtrim setup 失败"), "{error}");
-    assert!(error.contains("port") || error.contains("option"), "{error}");
+    assert_eq!(super::service::llmtrim_setup_arguments(), &["setup"]);
+    let error = super::service::run_llmtrim_setup(Path::new("missing-llmtrim.exe")).unwrap_err();
+    assert!(error.contains("启动 llmtrim setup 失败"), "{error}");
 }
 
 #[test]
 fn managed_config_sync_preserves_unowned_settings() {
-    use super::config::{sync_managed_llmtrim_config_at, LLMTRIM_MARKER_CONTENT, LLMTRIM_MARKER_FILE};
+    use super::config::{
+        sync_managed_llmtrim_config_at, LLMTRIM_MARKER_CONTENT, LLMTRIM_MARKER_FILE,
+    };
 
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let directory = std::env::temp_dir().join(format!("llmtrim-config-test-{}-{}", std::process::id(), nonce));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "llmtrim-config-test-{}-{}",
+        std::process::id(),
+        nonce
+    ));
     std::fs::create_dir(&directory).unwrap();
     let config_path = directory.join("config.toml");
     let marker_path = directory.join(LLMTRIM_MARKER_FILE);
@@ -179,7 +201,9 @@ fn managed_config_sync_preserves_unowned_settings() {
 
     std::fs::write(&marker_path, LLMTRIM_MARKER_CONTENT).unwrap();
     sync_managed_llmtrim_config_at("https://api.example/v1", None, &directory).unwrap();
-    assert!(std::fs::read_to_string(&config_path).unwrap().contains("api.example"));
+    assert!(std::fs::read_to_string(&config_path)
+        .unwrap()
+        .contains("api.example"));
 
     std::fs::remove_file(config_path).unwrap();
     std::fs::remove_file(marker_path).unwrap();
