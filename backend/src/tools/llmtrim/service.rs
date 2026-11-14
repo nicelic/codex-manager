@@ -158,13 +158,13 @@ pub fn discover_running_executable() -> Option<PathBuf> {
     None
 }
 
-pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
+pub(super) fn run_llmtrim_start(executable: &Path) -> Result<(), String> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     let log_path = std::env::temp_dir().join(format!(
-        "code-manager-llmtrim-{}-{}.log",
+        "code-manager-llmtrim-start-{}-{}.log",
         std::process::id(),
         nonce
     ));
@@ -173,15 +173,14 @@ pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
             .write(true)
             .create_new(true)
             .open(&log_path)
-            .map_err(|e| format!("创建 llmtrim setup 输出文件失败: {}", e))?;
+            .map_err(|e| format!("创建 llmtrim start 输出文件失败: {}", e))?;
         let stderr = log
             .try_clone()
-            .map_err(|e| format!("准备 llmtrim setup 输出失败: {}", e))?;
+            .map_err(|e| format!("准备 llmtrim start 输出失败: {}", e))?;
         let mut cmd = Command::new(executable);
-        // The upstream CLI owns the default 43117 port.  Keep the command
-        // identical to the original Go implementation so setup can manage its
-        // own autostart/CA state without receiving an unsupported flag.
-        cmd.args(llmtrim_setup_arguments())
+        // Start only the daemon. `setup` also enables llmtrim's own login
+        // autostart, which must remain under this project's lifecycle control.
+        cmd.args(llmtrim_start_arguments())
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(stderr));
@@ -192,7 +191,7 @@ pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
         }
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("启动 llmtrim setup 失败: {}", e))?;
+            .map_err(|e| format!("启动 llmtrim start 失败: {}", e))?;
         let deadline = Instant::now() + Duration::from_secs(40);
         let status = loop {
             match child.try_wait() {
@@ -203,9 +202,9 @@ pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("llmtrim setup 执行超时（40 秒）".to_string());
+                    return Err("llmtrim start 执行超时（40 秒）".to_string());
                 }
-                Err(e) => return Err(format!("等待 llmtrim setup 失败: {}", e)),
+                Err(e) => return Err(format!("等待 llmtrim start 失败: {}", e)),
             }
         };
         if !status.success() {
@@ -213,9 +212,9 @@ pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
             let message = String::from_utf8_lossy(&output);
             let detail: String = message.trim().chars().take(2000).collect();
             return Err(if detail.is_empty() {
-                format!("llmtrim setup 失败: {}", status)
+                format!("llmtrim start 失败: {}", status)
             } else {
-                format!("llmtrim setup 失败: {}", detail)
+                format!("llmtrim start 失败: {}", detail)
             });
         }
         Ok(())
@@ -224,8 +223,8 @@ pub(super) fn run_llmtrim_setup(executable: &Path) -> Result<(), String> {
     result
 }
 
-pub(super) fn llmtrim_setup_arguments() -> &'static [&'static str] {
-    &["setup"]
+pub(super) fn llmtrim_start_arguments() -> &'static [&'static str] {
+    &["start", "--port", "43117"]
 }
 
 pub(super) fn build_llmtrim_status_command() -> &'static str {
@@ -557,7 +556,7 @@ impl LlmtrimService {
             if !upstream_url.trim().is_empty() {
                 sync_managed_llmtrim_config(upstream_url, Some(&install_dir))?;
             }
-            run_llmtrim_setup(&exe)?;
+            run_llmtrim_start(&exe)?;
             let deadline = Instant::now() + Duration::from_secs(8);
             while Instant::now() < deadline {
                 if Self::is_running(configured_path) {
@@ -565,7 +564,7 @@ impl LlmtrimService {
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Err("llmtrim setup 已完成，但当前可执行文件未在 43117 端口就绪".to_string())
+            Err("llmtrim start 已完成，但当前可执行文件未在 43117 端口就绪".to_string())
         })();
 
         invalidate_process_cache();

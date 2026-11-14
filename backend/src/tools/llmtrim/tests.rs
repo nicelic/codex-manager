@@ -164,10 +164,13 @@ fn log_viewer_runs_the_original_status_command_in_its_install_directory() {
 }
 
 #[test]
-fn setup_failures_include_the_child_process_error() {
-    assert_eq!(super::service::llmtrim_setup_arguments(), &["setup"]);
-    let error = super::service::run_llmtrim_setup(Path::new("missing-llmtrim.exe")).unwrap_err();
-    assert!(error.contains("启动 llmtrim setup 失败"), "{error}");
+fn start_failures_include_the_child_process_error() {
+    assert_eq!(
+        super::service::llmtrim_start_arguments(),
+        &["start", "--port", "43117"]
+    );
+    let error = super::service::run_llmtrim_start(Path::new("missing-llmtrim.exe")).unwrap_err();
+    assert!(error.contains("启动 llmtrim start 失败"), "{error}");
 }
 
 #[test]
