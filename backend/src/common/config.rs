@@ -95,9 +95,23 @@ pub fn default_config_path() -> PathBuf {
     runtime_config_dir().join("config.yaml")
 }
 
+pub fn normalize_upstream_api_key(raw: &str) -> String {
+    let mut value = raw.trim();
+    for (open, close) in [("\"", "\""), ("'", "'"), ("<", ">")] {
+        if let Some(inner) = value
+            .strip_prefix(open)
+            .and_then(|candidate| candidate.strip_suffix(close))
+        {
+            value = inner.trim();
+            break;
+        }
+    }
+    value.to_string()
+}
+
 pub fn is_upstream_placeholder(key: &str) -> bool {
-    let trimmed = key.trim();
-    trimmed.is_empty() || trimmed.eq_ignore_ascii_case(UPSTREAM_API_KEY_PLACEHOLDER)
+    let normalized = normalize_upstream_api_key(key);
+    normalized.is_empty() || normalized.eq_ignore_ascii_case(UPSTREAM_API_KEY_PLACEHOLDER)
 }
 
 /// 规范化并解析状态码规则（对齐 Go 版 normalizeRetryStatusCodes）
@@ -202,7 +216,8 @@ impl AppConfig {
     pub fn load_or_default<P: AsRef<Path>>(path: P) -> Self {
         let p = path.as_ref();
         if let Ok(content) = std::fs::read_to_string(p) {
-            if let Ok(cfg) = serde_yaml::from_str::<AppConfig>(&content) {
+            if let Ok(mut cfg) = serde_yaml::from_str::<AppConfig>(&content) {
+                cfg.upstream_api_key = normalize_upstream_api_key(&cfg.upstream_api_key);
                 return cfg;
             }
         }
@@ -230,9 +245,20 @@ mod tests {
     fn test_placeholder_check() {
         assert!(is_upstream_placeholder("PUT_YOUR_UPSTREAM_API_KEY_HERE"));
         assert!(is_upstream_placeholder("  PUT_YOUR_UPSTREAM_API_KEY_HERE  "));
+        assert!(is_upstream_placeholder("\"PUT_YOUR_UPSTREAM_API_KEY_HERE\""));
+        assert!(is_upstream_placeholder("<PUT_YOUR_UPSTREAM_API_KEY_HERE>"));
         assert!(is_upstream_placeholder(""));
         assert!(is_upstream_placeholder("   "));
         assert!(!is_upstream_placeholder("sk-real-api-key-123456"));
+    }
+
+    #[test]
+    fn test_normalize_upstream_api_key() {
+        assert_eq!(normalize_upstream_api_key("  abc123  "), "abc123");
+        assert_eq!(normalize_upstream_api_key("\"  abc123  \""), "abc123");
+        assert_eq!(normalize_upstream_api_key("'密钥-ключ'"), "密钥-ключ");
+        assert_eq!(normalize_upstream_api_key("<密钥/🔐>"), "密钥/🔐");
+        assert_eq!(normalize_upstream_api_key("ab c/123?"), "ab c/123?");
     }
 
     #[test]

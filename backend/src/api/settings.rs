@@ -83,8 +83,9 @@ pub async fn update_setting(
             message = "已保存到 config.yaml，并接管同步 llmtrim extra_hosts；停止后再次启动 llmtrim 才会使用新的主机和 CA。".to_string();
         }
         "upstream_api_key" => {
+            val = crate::common::config::normalize_upstream_api_key(&payload.value);
             cfg.upstream_api_key = val.clone();
-            message = "上游 API Key 已更新".to_string();
+            message = "上游 API Key 已更新并已规范化".to_string();
         }
         "outbound_proxy" => {
             cfg.outbound_proxy = val.clone();

@@ -27,38 +27,350 @@ use crate::server::llmtrim_transport::LlmtrimTransport;
 use crate::state::AppState;
 use crate::tools::llmtrim::service::LlmtrimService;
 
+fn is_non_auth_key_name(name: &str) -> bool {
+    matches!(
+        name,
+        "cache-key"
+            | "content-key"
+            | "correlation-key"
+            | "correlation_key"
+            | "csrf-token"
+            | "csrf_token"
+            | "encryption-key"
+            | "idempotency-key"
+            | "request-key"
+            | "refresh-token"
+            | "refresh_token"
+            | "session-token"
+            | "session_token"
+            | "signing-key"
+            | "trace-key"
+            | "trace-token"
+            | "trace_token"
+            | "x-cache-key"
+            | "x-content-key"
+            | "x-correlation-key"
+            | "x_correlation_key"
+            | "x-csrf-token"
+            | "x_csrf_token"
+            | "x-encryption-key"
+            | "x-idempotency-key"
+            | "x-refresh-token"
+            | "x_refresh_token"
+            | "x-request-key"
+            | "x-session-token"
+            | "x_session_token"
+            | "x-signing-key"
+            | "x-trace-key"
+            | "x-trace-token"
+            | "x_trace_token"
+            | "x-xsrf-token"
+            | "x_xsrf_token"
+            | "xsrf-token"
+            | "xsrf_token"
+    )
+}
+
+fn is_upstream_credential_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.is_empty() || is_non_auth_key_name(&normalized) {
+        return false;
+    }
+
+    matches!(
+        normalized.as_str(),
+        "access-key"
+            | "access_key"
+            | "access-token"
+            | "access_token"
+            | "anthropic-api-key"
+            | "anthropic_api_key"
+            | "api-key"
+            | "api_key"
+            | "api-secret"
+            | "api_secret"
+            | "api-token"
+            | "api_token"
+            | "apikey"
+            | "authorization"
+            | "auth-token"
+            | "auth_token"
+            | "google-api-key"
+            | "google_api_key"
+            | "key"
+            | "openai-api-key"
+            | "openai_api_key"
+            | "subscription-key"
+            | "subscription_key"
+            | "token"
+            | "x-api-key"
+            | "x_api_key"
+            | "x-api-secret"
+            | "x_api_secret"
+            | "x-api-token"
+            | "x_api_token"
+            | "x-auth-token"
+            | "x_auth_token"
+            | "x-goog-api-key"
+            | "x_goog_api_key"
+            | "x-subscription-key"
+            | "x_subscription_key"
+    ) || normalized.ends_with("-api-key")
+        || normalized.ends_with("_api_key")
+        || normalized.ends_with("-apikey")
+        || normalized.ends_with("_apikey")
+        || normalized.ends_with("-api-secret")
+        || normalized.ends_with("_api_secret")
+        || normalized.ends_with("-api-token")
+        || normalized.ends_with("_api_token")
+        || normalized.ends_with("-auth-token")
+        || normalized.ends_with("_auth_token")
+        || normalized.ends_with("-access-key")
+        || normalized.ends_with("_access_key")
+        || normalized.ends_with("-access-token")
+        || normalized.ends_with("_access_token")
+        || ((normalized.starts_with("x-") || normalized.starts_with("x_"))
+            && (normalized.ends_with("-key")
+                || normalized.ends_with("_key")
+                || normalized.ends_with("-secret")
+                || normalized.ends_with("_secret")
+                || normalized.ends_with("-token")
+                || normalized.ends_with("_token")))
+}
+
+fn is_upstream_credential_candidate(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || is_non_auth_key_name(&normalized)
+        || is_upstream_credential_name(&normalized)
+    {
+        return false;
+    }
+
+    let parts = normalized
+        .split(|ch: char| ch == '-' || ch == '_' || ch == '.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let has_marker = parts.iter().any(|part| {
+        matches!(
+            *part,
+            "key" | "token" | "secret" | "credential" | "credentials"
+        )
+    });
+    let has_auth_context = parts.iter().any(|part| {
+        matches!(
+            *part,
+            "api" | "auth" | "authorization" | "access" | "credential" | "secret"
+        )
+    });
+    let vendor_prefixed = normalized.starts_with("x-") || normalized.starts_with("x_");
+
+    has_marker && (has_auth_context || vendor_prefixed)
+}
+
 fn is_upstream_auth_header(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
-    normalized == "authorization"
-        || normalized == "proxy-authorization"
-        || normalized == "key"
-        || normalized == "x-api-token"
-        || normalized == "api-token"
-        || normalized == "x-auth-token"
-        || normalized == "access-token"
-        || normalized.ends_with("apikey")
-        || normalized.ends_with("-api-key")
-        || normalized.ends_with("_api_key")
-        || normalized.ends_with("-key")
-        || normalized.ends_with("_key")
+    normalized != "proxy-authorization" && is_upstream_credential_name(&normalized)
+}
+
+fn is_upstream_auth_header_for_rewrite(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized != "proxy-authorization"
+        && (is_upstream_credential_name(&normalized)
+            || is_upstream_credential_candidate(&normalized))
+}
+
+fn is_upstream_auth_query(name: &str) -> bool {
+    is_upstream_credential_name(name)
+}
+
+fn is_upstream_auth_query_for_rewrite(name: &str) -> bool {
+    is_upstream_credential_name(name) || is_upstream_credential_candidate(name)
+}
+
+fn authorization_value_with_key(existing: Option<&HeaderValue>, upstream_api_key: &str) -> Option<HeaderValue> {
+    let existing_text = existing.and_then(|value| value.to_str().ok()).map(str::trim);
+    if existing_text.map(is_signed_authorization_value).unwrap_or(false) {
+        // AWS SigV4 and similar schemes require a regenerated signature; replacing
+        // only the credential would corrupt the request, so keep the signed value.
+        return existing.cloned();
+    }
+
+    let scheme = existing_text
+        .and_then(|value| value.find(char::is_whitespace).map(|index| value[..index].trim()))
+        .filter(|scheme| !scheme.is_empty());
+
+    let rendered = scheme
+        .map(|scheme| format!("{scheme} {}", upstream_api_key))
+        .unwrap_or_else(|| format!("Bearer {}", upstream_api_key));
+    HeaderValue::from_str(&rendered).ok()
+}
+
+fn is_signed_authorization_value(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    normalized.contains("credential=")
+        || normalized.contains("signature=")
+        || normalized.contains("signedheaders=")
+}
+
+fn local_auth_header_matches(name: &HeaderName, value: &HeaderValue, expected: &str) -> bool {
+    let Ok(raw) = value.to_str() else {
+        return false;
+    };
+    let raw = raw.trim();
+    if raw.is_empty() || !is_upstream_auth_header(name.as_str()) {
+        return false;
+    }
+
+    if name == header::AUTHORIZATION {
+        let mut parts = raw.splitn(2, char::is_whitespace);
+        let _scheme = parts.next();
+        parts.next().map(str::trim) == Some(expected) || raw == expected
+    } else {
+        raw == expected
+    }
+}
+
+fn request_has_local_api_key(headers: &HeaderMap, query: Option<&str>, expected: &str) -> bool {
+    let expected = expected.trim();
+    if expected.is_empty() {
+        return false;
+    }
+
+    headers
+        .iter()
+        .any(|(name, value)| local_auth_header_matches(name, value, expected))
+        || query
+            .map(|raw| {
+                url::form_urlencoded::parse(raw.as_bytes()).any(|(name, value)| {
+                    is_upstream_auth_query(&name) && value.trim() == expected
+                })
+            })
+            .unwrap_or(false)
+}
+
+fn rewrite_upstream_auth_headers(headers: &mut HeaderMap, upstream_api_key: &str) -> bool {
+    let upstream_api_key = crate::common::config::normalize_upstream_api_key(upstream_api_key);
+    if is_upstream_placeholder(&upstream_api_key) {
+        return false;
+    }
+
+    let raw_value = match HeaderValue::from_str(&upstream_api_key) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let authorization_template = headers.get(header::AUTHORIZATION).cloned();
+    let mut auth_names = Vec::new();
+    let mut has_proxy_authorization = false;
+
+    for name in headers.keys() {
+        let normalized = name.as_str().to_ascii_lowercase();
+        if normalized == "proxy-authorization" {
+            has_proxy_authorization = true;
+        } else if is_upstream_auth_header_for_rewrite(&normalized) {
+            auth_names.push(name.clone());
+        }
+    }
+
+    if auth_names.is_empty() {
+        if has_proxy_authorization {
+            headers.remove("proxy-authorization");
+        }
+        return false;
+    }
+
+    let authorization_value = if auth_names.iter().any(|name| name == header::AUTHORIZATION) {
+        match authorization_value_with_key(authorization_template.as_ref(), &upstream_api_key) {
+            Some(value) => Some(value),
+            None => return false,
+        }
+    } else {
+        None
+    };
+
+    if has_proxy_authorization {
+        headers.remove("proxy-authorization");
+    }
+    for name in &auth_names {
+        headers.remove(name.clone());
+    }
+    for name in auth_names {
+        let value = if name == header::AUTHORIZATION {
+            authorization_value.clone().expect("authorization value prepared")
+        } else {
+            raw_value.clone()
+        };
+        headers.insert(name, value);
+    }
+    true
 }
 
 fn replace_upstream_auth_headers(headers: &mut HeaderMap, upstream_api_key: &str) {
-    if is_upstream_placeholder(upstream_api_key) {
+    let upstream_api_key = crate::common::config::normalize_upstream_api_key(upstream_api_key);
+    if is_upstream_placeholder(&upstream_api_key) {
         return;
     }
 
-    let client_auth_headers = headers
-        .keys()
-        .filter(|name| is_upstream_auth_header(name.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    for name in client_auth_headers {
-        headers.remove(name);
+    if !rewrite_upstream_auth_headers(headers, &upstream_api_key) {
+        if let Ok(auth_value) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key)) {
+            headers.insert(header::AUTHORIZATION, auth_value);
+        }
+    }
+}
+
+fn replace_upstream_auth_query(target_url: &mut String, upstream_api_key: &str) -> bool {
+    let upstream_api_key = crate::common::config::normalize_upstream_api_key(upstream_api_key);
+    if is_upstream_placeholder(&upstream_api_key) {
+        return false;
     }
 
-    if let Ok(auth_value) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
-        headers.insert(header::AUTHORIZATION, auth_value);
+    let Ok(mut url) = Url::parse(target_url) else {
+        return false;
+    };
+    let pairs = url
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    let mut found = false;
+    let rewritten = pairs
+        .into_iter()
+        .map(|(name, value)| {
+            if is_upstream_auth_query_for_rewrite(&name) {
+                found = true;
+                (name, upstream_api_key.clone())
+            } else {
+                (name, value)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !found {
+        return false;
+    }
+
+    {
+        let mut query = url.query_pairs_mut();
+        query.clear();
+        for (name, value) in &rewritten {
+            query.append_pair(name, value);
+        }
+    }
+    *target_url = url.to_string();
+    true
+}
+
+fn replace_upstream_auth(headers: &mut HeaderMap, target_url: &mut String, upstream_api_key: &str) {
+    let upstream_api_key = crate::common::config::normalize_upstream_api_key(upstream_api_key);
+    if is_upstream_placeholder(&upstream_api_key) {
+        return;
+    }
+
+    let header_found = rewrite_upstream_auth_headers(headers, &upstream_api_key);
+    let query_found = replace_upstream_auth_query(target_url, &upstream_api_key);
+    if !header_found && !query_found {
+        if let Ok(auth_value) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key)) {
+            headers.insert(header::AUTHORIZATION, auth_value);
+        }
     }
 }
 
@@ -618,13 +930,34 @@ async fn handle_v1_websocket_tunnel(
     llmtrim_running: bool,
     client_headers: HeaderMap,
 ) {
-    let ws_target = if target_url.starts_with("https://") {
+    let mut ws_target = if target_url.starts_with("https://") {
         target_url.replacen("https://", "wss://", 1)
     } else if target_url.starts_with("http://") {
         target_url.replacen("http://", "ws://", 1)
     } else {
         target_url
     };
+
+    let mut upstream_headers = HeaderMap::new();
+    for (k, v) in client_headers.iter() {
+        let name = k.as_str().to_lowercase();
+        if name == "host"
+            || name == "connection"
+            || name == "upgrade"
+            || name == "sec-websocket-key"
+            || name == "sec-websocket-version"
+            || name == "sec-websocket-extensions"
+            || name == "sec-websocket-protocol"
+        {
+            continue;
+        }
+        if let Ok(hname) = reqwest::header::HeaderName::from_bytes(k.as_ref()) {
+            if let Ok(hval) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) {
+                upstream_headers.insert(hname, hval);
+            }
+        }
+    }
+    replace_upstream_auth(&mut upstream_headers, &mut ws_target, &upstream_api_key);
 
     let mut req = match ws_target.clone().into_client_request() {
         Ok(r) => r,
@@ -637,32 +970,8 @@ async fn handle_v1_websocket_tunnel(
             return;
         }
     };
-
-    // 复制客户端自定义头部（过滤 hop-by-hop 标头与 WS 内部标头）
-    for (k, v) in client_headers.iter() {
-        let name = k.as_str().to_lowercase();
-        if name == "host"
-            || name == "connection"
-            || name == "upgrade"
-            || name == "sec-websocket-key"
-            || name == "sec-websocket-version"
-            || name == "sec-websocket-extensions"
-            || name == "sec-websocket-protocol"
-            || (!is_upstream_placeholder(&upstream_api_key) && is_upstream_auth_header(&name))
-        {
-            continue;
-        }
-        if let Ok(hname) = reqwest::header::HeaderName::from_bytes(k.as_ref()) {
-            if let Ok(hval) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) {
-                req.headers_mut().insert(hname, hval);
-            }
-        }
-    }
-
-    if !is_upstream_placeholder(&upstream_api_key) {
-        if let Ok(auth_val) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
-            req.headers_mut().insert(header::AUTHORIZATION, auth_val);
-        }
+    for (name, value) in upstream_headers.iter() {
+        req.headers_mut().insert(name.clone(), value.clone());
     }
 
     info!("正在与上游建立 WebSocket 隧道: {} (出站代理: {:?})", ws_target, outbound_proxy);
@@ -1039,7 +1348,6 @@ async fn handle_v1_ws_to_sse_bridge(
             if matches!(name.as_str(), "host" | "connection" | "upgrade" | "content-length"
                 | "content-type" | "accept" | "keep-alive" | "transfer-encoding" | "proxy-connection")
                 || name.starts_with("sec-websocket-")
-                || (!is_upstream_placeholder(&upstream_api_key) && is_upstream_auth_header(&name))
             {
                 continue;
             }
@@ -1050,15 +1358,16 @@ async fn handle_v1_ws_to_sse_bridge(
                 request_headers.append(name, value);
             }
         }
-        if !is_upstream_placeholder(&upstream_api_key) {
-            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
-                request_headers.insert(header::AUTHORIZATION, value);
-            }
-        }
+        let mut request_target_url = target_url.clone();
+        replace_upstream_auth(
+            &mut request_headers,
+            &mut request_target_url,
+            &upstream_api_key,
+        );
 
         let pending = client.request(
             &Method::POST,
-            &target_url,
+            &request_target_url,
             &request_headers,
             Bytes::from(body),
         );
@@ -1344,33 +1653,23 @@ async fn forward_handler_selected(
     let (mut parts, body) = req.into_parts();
 
     // 2. 本地 API Key 鉴权校验（如果配置了 local_api_key）
-    if !cfg.local_api_key.trim().is_empty() {
-        let auth_bearer = parts.headers.get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
-            .map(|s| s.trim());
-        let auth_custom = parts.headers.get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.trim());
-
-        let matched = match (auth_bearer, auth_custom) {
-            (Some(b), _) if b == cfg.local_api_key.trim() => true,
-            (_, Some(c)) if c == cfg.local_api_key.trim() => true,
-            _ => false,
-        };
-
-        if !matched {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": { "message": "Incorrect or missing local API key", "type": "authentication_error" } })),
-            ).into_response();
-        }
+    if !cfg.local_api_key.trim().is_empty()
+        && !request_has_local_api_key(
+            &parts.headers,
+            parts.uri.query(),
+            &cfg.local_api_key,
+        )
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": { "message": "Incorrect or missing local API key", "type": "authentication_error" } })),
+        ).into_response();
     }
 
     // 3. 构造上游目标 URL（剥离 /v1 前缀，杜绝 /v1/v1 404）
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().map(|s| s.to_string());
-    let target_url = match join_upstream_url(&cfg.upstream_base_url, &path, query.as_deref()) {
+    let mut target_url = match join_upstream_url(&cfg.upstream_base_url, &path, query.as_deref()) {
         Ok(u) => u,
         Err(e) => {
             return (StatusCode::BAD_GATEWAY, format!("构建上游目标 URL 失败: {}", e)).into_response();
@@ -1469,8 +1768,12 @@ async fn forward_handler_selected(
         fwd_headers.insert(k.clone(), v.clone());
     }
 
-    // 覆盖客户端携带的认证头，并在缺少认证头时注入项目配置的上游 Key
-    replace_upstream_auth_headers(&mut fwd_headers, &cfg.upstream_api_key);
+    // Preserve the client's auth location when present; default to OpenAI-compatible Bearer auth otherwise.
+    replace_upstream_auth(
+        &mut fwd_headers,
+        &mut target_url,
+        &cfg.upstream_api_key,
+    );
 
     // When LLMTrim is selected, keep the whole outbound request on the local
     // plain HTTP/1.1 proxy hop. The absolute target URI is sent to LLMTrim;
@@ -1742,8 +2045,234 @@ mod tests {
             Some("Bearer project-secret")
         );
         for name in ["x-api-key", "api-key", "x-api-token", "openai-api-key", "apikey"] {
-            assert!(headers.get(name).is_none(), "stale auth header remained: {name}");
+            assert_eq!(
+                headers.get(name).and_then(|value| value.to_str().ok()),
+                Some("project-secret"),
+                "auth header was not replaced in place: {name}"
+            );
         }
+    }
+
+    #[test]
+    fn recognized_auth_values_are_replaced_without_parsing_old_value() {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("x-api-key", "\"old\""),
+            ("api-key", "<old>"),
+            ("x-api-token", ""),
+            ("xai_api_key", " \told\t "),
+        ] {
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static(value),
+            );
+        }
+
+        replace_upstream_auth_headers(&mut headers, "project-secret");
+
+        for name in ["x-api-key", "api-key", "x-api-token", "xai_api_key"] {
+            assert_eq!(
+                headers.get(name).and_then(|value| value.to_str().ok()),
+                Some("project-secret"),
+                "auth header value was not fully replaced: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn configured_upstream_key_preserves_auth_scheme_and_query_location() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Token client-value"),
+        );
+        let mut target_url = "https://api.example.com/v1?key=client-value&foo=bar".to_string();
+
+        replace_upstream_auth(&mut headers, &mut target_url, "project-secret");
+
+        assert_eq!(
+            headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            Some("Token project-secret")
+        );
+        assert!(target_url.contains("key=project-secret"));
+        assert!(!target_url.contains("key=client-value"));
+        assert!(target_url.contains("foo=bar"));
+    }
+
+    #[test]
+    fn configured_upstream_key_rewrites_query_without_duplicate_header() {
+        let mut headers = HeaderMap::new();
+        let mut target_url = "https://api.example.com/v1?x-api-key=client-value".to_string();
+
+        replace_upstream_auth(&mut headers, &mut target_url, "project-secret");
+
+        assert!(headers.get(header::AUTHORIZATION).is_none());
+        assert!(target_url.contains("x-api-key=project-secret"));
+    }
+
+    #[test]
+    fn provider_specific_keys_are_rewritten_without_touching_idempotency_keys() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-goog-api-key"),
+            HeaderValue::from_static("google-key"),
+        );
+        headers.insert(
+            HeaderName::from_static("idempotency-key"),
+            HeaderValue::from_static("request-identity"),
+        );
+        let mut target_url =
+            "https://api.example.com/v1?subscription-key=azure-key&request-key=request-identity"
+                .to_string();
+
+        replace_upstream_auth(&mut headers, &mut target_url, "project-secret");
+
+        assert_eq!(
+            headers.get("x-goog-api-key").and_then(|value| value.to_str().ok()),
+            Some("project-secret")
+        );
+        assert_eq!(
+            headers.get("idempotency-key").and_then(|value| value.to_str().ok()),
+            Some("request-identity")
+        );
+        assert!(target_url.contains("subscription-key=project-secret"));
+        assert!(target_url.contains("request-key=request-identity"));
+    }
+
+    #[test]
+    fn common_provider_key_names_are_rewritten() {
+        for name in [
+            "xai-api-key",
+            "xai_api_key",
+            "deepseek-api-key",
+            "anthropic-api-key",
+            "xi-api-key",
+            "x-goog-api-key",
+            "api-key",
+            "x-api-token",
+            "subscription-key",
+        ] {
+            assert!(is_upstream_auth_header(name), "provider key header not recognized: {name}");
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("client-secret"),
+            );
+            let mut target_url = "https://api.example.com/v1/models".to_string();
+
+            replace_upstream_auth(&mut headers, &mut target_url, "project-secret");
+
+            assert_eq!(
+                headers.get(name).and_then(|value| value.to_str().ok()),
+                Some("project-secret"),
+                "provider key header was not rewritten: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_auth_names_are_rewritten_without_duplicate_authorization() {
+        for name in ["x-provider-secret", "api-credential", "x-vendor-token"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static("old-client-value"),
+            );
+            let mut target_url = "https://api.example.com/v1/models".to_string();
+
+            replace_upstream_auth(&mut headers, &mut target_url, "project-secret");
+
+            assert_eq!(
+                headers.get(name).and_then(|value| value.to_str().ok()),
+                Some("project-secret"),
+                "candidate auth header was not rewritten: {name}"
+            );
+            assert!(
+                headers.get(header::AUTHORIZATION).is_none(),
+                "candidate auth header caused duplicate Authorization: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_auth_token_headers_are_not_rewritten() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-csrf-token"),
+            HeaderValue::from_static("csrf-value"),
+        );
+        let mut target_url = "https://api.example.com/v1/models".to_string();
+
+        replace_upstream_auth(&mut headers, &mut target_url, "project-secret");
+
+        assert_eq!(
+            headers.get("x-csrf-token").and_then(|value| value.to_str().ok()),
+            Some("csrf-value")
+        );
+        assert_eq!(
+            headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            Some("Bearer project-secret")
+        );
+    }
+
+    #[test]
+    fn configured_key_preserves_unicode_and_special_characters() {
+        let key = "密钥-ключ-🔐/x? y";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-api-key"),
+            HeaderValue::from_static("client-secret"),
+        );
+        let mut target_url = "https://api.example.com/v1/models?key=old".to_string();
+
+        replace_upstream_auth(&mut headers, &mut target_url, key);
+
+        assert_eq!(
+            headers.get("x-api-key").map(HeaderValue::as_bytes),
+            Some(key.as_bytes())
+        );
+        let query_value = Url::parse(&target_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "key")
+            .map(|(_, value)| value.into_owned());
+        assert_eq!(query_value.as_deref(), Some(key));
+    }
+
+    #[test]
+    fn local_api_key_matches_supported_header_and_query_locations() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("api-key"),
+            HeaderValue::from_static("local-secret"),
+        );
+        assert!(request_has_local_api_key(&headers, None, "local-secret"));
+
+        headers.clear();
+        assert!(request_has_local_api_key(
+            &headers,
+            Some("x-goog-api-key=local-secret"),
+            "local-secret"
+        ));
+        assert!(!request_has_local_api_key(&headers, Some("key=wrong"), "local-secret"));
+    }
+
+    #[test]
+    fn signed_authorization_is_preserved_instead_of_corrupted() {
+        let original = "AWS4-HMAC-SHA256 Credential=access/20261115/region/service/aws4_request, SignedHeaders=host, Signature=deadbeef";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static(original),
+        );
+        let mut target_url = "https://api.example.com/v1/models".to_string();
+
+        replace_upstream_auth(&mut headers, &mut target_url, "project-secret");
+
+        assert_eq!(
+            headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            Some(original)
+        );
     }
 
     #[test]
