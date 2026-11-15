@@ -12,7 +12,36 @@
 
 ---
 
-## 🔄 完整发布步骤（五步法）
+## 🚀 推荐发布方式：GitHub Actions 云端全自动打包发布（方案 A）
+
+项目已接入 `.github/workflows/release.yml` 自动化发布工作流。**无需在本地耗费性能和时间进行编译**，只需推送 Git Tag，云端全自动完成环境就绪、版本对齐、前后端最新版编译、Git Bundle 归档生成以及 Release 发布。
+
+### 云端自动发布极简流程（只需 2 步）：
+
+1. **提交代码并推送到 GitHub `main` 分支**：
+   ```bash
+   git add -A
+   git commit -m "chore: release v1.0.33"
+   git push origin main
+   ```
+
+2. **打上版本 Tag 并推送至 GitHub**（以 `v1.0.33` 为例）：
+   ```bash
+   git tag -a v1.0.33 -m "Release v1.0.33"
+   git push origin v1.0.33
+   ```
+
+> 💡 **版本号对齐机制（方案 A）**：
+> 云端流水线以 Git Tag 作为最高版本准则。触发流水线后，云端脚本会在编译前自动提取纯版本号（如 `1.0.33`），强制覆盖更新 `backend/Cargo.toml`、`frontend/package.json` 和 `vision.md`，确保编译出的 `code-Manager-rust.exe` 内部运行版本及系统属性 100% 正确！
+>
+> 📦 **自动生成的 Release 资产（2 个核心文件）**：
+> 1. `code-Manager-rust.exe`（最新版 Rust + 最新版 Vue 前端内嵌的 Windows 二进制可执行文件）
+> 2. `codex-manager-backup-v1.0.33.bundle`（离线全量 Git 仓库归档包，含全部分支历史）
+> 两者均自动计算并输出 SHA-256 校验和。
+
+---
+
+## 🔄 备用方案：本地手动构建发布（原五步法 · 离线/应急备选）
 
 ### 第一步：同步修改版本号 (3 处同步)
 

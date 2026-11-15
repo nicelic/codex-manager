@@ -285,5 +285,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     info!("code-Manager-rust 已安全退出。");
-    Ok(())
+    std::process::exit(0);
 }

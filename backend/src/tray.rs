@@ -264,15 +264,17 @@ unsafe extern "system" fn wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_CLOSE => {
-            if hwnd == ctx.taskbar_hwnd {
-                DestroyWindow(ctx.taskbar_hwnd);
-                return 0;
-            }
+            let _ = ctx.shutdown_sender.send(());
             if !ctx.taskbar_hwnd.is_null() {
-                DestroyWindow(ctx.taskbar_hwnd);
+                let thwnd = ctx.taskbar_hwnd;
                 ctx.taskbar_hwnd = std::ptr::null_mut();
+                DestroyWindow(thwnd);
             }
-            DestroyWindow(ctx.main_hwnd);
+            if !ctx.main_hwnd.is_null() {
+                let mhwnd = ctx.main_hwnd;
+                ctx.main_hwnd = std::ptr::null_mut();
+                DestroyWindow(mhwnd);
+            }
             0
         }
         WM_DESTROY => {
