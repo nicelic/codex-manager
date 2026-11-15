@@ -27,6 +27,41 @@ use crate::server::llmtrim_transport::LlmtrimTransport;
 use crate::state::AppState;
 use crate::tools::llmtrim::service::LlmtrimService;
 
+fn is_upstream_auth_header(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized == "authorization"
+        || normalized == "proxy-authorization"
+        || normalized == "key"
+        || normalized == "x-api-token"
+        || normalized == "api-token"
+        || normalized == "x-auth-token"
+        || normalized == "access-token"
+        || normalized.ends_with("apikey")
+        || normalized.ends_with("-api-key")
+        || normalized.ends_with("_api_key")
+        || normalized.ends_with("-key")
+        || normalized.ends_with("_key")
+}
+
+fn replace_upstream_auth_headers(headers: &mut HeaderMap, upstream_api_key: &str) {
+    if is_upstream_placeholder(upstream_api_key) {
+        return;
+    }
+
+    let client_auth_headers = headers
+        .keys()
+        .filter(|name| is_upstream_auth_header(name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in client_auth_headers {
+        headers.remove(name);
+    }
+
+    if let Ok(auth_value) = HeaderValue::from_str(&format!("Bearer {}", upstream_api_key.trim())) {
+        headers.insert(header::AUTHORIZATION, auth_value);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionStatus {
     pub local_http1: i64,
@@ -613,6 +648,7 @@ async fn handle_v1_websocket_tunnel(
             || name == "sec-websocket-version"
             || name == "sec-websocket-extensions"
             || name == "sec-websocket-protocol"
+            || (!is_upstream_placeholder(&upstream_api_key) && is_upstream_auth_header(&name))
         {
             continue;
         }
@@ -1003,7 +1039,7 @@ async fn handle_v1_ws_to_sse_bridge(
             if matches!(name.as_str(), "host" | "connection" | "upgrade" | "content-length"
                 | "content-type" | "accept" | "keep-alive" | "transfer-encoding" | "proxy-connection")
                 || name.starts_with("sec-websocket-")
-                || (name == "authorization" && !is_upstream_placeholder(&upstream_api_key))
+                || (!is_upstream_placeholder(&upstream_api_key) && is_upstream_auth_header(&name))
             {
                 continue;
             }
@@ -1433,12 +1469,8 @@ async fn forward_handler_selected(
         fwd_headers.insert(k.clone(), v.clone());
     }
 
-    // 注入或透传 API Key
-    if !is_upstream_placeholder(&cfg.upstream_api_key) {
-        if let Ok(auth_val) = HeaderValue::from_str(&format!("Bearer {}", cfg.upstream_api_key.trim())) {
-            fwd_headers.insert(header::AUTHORIZATION, auth_val);
-        }
-    }
+    // 覆盖客户端携带的认证头，并在缺少认证头时注入项目配置的上游 Key
+    replace_upstream_auth_headers(&mut fwd_headers, &cfg.upstream_api_key);
 
     // When LLMTrim is selected, keep the whole outbound request on the local
     // plain HTTP/1.1 proxy hop. The absolute target URI is sent to LLMTrim;
@@ -1684,6 +1716,74 @@ mod tests {
             generation,
             LlmtrimTransport::from_reqwest(http1_client),
         ));
+    }
+
+    #[test]
+    fn configured_upstream_key_replaces_client_auth_headers() {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("authorization", "Bearer 1"),
+            ("x-api-key", "arbitrary"),
+            ("api-key", "anything"),
+            ("x-api-token", "wrong-token"),
+            ("openai-api-key", "also-wrong"),
+            ("apiKey", "camel-case"),
+        ] {
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_static(value),
+            );
+        }
+
+        replace_upstream_auth_headers(&mut headers, "project-secret");
+
+        assert_eq!(
+            headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            Some("Bearer project-secret")
+        );
+        for name in ["x-api-key", "api-key", "x-api-token", "openai-api-key", "apikey"] {
+            assert!(headers.get(name).is_none(), "stale auth header remained: {name}");
+        }
+    }
+
+    #[test]
+    fn configured_upstream_key_injects_when_client_has_no_auth_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+
+        replace_upstream_auth_headers(&mut headers, "project-secret");
+
+        assert_eq!(
+            headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            Some("Bearer project-secret")
+        );
+    }
+
+    #[test]
+    fn placeholder_upstream_key_preserves_client_auth_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer client-value"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-api-key"),
+            HeaderValue::from_static("client-value"),
+        );
+
+        replace_upstream_auth_headers(&mut headers, crate::common::config::UPSTREAM_API_KEY_PLACEHOLDER);
+
+        assert_eq!(
+            headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            Some("Bearer client-value")
+        );
+        assert_eq!(
+            headers.get("x-api-key").and_then(|value| value.to_str().ok()),
+            Some("client-value")
+        );
     }
 
     #[tokio::test]
