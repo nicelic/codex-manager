@@ -1,4 +1,4 @@
-name: Release Build & Publish
+name: "Release Build and Publish"
 
 on:
   push:
@@ -16,20 +16,19 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build and Publish Release
+    name: "Build and Publish Release"
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repository
+      - name: "Checkout repository"
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 完整拉取所有历史与分支，供 git bundle 打包
+          fetch-depth: 0
 
-      - name: Resolve Version (Scheme A: Tag as Single Source of Truth)
+      - name: "Resolve Version (Scheme A - Tag as Single Source of Truth)"
         id: version
         shell: pwsh
         run: |
-          # 获取 Tag 名称，优先使用手动输入的 tag_name，其次使用 git ref
           $tag = "${{ github.event.inputs.tag_name }}"
           if (-not $tag) {
             $tag = "${{ github.ref_name }}"
@@ -43,7 +42,6 @@ jobs:
           Write-Host "Target Tag    : $tag"
           Write-Host "Raw Version   : $rawVersion"
 
-          # 方案 A 自动化对齐：在编译前强制更新各配置文件的版本号
           Write-Host "Syncing version in backend/Cargo.toml..."
           $cargoPath = "backend/Cargo.toml"
           $cargoContent = Get-Content -Path $cargoPath -Raw -Encoding UTF8
@@ -64,25 +62,23 @@ jobs:
             Set-Content -Path $visionPath -Value $newVision -Encoding UTF8
           }
 
-          # 验证更新结果
           Select-String -Path $cargoPath -Pattern '^version\s*=' | ForEach-Object { Write-Host "Cargo.toml -> $_" }
           Select-String -Path $pkgPath -Pattern '"version":' | ForEach-Object { Write-Host "package.json -> $_" }
 
-          # 导出给后续步骤使用
           "TAG_NAME=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding UTF8
           "RAW_VERSION=$rawVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding UTF8
 
-      - name: Setup Node.js (Latest)
+      - name: "Setup Node.js (Latest)"
         uses: actions/setup-node@v4
         with:
           node-version: 'latest'
 
-      - name: Setup Rust (Latest Stable)
+      - name: "Setup Rust (Latest Stable)"
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
 
-      - name: Build Frontend (Vue Latest)
+      - name: "Build Frontend (Vue Latest)"
         shell: pwsh
         run: |
           cd frontend
@@ -96,7 +92,7 @@ jobs:
           }
           Write-Host "Frontend build completed successfully."
 
-      - name: Build Rust Backend (code-Manager-rust.exe)
+      - name: "Build Rust Backend (code-Manager-rust.exe)"
         shell: pwsh
         run: |
           cd backend
@@ -109,7 +105,7 @@ jobs:
           }
           Write-Host "Backend build completed successfully."
 
-      - name: Prepare Artifacts & Calculate Hashes
+      - name: "Prepare Artifacts and Calculate Hashes"
         id: artifacts
         shell: pwsh
         run: |
@@ -118,14 +114,12 @@ jobs:
             New-Item -ItemType Directory -Path $distDir | Out-Null
           }
 
-          # 1. 产物一：code-Manager-rust.exe
           $srcExe = "backend/target/release/code-Manager-rust.exe"
           $destExe = Join-Path $distDir "code-Manager-rust.exe"
           Copy-Item -Path $srcExe -Destination $destExe -Force
           $exeHash = (Get-FileHash -Path $destExe -Algorithm SHA256).Hash.ToLower()
           Write-Host "Asset 1: code-Manager-rust.exe -> $exeHash"
 
-          # 2. 产物二：codex-manager-backup-${TAG_NAME}.bundle
           $bundleName = "codex-manager-backup-${env:TAG_NAME}.bundle"
           $destBundle = Join-Path $distDir $bundleName
           Write-Host "Creating Git Bundle ($bundleName)..."
@@ -137,7 +131,6 @@ jobs:
           $bundleHash = (Get-FileHash -Path $destBundle -Algorithm SHA256).Hash.ToLower()
           Write-Host "Asset 2: $bundleName -> $bundleHash"
 
-          # 3. 构造 Release 说明正文
           $lines = @(
               "$($env:TAG_NAME) release. Windows executable included."
               "SHA-256: $exeHash"
@@ -157,7 +150,7 @@ jobs:
 
           Set-Content -Path "dist-assets/release_body.md" -Value $releaseBody -Encoding UTF8
 
-      - name: Publish to GitHub Releases
+      - name: "Publish to GitHub Releases"
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
