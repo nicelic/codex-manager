@@ -161,13 +161,17 @@ function Upload-ReleaseAsset {
         Write-Error "Asset file not found: $FilePath"
         exit 1
     }
+    $localAssetSize = (Get-Item $FilePath).Length
+    $localAssetHash = (Get-FileHash -Path $FilePath -Algorithm SHA256).Hash.ToLower()
     $existing = $release.assets | Where-Object { $_.name -eq $AssetName }
     if ($existing) {
-        if ($existing.size -eq (Get-Item $FilePath).Length -and $existing.state -eq "uploaded") {
-            Write-Host "Asset $AssetName already exists and size matches ($($existing.size) bytes), skipping upload."
+        $remoteDigest = [string]$existing.digest
+        $digestMatches = $remoteDigest -eq "sha256:$localAssetHash"
+        if ($existing.size -eq $localAssetSize -and $digestMatches -and $existing.state -eq "uploaded") {
+            Write-Host "Asset $AssetName already exists with matching size and SHA-256 ($localAssetHash), skipping upload."
             return
         }
-        Write-Host "Asset $AssetName already exists (ID: $($existing.id)), removing to update..."
+        Write-Host "Asset $AssetName already exists with stale size or digest (ID: $($existing.id)), removing to update..."
         Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/assets/$($existing.id)" -Headers $headers -Method Delete -TimeoutSec 120 | Out-Null
     }
 
