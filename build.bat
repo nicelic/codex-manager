@@ -62,9 +62,20 @@ if not exist "releases" (
     mkdir "releases"
 )
 
+rem Terminate running instances to release file lock
+taskkill /F /IM code-Manager-rust.exe >nul 2>&1
+ping -n 2 127.0.0.1 >nul
+
 copy /y "backend\target\release\code-Manager-rust.exe" "releases\code-Manager-rust.exe" > nul
 if errorlevel 1 (
+    rem Retry once more if locked
+    taskkill /F /IM code-Manager-rust.exe >nul 2>&1
+    ping -n 2 127.0.0.1 >nul
+    copy /y "backend\target\release\code-Manager-rust.exe" "releases\code-Manager-rust.exe" > nul
+)
+if errorlevel 1 (
     echo [ERROR] Copying to releases\code-Manager-rust.exe failed!
+    echo Please make sure code-Manager-rust.exe is closed and not locked.
     pause
     exit /b 1
 )

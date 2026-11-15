@@ -305,6 +305,7 @@ fn rewrite_upstream_auth_headers(headers: &mut HeaderMap, upstream_api_key: &str
     true
 }
 
+#[cfg(test)]
 fn replace_upstream_auth_headers(headers: &mut HeaderMap, upstream_api_key: &str) {
     let upstream_api_key = crate::common::config::normalize_upstream_api_key(upstream_api_key);
     if is_upstream_placeholder(&upstream_api_key) {
