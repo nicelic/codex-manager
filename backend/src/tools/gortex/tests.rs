@@ -256,12 +256,23 @@ sandbox = "elevated"
         let dummy_path = Path::new("C:/test/gortex提示词.md");
         let prompt = gortex_delegated_prompt_body(dummy_path);
         let (expected_lines, _) = crate::tools::gortex::integrations::gortex_prompt_file_stats(dummy_path);
-        let expected_line_str = format!("共计 {} 行", expected_lines);
+        let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 300);
+        let expected_line_str = if expected_slices.len() <= 1 {
+            format!("共 {} 行", expected_lines)
+        } else {
+            format!("共计 {} 行", expected_lines)
+        };
 
         assert!(prompt.contains("为方便接下来工作的展开，你必须先全量读取"));
-        assert!(prompt.contains("C:\\test\\gortex提示词.md"));
+        assert!(prompt.contains("- 文档路径：`C:/test/gortex提示词.md`"));
+        assert!(!prompt.contains("C:\\test\\gortex提示词.md"));
         assert!(prompt.contains(&expected_line_str));
-        let expected_slices = crate::tools::gortex::integrations::calculate_prompt_slices(expected_lines, 300);
+        assert!(prompt.contains(&format!("- 文档规模：{}", expected_line_str)));
+
+        let escape_prone_path = Path::new(r"C:\tools\new\release\users\gortex提示词.md");
+        let escape_prone_prompt = gortex_delegated_prompt_body(escape_prone_path);
+        assert!(escape_prone_prompt.contains("- 文档路径：`C:/tools/new/release/users/gortex提示词.md`"));
+        assert!(!escape_prone_prompt.contains(r"C:\tools"));
         let expected_last_slice = expected_slices.last().unwrap();
         assert!(prompt.contains("初始计划为"));
         assert!(prompt.contains(expected_last_slice));

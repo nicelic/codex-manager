@@ -505,9 +505,10 @@ pub fn gortex_prompt_file_stats(prompt_file: &Path) -> (usize, u64) {
 
 /// 生成指向实际物理文件的外挂引导提示词（包含动态统计的行数、体积及顺序分片指引）
 pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
+    // 统一输出正斜杠路径，避免大模型在 JS / Shell / JSON 嵌套调用时丢失反斜杠或触发转义错误
     let clean_path = strip_windows_verbatim_prefix(prompt_file)
         .to_string_lossy()
-        .replace('/', "\\");
+        .replace('\\', "/");
     let (total_lines, total_bytes) = gortex_prompt_file_stats(prompt_file);
     let size_kb = (total_bytes as f64 / 1024.0).ceil() as u64;
     let slices = calculate_prompt_slices(total_lines, 300);
@@ -524,7 +525,10 @@ pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
         (format!("共计 {} 行", total_lines), String::new())
     };
 
-    format!(r#"为方便接下来工作的展开，你必须先全量读取“{clean_path}”（{line_summary}，约 {size_kb} KB），并首先严格遵循文档的规范。
+    format!(r#"为方便接下来工作的展开，你必须先全量读取以下外部规范文档，并首先严格遵循文档的规范：
+
+- 文档路径：`{clean_path}`
+- 文档规模：{line_summary}，约 {size_kb} KB
 
 【前置预读与工具权责铁律】：
 
