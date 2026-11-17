@@ -1,1 +1,30 @@
-{}
+{
+  "mcpServers": {
+    "gortex": {
+      "args": [
+        "gortex-bridge",
+        "--gortex",
+        "C:\\EXEXX\\code-Manager-rust\\Gortex\\bin\\gortex.exe",
+        "--agent",
+        "copilot",
+        "--cwd",
+        "C:\\EXEXX\\edit-rust"
+      ],
+      "command": "C:\\EXEXX\\code-Manager-rust\\code-Manager-rust.exe",
+      "env": {
+        "GORTEX_DAEMON_IDLE_TIMEOUT": "0",
+        "GORTEX_DAEMON_LOGFILE": "C:\\EXEXX\\code-Manager-rust\\Gortex\\run\\daemon.log",
+        "GORTEX_DAEMON_PIDFILE": "C:\\EXEXX\\code-Manager-rust\\Gortex\\run\\daemon.pid",
+        "GORTEX_DAEMON_SOCKET": "C:\\EXEXX\\code-Manager-rust\\Gortex\\run\\daemon.sock",
+        "GORTEX_DAEMON_STATEFILE": "C:\\EXEXX\\code-Manager-rust\\Gortex\\run\\daemon.state.json",
+        "GORTEX_INDEX_WORKERS": "8",
+        "GORTEX_RECONCILE_INTERVAL": "1h",
+        "WORKSPACE": "C:\\EXEXX\\edit-rust",
+        "XDG_CACHE_HOME": "C:\\EXEXX\\code-Manager-rust\\Gortex\\cache",
+        "XDG_CONFIG_HOME": "C:\\EXEXX\\code-Manager-rust\\Gortex\\config",
+        "XDG_DATA_HOME": "C:\\EXEXX\\code-Manager-rust\\Gortex\\data"
+      },
+      "type": "local"
+    }
+  }
+}

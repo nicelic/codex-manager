@@ -23,6 +23,8 @@ pub const GORTEX_OPENCODE_PLUGIN_BIN_KEY: &str = "{{GORTEX_BIN}}";
 pub const GORTEX_OPENCODE_PLUGIN_ARGV_KEY: &str = "{{GORTEX_HOOK_ARGV}}";
 pub const GORTEX_OPENCODE_PLUGIN_ENFORCE_KEY: &str = "{{GORTEX_ENFORCE}}";
 pub const GORTEX_CURSOR_FRONTMATTER: &str = "---\ndescription: Gortex code intelligence - prefer graph tools over file reads\nalwaysApply: true\n---\n\n";
+/// 默认提示词外挂文档顺序分片行数（确保单片体积远低于宿主单次读取字节上限，并贴合文档自然分段）
+pub const DEFAULT_PROMPT_CHUNK_LINES: usize = 236;
 
 pub const GORTEX_PROMPT_DOC: &str = include_str!("../../../assets/gortex提示词.md");
 pub const GORTEX_OPENCODE_PLUGIN_DOC: &str = include_str!("../../../assets/gortex-opencode-plugin.js");
@@ -357,26 +359,40 @@ pub fn gortex_bridge_executable(fallback: &str) -> String {
     clean_path_str(fallback)
 }
 
-pub fn gortex_bridge_mcp_entry(agent: &str, executable: &str, install_root: &Path) -> Value {
+pub fn gortex_bridge_command_args(agent: &str, executable: &str) -> (String, Vec<String>) {
     let clean_exe = clean_path_str(executable);
+    let bridge_exe = gortex_bridge_executable(&clean_exe);
+    let args = vec![
+        "gortex-bridge".to_string(),
+        "--gortex".to_string(),
+        clean_exe,
+        "--agent".to_string(),
+        agent.to_string(),
+    ];
+    (bridge_exe, args)
+}
+
+pub fn gortex_bridge_mcp_entry(agent: &str, executable: &str, install_root: &Path) -> Value {
+    let (bridge_exe, bridge_args) = gortex_bridge_command_args(agent, executable);
 
     if agent == "opencode" {
+        let mut cmd_arr = vec![Value::String(bridge_exe)];
+        cmd_arr.extend(bridge_args.into_iter().map(Value::String));
+
         let mut map = serde_json::Map::new();
         map.insert("type".to_string(), Value::String("local".to_string()));
-        map.insert("command".to_string(), Value::Array(vec![
-            Value::String(clean_exe),
-            Value::String("mcp".to_string()),
-        ]));
+        map.insert("command".to_string(), Value::Array(cmd_arr));
         map.insert("enabled".to_string(), Value::Bool(true));
         map.insert("environment".to_string(), Value::Object(gortex_mcp_env(install_root)));
         return Value::Object(map);
     }
 
     let mut map = serde_json::Map::new();
-    map.insert("command".to_string(), Value::String(clean_exe));
-    map.insert("args".to_string(), Value::Array(vec![
-        Value::String("mcp".to_string()),
-    ]));
+    map.insert("command".to_string(), Value::String(bridge_exe));
+    map.insert(
+        "args".to_string(),
+        Value::Array(bridge_args.into_iter().map(Value::String).collect()),
+    );
     map.insert("env".to_string(), Value::Object(gortex_mcp_env(install_root)));
 
     if agent == "copilot" {
@@ -478,7 +494,7 @@ pub fn calculate_prompt_slices(total_lines: usize, chunk_size: usize) -> Vec<Str
     if total_lines == 0 {
         return vec!["L1-1".to_string()];
     }
-    let chunk = if chunk_size == 0 { 300 } else { chunk_size };
+    let chunk = if chunk_size == 0 { DEFAULT_PROMPT_CHUNK_LINES } else { chunk_size };
     let mut slices = Vec::new();
     let mut start = 1;
     while start <= total_lines {
@@ -511,7 +527,8 @@ pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
         .replace('\\', "/");
     let (total_lines, total_bytes) = gortex_prompt_file_stats(prompt_file);
     let size_kb = (total_bytes as f64 / 1024.0).ceil() as u64;
-    let slices = calculate_prompt_slices(total_lines, 300);
+    let default_chunk_lines = DEFAULT_PROMPT_CHUNK_LINES;
+    let slices = calculate_prompt_slices(total_lines, default_chunk_lines);
     let slices_str = slices.join("、");
     let (line_summary, single_slice_guidance) = if slices.len() <= 1 {
         (
@@ -534,7 +551,7 @@ pub fn gortex_delegated_prompt_body(prompt_file: &Path) -> String {
 
 1. 外部文档只读豁免：“gortex提示词.md”位于代码仓库外部系统目录，属于初始环境法定豁免文件。必须且仅能使用当前平台的【宿主原生只读工具】（如 read_file、view_file、cat 或终端只读命令）读取；严禁调用 Gortex MCP 读取该文件。Gortex MCP 仅索引仓库内文件，访问外部绝对路径会触发安全沙箱拦截。
 
-2. 顺序分片读取与完整性验收：默认按 300 行分片，初始计划为 {slices_str}。{single_slice_guidance}
+2. 顺序分片读取与完整性验收：默认按 {default_chunk_lines} 行分片，初始计划为 {slices_str}。{single_slice_guidance}
 
 ① 严格串行：每个切片单独发起一次工具调用，必须等待当前调用返回、验收并补全后，才按顺序读取下一片。禁止并发、批量下发，禁止在同一命令、脚本或管道中拼接多个切片；注意区分起止闭区间与起始行加行数，避免偏移。
 
@@ -1037,10 +1054,17 @@ pub fn update_codex_mcp_config_owned(
         fs::write(&path, new_content).map_err(|e| format!("写入 Codex config.toml 失败: {}", e))?;
         ownership.platforms.remove(&key);
     } else {
-        let exe_esc = clean_path_str(executable).replace('\\', "\\\\");
+        let (bridge_exe, bridge_args) = gortex_bridge_command_args("codex", executable);
+        let bridge_esc = bridge_exe.replace('\\', "\\\\");
+        let args_toml = bridge_args
+            .iter()
+            .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
         let toml_block = format!(
-            "\r\n[mcp_servers.gortex]\r\ncommand = \"{}\"\r\nargs = [\"mcp\"]\r\nstartup_timeout_sec = 90\r\n[mcp_servers.gortex.env]\r\nXDG_CONFIG_HOME = \"{}\"\r\nXDG_DATA_HOME = \"{}\"\r\nXDG_CACHE_HOME = \"{}\"\r\nGORTEX_DAEMON_SOCKET = \"{}\"\r\nGORTEX_DAEMON_PIDFILE = \"{}\"\r\nGORTEX_DAEMON_LOGFILE = \"{}\"\r\nGORTEX_DAEMON_STATEFILE = \"{}\"\r\nGORTEX_INDEX_WORKERS = \"8\"\r\nGORTEX_RECONCILE_INTERVAL = \"1h\"\r\nGORTEX_DAEMON_IDLE_TIMEOUT = \"0\"\r\n",
-            exe_esc,
+            "\r\n[mcp_servers.gortex]\r\ncommand = \"{}\"\r\nargs = [{}]\r\nstartup_timeout_sec = 90\r\n[mcp_servers.gortex.env]\r\nXDG_CONFIG_HOME = \"{}\"\r\nXDG_DATA_HOME = \"{}\"\r\nXDG_CACHE_HOME = \"{}\"\r\nGORTEX_DAEMON_SOCKET = \"{}\"\r\nGORTEX_DAEMON_PIDFILE = \"{}\"\r\nGORTEX_DAEMON_LOGFILE = \"{}\"\r\nGORTEX_DAEMON_STATEFILE = \"{}\"\r\nGORTEX_INDEX_WORKERS = \"8\"\r\nGORTEX_RECONCILE_INTERVAL = \"1h\"\r\nGORTEX_DAEMON_IDLE_TIMEOUT = \"0\"\r\n",
+            bridge_esc,
+            args_toml,
             install_root.join("config").to_string_lossy().replace('\\', "\\\\"),
             install_root.join("data").to_string_lossy().replace('\\', "\\\\"),
             install_root.join("cache").to_string_lossy().replace('\\', "\\\\"),

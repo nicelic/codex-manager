@@ -24,7 +24,8 @@ pub fn gortex_project_mcp_config_path(agent: &str, project: &str) -> Option<Path
         "cursor" => Some(p.join(".cursor").join("mcp.json")),
         "copilot" => Some(p.join(".github").join("mcp.json")),
         "opencode" => Some(p.join("opencode.json")),
-        "antigravity" => Some(p.join(".agents").join("mcp_config.json")),
+        // Antigravity IDE does not load per-project `.agents/mcp_config.json`; it uses the global config + gortex-bridge.
+        "antigravity" => None,
         "gemini" => Some(p.join(".gemini").join("settings.json")),
         _ => None,
     }
@@ -37,30 +38,32 @@ pub fn gortex_project_mcp_uses_cwd(agent: &str) -> bool {
 pub fn gortex_project_mcp_entry(agent: &str, executable: &str, project: &str, install_root: &Path) -> Value {
     let clean_project = clean_path_str(project);
     let clean_exe = clean_path_str(executable);
+    let (bridge_exe, mut bridge_args) =
+        crate::tools::gortex::integrations::gortex_bridge_command_args(agent, &clean_exe);
+    bridge_args.push("--cwd".to_string());
+    bridge_args.push(clean_project.clone());
 
     if agent == "opencode" {
+        let mut cmd_arr = vec![Value::String(bridge_exe)];
+        cmd_arr.extend(bridge_args.into_iter().map(Value::String));
+
         let mut map = serde_json::Map::new();
         map.insert("type".to_string(), Value::String("local".to_string()));
-        map.insert("command".to_string(), Value::Array(vec![
-            Value::String(clean_exe),
-            Value::String("mcp".to_string()),
-        ]));
+        map.insert("command".to_string(), Value::Array(cmd_arr));
         map.insert("enabled".to_string(), Value::Bool(true));
         map.insert("environment".to_string(), Value::Object(crate::tools::gortex::integrations::gortex_mcp_env(install_root)));
         return Value::Object(map);
     }
 
     let mut map = serde_json::Map::new();
-    map.insert("command".to_string(), Value::String(clean_exe));
-    map.insert("args".to_string(), Value::Array(vec![
-        Value::String("mcp".to_string()),
-    ]));
+    map.insert("command".to_string(), Value::String(bridge_exe));
+    map.insert(
+        "args".to_string(),
+        Value::Array(bridge_args.into_iter().map(Value::String).collect()),
+    );
     map.insert("cwd".to_string(), Value::String(clean_project.clone()));
     let mut env = crate::tools::gortex::integrations::gortex_mcp_env(install_root);
-    env.insert("WORKSPACE".to_string(), Value::String(clean_project.clone()));
-    if agent == "antigravity" {
-        env.insert("ANTIGRAVITY_WORKSPACE".to_string(), Value::String(clean_project));
-    }
+    env.insert("WORKSPACE".to_string(), Value::String(clean_project));
     map.insert("env".to_string(), Value::Object(env));
 
     if agent == "copilot" {
@@ -294,11 +297,21 @@ pub fn update_project_codex_mcp_config_owned(
         fs::write(&path, new_content).map_err(|e| format!("写入 Codex 项目 config.toml 失败: {}", e))?;
         gortex_delete_project_mcp_record(&mut ownership, "codex", project);
     } else {
-        let exe_esc = clean_path_str(executable).replace('\\', "\\\\");
+        let (bridge_exe, mut bridge_args) =
+            crate::tools::gortex::integrations::gortex_bridge_command_args("codex", executable);
+        bridge_args.push("--cwd".to_string());
+        bridge_args.push(project.to_string());
+        let bridge_esc = bridge_exe.replace('\\', "\\\\");
+        let args_toml = bridge_args
+            .iter()
+            .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
         let proj_esc = project.replace('\\', "\\\\");
         let toml_block = format!(
-            "\r\n[mcp_servers.gortex]\r\ncommand = \"{}\"\r\nargs = [\"mcp\"]\r\ncwd = \"{}\"\r\nstartup_timeout_sec = 90\r\n[mcp_servers.gortex.env]\r\nXDG_CONFIG_HOME = \"{}\"\r\nXDG_DATA_HOME = \"{}\"\r\nXDG_CACHE_HOME = \"{}\"\r\nGORTEX_DAEMON_SOCKET = \"{}\"\r\nGORTEX_DAEMON_PIDFILE = \"{}\"\r\nGORTEX_DAEMON_LOGFILE = \"{}\"\r\nGORTEX_DAEMON_STATEFILE = \"{}\"\r\nGORTEX_INDEX_WORKERS = \"8\"\r\nGORTEX_RECONCILE_INTERVAL = \"1h\"\r\nGORTEX_DAEMON_IDLE_TIMEOUT = \"0\"\r\n",
-            exe_esc,
+            "\r\n[mcp_servers.gortex]\r\ncommand = \"{}\"\r\nargs = [{}]\r\ncwd = \"{}\"\r\nstartup_timeout_sec = 90\r\n[mcp_servers.gortex.env]\r\nXDG_CONFIG_HOME = \"{}\"\r\nXDG_DATA_HOME = \"{}\"\r\nXDG_CACHE_HOME = \"{}\"\r\nGORTEX_DAEMON_SOCKET = \"{}\"\r\nGORTEX_DAEMON_PIDFILE = \"{}\"\r\nGORTEX_DAEMON_LOGFILE = \"{}\"\r\nGORTEX_DAEMON_STATEFILE = \"{}\"\r\nGORTEX_INDEX_WORKERS = \"8\"\r\nGORTEX_RECONCILE_INTERVAL = \"1h\"\r\nGORTEX_DAEMON_IDLE_TIMEOUT = \"0\"\r\n",
+            bridge_esc,
+            args_toml,
             proj_esc,
             install_root.join("config").to_string_lossy().replace('\\', "\\\\"),
             install_root.join("data").to_string_lossy().replace('\\', "\\\\"),
@@ -338,6 +351,89 @@ pub fn update_project_codex_mcp_config_owned(
     Ok(true)
 }
 
+pub fn cleanup_legacy_project_antigravity_mcp(
+    project: &str,
+    install_root: &Path,
+) -> Result<bool, String> {
+    let project_clean = clean_path_str(project);
+    if project_clean.is_empty() {
+        return Ok(false);
+    }
+
+    let legacy_path = Path::new(&project_clean).join(".agents").join("mcp_config.json");
+    let mut ownership = read_gortex_ownership(install_root)?;
+    let key = gortex_project_mcp_key("antigravity", &project_clean);
+    let owned_record = ownership.project_mcp.get(&key).cloned();
+
+    if !legacy_path.is_file() {
+        if owned_record.is_some() {
+            gortex_delete_project_mcp_record(&mut ownership, "antigravity", &project_clean);
+            let _ = write_gortex_ownership(install_root, &ownership);
+        }
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&legacy_path)
+        .map_err(|e| format!("读取旧版 Antigravity 项目 MCP 配置失败: {}", e))?;
+    let mut root: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => {
+            gortex_delete_project_mcp_record(&mut ownership, "antigravity", &project_clean);
+            let _ = write_gortex_ownership(install_root, &ownership);
+            return Ok(false);
+        }
+    };
+
+    let existing = root
+        .get("mcpServers")
+        .and_then(|s| s.get("gortex"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if existing.is_null() {
+        if owned_record.is_some() {
+            gortex_delete_project_mcp_record(&mut ownership, "antigravity", &project_clean);
+            let _ = write_gortex_ownership(install_root, &ownership);
+        }
+        return Ok(false);
+    }
+
+    let is_managed = owned_record
+        .as_ref()
+        .map(|rec| {
+            !rec.fingerprint.is_empty()
+                && rec.fingerprint == gortex_json_artifact_fingerprint(&existing)
+        })
+        .unwrap_or(false)
+        || gortex_mcp_entry_looks_managed(&existing);
+    if !is_managed {
+        return Ok(false);
+    }
+
+    if let Some(servers) = root.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+        servers.remove("gortex");
+        if servers.is_empty() {
+            if let Some(obj) = root.as_object_mut() {
+                obj.remove("mcpServers");
+            }
+        }
+    }
+
+    if root.as_object().map(|o| o.is_empty()).unwrap_or(false) {
+        let _ = fs::remove_file(&legacy_path);
+        if let Some(parent) = legacy_path.parent() {
+            if parent.file_name().and_then(|s| s.to_str()) == Some(".agents") {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    } else if let Ok(data) = serde_json::to_string_pretty(&root) {
+        let _ = fs::write(&legacy_path, format!("{}\n", data));
+    }
+
+    gortex_delete_project_mcp_record(&mut ownership, "antigravity", &project_clean);
+    let _ = write_gortex_ownership(install_root, &ownership);
+    Ok(true)
+}
+
 pub fn gortex_register_project_mcp_for_single_agent(
     project: &str,
     agent: &str,
@@ -349,6 +445,13 @@ pub fn gortex_register_project_mcp_for_single_agent(
     let p = Path::new(project);
     if !p.is_dir() {
         return vec![format!("项目级 MCP: 项目目录不存在，已跳过 {}", project)];
+    }
+
+    if agent == "antigravity" {
+        if let Err(e) = cleanup_legacy_project_antigravity_mcp(project, install_root) {
+            warnings.push(format!("antigravity 清理旧项目 MCP: {}", e));
+        }
+        return warnings;
     }
 
     let is_avail = available
@@ -376,6 +479,12 @@ pub fn gortex_remove_project_mcp_for_single_agent(
     install_root: &Path,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
+    if agent == "antigravity" {
+        if let Err(e) = cleanup_legacy_project_antigravity_mcp(project, install_root) {
+            warnings.push(format!("antigravity 项目级 MCP: {}", e));
+        }
+        return warnings;
+    }
     let res = match agent {
         "codex" => update_project_codex_mcp_config_owned(project, executable, install_root, true),
         "opencode" => update_project_opencode_mcp_config_owned(project, executable, install_root, true),

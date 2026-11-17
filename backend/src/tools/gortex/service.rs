@@ -417,7 +417,18 @@ impl GortexService {
 
     pub fn ensure_prompt_document(install_root: &Path) -> PathBuf {
         let prompt_path = install_root.join("gortex提示词.md");
-        if !prompt_path.is_file() {
+        let need_write = if !prompt_path.is_file() {
+            true
+        } else {
+            match fs::read_to_string(&prompt_path) {
+                Ok(existing) => {
+                    normalize_gortex_line_endings(&existing)
+                        != normalize_gortex_line_endings(GORTEX_PROMPT_DOC)
+                }
+                Err(_) => true,
+            }
+        };
+        if need_write {
             let _ = fs::create_dir_all(install_root);
             let _ = fs::write(&prompt_path, GORTEX_PROMPT_DOC);
         }
@@ -1008,7 +1019,8 @@ impl GortexService {
                 if p.is_file() {
                     if let Ok(c) = fs::read_to_string(&p) {
                         let configured = c.contains("\"gortex\"");
-                        return (configured, configured);
+                        let complete = configured && c.contains("gortex-bridge");
+                        return (configured, complete);
                     }
                 }
             }
@@ -1016,8 +1028,19 @@ impl GortexService {
         };
 
         let codex_file = gortex_config_path("codex");
-        let codex_configured = codex_file.as_ref().map(|p| p.is_file() && fs::read_to_string(p).map(|s| s.contains("[mcp_servers.gortex]")).unwrap_or(false)).unwrap_or(false);
-        let codex_complete = codex_configured;
+        let codex_content = codex_file
+            .as_ref()
+            .filter(|p| p.is_file())
+            .and_then(|p| fs::read_to_string(p).ok());
+        let codex_configured = codex_content
+            .as_ref()
+            .map(|s| s.contains("[mcp_servers.gortex]"))
+            .unwrap_or(false);
+        let codex_complete = codex_configured
+            && codex_content
+                .as_ref()
+                .map(|s| s.contains("gortex-bridge"))
+                .unwrap_or(false);
 
         let (claude_configured, claude_complete) = check_json_mcp("claude");
         let (cursor_configured, cursor_complete) = check_json_mcp("cursor");
@@ -1025,8 +1048,12 @@ impl GortexService {
         let (opencode_configured, opencode_complete) = {
             if let Some(p) = gortex_config_path("opencode") {
                 if p.is_file() {
-                    let configured = fs::read_to_string(&p).map(|s| s.contains("\"gortex\"")).unwrap_or(false);
-                    (configured, configured)
+                    if let Ok(s) = fs::read_to_string(&p) {
+                        let configured = s.contains("\"gortex\"");
+                        (configured, configured && s.contains("gortex-bridge"))
+                    } else {
+                        (false, false)
+                    }
                 } else {
                     (false, false)
                 }
@@ -1038,13 +1065,32 @@ impl GortexService {
         let (gemini_configured, gemini_complete) = check_json_mcp("gemini");
 
         // Prompts
-        let prompt_doc_exists = install_root.join("gortex提示词.md").is_file();
+        let prompt_doc_path = install_root.join("gortex提示词.md");
+        let prompt_doc_up_to_date = prompt_doc_path.is_file()
+            && fs::read_to_string(&prompt_doc_path)
+                .map(|existing| {
+                    normalize_gortex_line_endings(&existing)
+                        == normalize_gortex_line_endings(GORTEX_PROMPT_DOC)
+                })
+                .unwrap_or(false);
+        let expected_prompt_block = if prompt_doc_up_to_date {
+            let clean_prompt_path = strip_windows_verbatim_prefix(&prompt_doc_path);
+            Some(normalize_gortex_line_endings(&gortex_prompt_block(
+                &gortex_delegated_prompt_body(&clean_prompt_path),
+            )).trim().to_string())
+        } else {
+            None
+        };
         let check_prompt = |agent: &str| -> (bool, bool) {
             for p in gortex_prompt_paths(agent) {
                 if p.is_file() {
                     if let Ok(data) = fs::read(&p) {
-                        if gortex_marked_block(&data).is_some() {
-                            return (true, prompt_doc_exists);
+                        if let Some(block) = gortex_marked_block(&data) {
+                            let is_complete = expected_prompt_block
+                                .as_ref()
+                                .map(|expected| normalize_gortex_line_endings(&block).trim() == expected.as_str())
+                                .unwrap_or(false);
+                            return (true, is_complete);
                         }
                     }
                 }

@@ -122,7 +122,11 @@ pub fn gortex_mcp_entry_looks_managed(value: &Value) -> bool {
     if base == "gortex" && first_arg == "mcp" {
         return true;
     }
-    if (base.contains("code-manager") || base.contains("llmtrim") || base.contains("edit_rust"))
+    if (base.contains("code-manager")
+        || base.contains("code_manager")
+        || base.contains("llmtrim")
+        || base.contains("edit-rust")
+        || base.contains("edit_rust"))
         && (first_arg == "gortex-bridge" || first_arg == "mcp")
     {
         return true;
@@ -139,13 +143,22 @@ pub fn gortex_opencode_entry_looks_managed(value: &Value) -> bool {
         if cmd.len() >= 2 {
             let first = cmd[0].as_str().unwrap_or("");
             let second = cmd[1].as_str().unwrap_or("");
-            if second == "mcp" || second == "gortex-bridge" {
+            if second == "gortex-bridge" {
+                return true;
+            }
+            if second == "mcp" {
                 let base = Path::new(first)
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                if base == "gortex" || base.contains("code-manager") || base.contains("edit_rust") || base.contains("llmtrim") {
+                if base == "gortex"
+                    || base.contains("code-manager")
+                    || base.contains("code_manager")
+                    || base.contains("edit-rust")
+                    || base.contains("edit_rust")
+                    || base.contains("llmtrim")
+                {
                     return true;
                 }
             }
