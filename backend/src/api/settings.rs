@@ -107,9 +107,27 @@ pub async fn update_setting(
             message = "llmtrim 路径已更新".to_string();
         }
         "upstream_websocket_enabled" => {
-            let enabled = val.parse::<bool>().unwrap_or(true);
+            let enabled = match val.trim().to_ascii_lowercase().as_str() {
+                "true" => true,
+                "false" => false,
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "saved": false,
+                            "message": "upstream_websocket_enabled 必须是 true 或 false"
+                        })),
+                    )
+                        .into_response();
+                }
+            };
             cfg.upstream_websocket_enabled = enabled;
-            message = if enabled { "上游 WebSocket 已启用" } else { "上游 WebSocket 已禁用" }.to_string();
+            message = if enabled {
+                "上游 WebSocket 已启用"
+            } else {
+                "上游 WebSocket 已禁用"
+            }
+            .to_string();
         }
         "startup_enabled" => {
             let enabled = val.parse::<bool>().unwrap_or(false);
@@ -175,6 +193,14 @@ pub async fn update_setting(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "saved": false, "message": format!("保存配置文件失败: {}", e) })),
         ).into_response();
+    }
+    drop(cfg);
+
+    if matches!(
+        setting.as_str(),
+        "upstream_base_url" | "outbound_proxy" | "upstream_websocket_enabled"
+    ) {
+        state.upstream_transport.close_all().await;
     }
 
     (

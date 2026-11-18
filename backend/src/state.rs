@@ -41,6 +41,7 @@ pub struct AppState {
     pub active_ws_sessions: Arc<AtomicUsize>,
     pub upstream_h2_active: Arc<AtomicUsize>,
     pub upstream_ws_carriers: Arc<AtomicUsize>,
+    pub upstream_transport: Arc<crate::server::upstream_transport::UpstreamTransport>,
     pub http_client: reqwest::Client,
 }
 
@@ -103,6 +104,7 @@ impl AppState {
             active_ws_sessions: Arc::new(AtomicUsize::new(0)),
             upstream_h2_active: Arc::new(AtomicUsize::new(0)),
             upstream_ws_carriers: Arc::new(AtomicUsize::new(0)),
+            upstream_transport: Arc::new(crate::server::upstream_transport::UpstreamTransport::default()),
             http_client,
         }
     }

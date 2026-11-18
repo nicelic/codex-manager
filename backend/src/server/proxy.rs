@@ -10,14 +10,18 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
+#[cfg(test)]
+use futures_util::SinkExt;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+#[cfg(test)]
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+#[cfg(test)]
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tracing::{error, info, warn};
 use url::Url;
@@ -415,9 +419,17 @@ pub struct ProxyStatusResponse {
 pub fn get_proxy_status_data(state: &AppState, running: bool, listen_address: &str) -> ProxyStatusResponse {
     let local_http1 = state.active_requests.load(Ordering::Relaxed);
     let local_ws = state.active_ws_sessions.load(Ordering::Relaxed);
-    let upstream_h2 = if running { state.upstream_h2_active.load(Ordering::Relaxed) } else { 0 };
-    let upstream_ws = state.upstream_ws_carriers.load(Ordering::Relaxed);
-    let upstream_streams = (if local_http1 > 0 { local_http1 as usize } else { 0 }) + upstream_ws;
+    let tsnap = state.upstream_transport.snapshot();
+    let legacy_h2 = if running { state.upstream_h2_active.load(Ordering::Relaxed) } else { 0 };
+    let upstream_h2 = if running { tsnap.upstream_h2.max(legacy_h2) } else { 0 };
+    let upstream_h3 = if running { tsnap.upstream_h3 } else { 0 };
+    let legacy_ws = state.upstream_ws_carriers.load(Ordering::Relaxed);
+    let upstream_ws = legacy_ws + usize::from(running && tsnap.upstream_ws);
+    let upstream_h2_ws = running && (tsnap.upstream_h2_ws || legacy_ws > 0);
+    let upstream_h3_ws = running && tsnap.upstream_h3_ws;
+    let upstream_streams =
+        (if local_http1 > 0 { local_http1 as usize } else { 0 }).max(if running { tsnap.upstream_streams } else { 0 })
+            + legacy_ws;
 
     let proxy_state = if let Ok(s) = state.proxy_state.try_read() {
         s.clone()
@@ -430,7 +442,7 @@ pub fn get_proxy_status_data(state: &AppState, running: bool, listen_address: &s
     let message = if let Ok(m) = state.proxy_message.try_read() {
         m.clone()
     } else if running {
-        "HTTP/WS 网关已启动，上游 H2/H3 扩展 CONNECT 已就绪。".to_string()
+        "HTTP/WS 网关已启动，上游 H2/H3 通道已就绪。".to_string()
     } else {
         "代理转发已停止，请在网页中点击“启动代理”。".to_string()
     };
@@ -445,9 +457,9 @@ pub fn get_proxy_status_data(state: &AppState, running: bool, listen_address: &s
             local_http1,
             local_ws,
             upstream_h2,
-            upstream_h2_ws: upstream_ws > 0,
-            upstream_h3: 0,
-            upstream_h3_ws: false,
+            upstream_h2_ws,
+            upstream_h3,
+            upstream_h3_ws,
             upstream_ws,
             upstream_streams,
         },
@@ -523,17 +535,14 @@ pub async fn start_proxy(State(state): State<AppState>) -> impl IntoResponse {
             }
         }
     } else {
-        match select_upstream_client(&state, false, &cfg.outbound_proxy).await {
-            Ok(client) => tokio::select! {
-                biased;
-                _ = route_changed.changed() => Err("代理路由已切换，请重新启动代理".to_string()),
-                result = client.get(&probe_url).timeout(Duration::from_secs(5)).send() => {
-                    result.map(|resp| {
-                        info!("上游预热握手成功: {} (状态: {})", probe_url, resp.status());
-                    }).map_err(|e| e.to_string())
-                }
-            },
-            Err(err) => Err(err),
+        tokio::select! {
+            biased;
+            _ = route_changed.changed() => Err("代理路由已切换，请重新启动代理".to_string()),
+            result = state.upstream_transport.prewarm(&probe_url, &cfg.outbound_proxy) => {
+                result.map(|proto| {
+                    info!("上游预热握手成功 ({}): {}", proto.as_str(), probe_url);
+                }).map_err(|e| e.to_string())
+            }
         }
     };
 
@@ -619,7 +628,9 @@ pub async fn start_proxy(State(state): State<AppState>) -> impl IntoResponse {
         };
         let mut paddr = state.proxy_address.write().await;
         *paddr = listen_addr.clone();
-        state.upstream_h2_active.store(1, Ordering::SeqCst);
+        state
+            .upstream_h2_active
+            .store(usize::from(llmtrim_running), Ordering::SeqCst);
     }
 
     start_llmtrim_route_monitor(&state);
@@ -647,6 +658,7 @@ pub async fn stop_proxy(State(state): State<AppState>) -> impl IntoResponse {
         *msg = "代理已彻底停止；code-Manager 管理页面仍保持运行。".to_string();
         state.upstream_h2_active.store(0, Ordering::SeqCst);
     }
+    state.upstream_transport.close_all().await;
 
     info!("HTTP/WS 反向代理已停止");
     let data = get_proxy_status_data(&state, false, &listen_addr);
@@ -721,16 +733,20 @@ impl Drop for SessionGuard {
     }
 }
 
+#[cfg(test)]
 const LLMTRIM_PROXY_URL: &str = "http://127.0.0.1:43117";
 
+#[cfg(test)]
 fn llmtrim_ca_path() -> std::path::PathBuf {
     LlmtrimService::get_runtime_state_dir().join("ca.pem")
 }
 
+#[cfg(test)]
 fn read_llmtrim_ca(path: &std::path::Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("读取 llmtrim CA 证书 {} 失败: {}", path.display(), e))
 }
 
+#[cfg(test)]
 fn build_llmtrim_proxy_client_configured(
     proxy_url: &str,
     ca_path: &std::path::Path,
@@ -752,6 +768,7 @@ fn build_llmtrim_proxy_client_configured(
     builder.build().map_err(|e| format!("创建 llmtrim HTTP 客户端失败: {}", e))
 }
 
+#[cfg(test)]
 fn build_llmtrim_proxy_client_with(proxy_url: &str, ca_path: &std::path::Path) -> Result<reqwest::Client, String> {
     build_llmtrim_proxy_client_configured(proxy_url, ca_path, false)
 }
@@ -766,10 +783,7 @@ async fn select_llmtrim_http1_client(state: &AppState) -> Result<LlmtrimTranspor
     Ok(cached.as_ref().expect("llmtrim HTTP/1.1 client initialized").1.clone())
 }
 
-async fn select_upstream_client(state: &AppState, llmtrim_running: bool, outbound_proxy: &str) -> Result<reqwest::Client, String> {
-    select_upstream_client_with_ca(state, llmtrim_running, outbound_proxy, &llmtrim_ca_path()).await
-}
-
+#[cfg(test)]
 async fn select_upstream_client_with_ca(
     state: &AppState,
     llmtrim_running: bool,
@@ -910,6 +924,7 @@ fn start_llmtrim_route_monitor(state: &AppState) {
     });
 }
 
+#[cfg(test)]
 fn build_llmtrim_ws_connector(path: &std::path::Path) -> Result<tokio_tungstenite::Connector, String> {
     let pem = read_llmtrim_ca(path)?;
     let cert = native_tls::Certificate::from_pem(&pem)
@@ -922,6 +937,7 @@ fn build_llmtrim_ws_connector(path: &std::path::Path) -> Result<tokio_tungstenit
 }
 
 /// 处理 WebSocket 双向原始帧代理（支持直连及 HTTP CONNECT 代理隧道）
+#[cfg(test)]
 async fn handle_v1_websocket_tunnel(
     mut client_ws: AxumWebSocket,
     state: AppState,
@@ -1667,6 +1683,11 @@ async fn forward_handler_selected(
         ).into_response();
     }
 
+    if !llmtrim_running {
+        *state.llmtrim_client.write().await = None;
+        *state.llmtrim_http1_client.write().await = None;
+    }
+
     // 3. 构造上游目标 URL（剥离 /v1 前缀，杜绝 /v1/v1 404）
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().map(|s| s.to_string());
@@ -1685,64 +1706,128 @@ async fn forward_handler_selected(
         .map(|s| s.eq_ignore_ascii_case("websocket"))
         .unwrap_or(false);
 
-    let effective_ws_proxy = if llmtrim_running {
-        Some(LLMTRIM_PROXY_URL.to_string())
-    } else if !cfg.outbound_proxy.trim().is_empty() {
-        Some(cfg.outbound_proxy.trim().to_string())
-    } else {
-        None
-    };
-
     if is_ws {
-        if cfg.upstream_websocket_enabled && !llmtrim_running {
-            if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
-                let ws_target = target_url.clone();
-                let key = cfg.upstream_api_key.clone();
-                let ws_state = state.clone();
-                let ws_proxy = effective_ws_proxy.clone();
-                let client_headers = parts.headers.clone();
-                let mut ws_route_changed = route_changed.clone();
-                return ws
-                    .on_upgrade(move |socket| async move {
-                        tokio::select! {
-                            biased;
-                            _ = ws_route_changed.changed() => {},
-                            _ = handle_v1_websocket_tunnel(socket, ws_state, ws_target, key, ws_proxy, llmtrim_running, client_headers) => {},
-                        }
-                    })
-                    .into_response();
-            }
-        } else {
-            // 当上游 WebSocket 开关关闭时，支持无缝降级为 SSE 承载：
-            // 将客户端的 WS 会话无缝桥接到上游默认的 SSE 流式接口
-            if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
-                let ws_target = target_url.clone();
-                let key = cfg.upstream_api_key.clone();
-                let ws_state = state.clone();
-                let client_result = if llmtrim_running {
-                    select_llmtrim_http1_client(&state).await
-                } else {
-                    select_upstream_client(&state, false, &cfg.outbound_proxy)
-                        .await
-                        .map(LlmtrimTransport::from_reqwest)
-                };
-                let client = match client_result {
-                    Ok(client) => client,
-                    Err(err) => return (StatusCode::BAD_GATEWAY, err).into_response(),
-                };
-                let client_headers = parts.headers.clone();
-                let mut ws_route_changed = route_changed.clone();
-                return ws
-                    .on_upgrade(move |socket| async move {
-                        tokio::select! {
-                            biased;
-                            _ = ws_route_changed.changed() => {},
-                            _ = handle_v1_ws_to_sse_bridge(socket, ws_state, ws_target, key, client, client_headers) => {},
-                        }
-                    })
-                    .into_response();
-            }
+        let mut ws = match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
+            Ok(w) => w,
+            Err(rejection) => return rejection.into_response(),
+        };
+
+        if llmtrim_running {
+            let ws_target = target_url.clone();
+            let key = cfg.upstream_api_key.clone();
+            let ws_state = state.clone();
+            let client = match select_llmtrim_http1_client(&state).await {
+                Ok(client) => client,
+                Err(err) => return (StatusCode::BAD_GATEWAY, err).into_response(),
+            };
+            let client_headers = parts.headers.clone();
+            let mut ws_route_changed = route_changed.clone();
+            return ws
+                .on_upgrade(move |socket| async move {
+                    tokio::select! {
+                        biased;
+                        _ = ws_route_changed.changed() => {},
+                        _ = handle_v1_ws_to_sse_bridge(socket, ws_state, ws_target, key, client, client_headers) => {},
+                    }
+                })
+                .into_response();
         }
+
+        // 默认路由（!llmtrim_running）：解耦本地 WS 监听与上游 WS/H3/H2 承载，并支持无损双向桥接
+        let mut ws_fwd_headers = HeaderMap::new();
+        for (k, v) in parts.headers.iter() {
+            ws_fwd_headers.append(k.clone(), v.clone());
+        }
+        replace_upstream_auth(&mut ws_fwd_headers, &mut target_url, &cfg.upstream_api_key);
+        let prepared_vec: Vec<(HeaderName, HeaderValue)> = ws_fwd_headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let prepared_ws = super::bridge::prepare_local_ws_session(
+            &state.upstream_transport,
+            &target_url,
+            &prepared_vec,
+            cfg.upstream_websocket_enabled,
+            &cfg.outbound_proxy,
+        )
+        .await;
+
+        return match prepared_ws {
+            super::bridge::PreparedLocalWs::HttpError {
+                status,
+                headers,
+                body,
+            } => {
+                let mut builder = Response::builder().status(status);
+                for (name, val) in headers.iter() {
+                    let lower = name.as_str();
+                    if matches!(lower, "connection" | "keep-alive" | "transfer-encoding") {
+                        continue;
+                    }
+                    builder = builder.header(name.clone(), val.clone());
+                }
+                builder
+                    .body(Body::from(body))
+                    .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+            }
+            super::bridge::PreparedLocalWs::Tunnel(upstream_conn) => {
+                if let Some(proto) = upstream_conn.negotiated_protocol.clone() {
+                    ws = ws.protocols([proto]);
+                }
+                let active_ws = state.active_ws_sessions.clone();
+                let shutdown_rx = state.shutdown_sender.subscribe();
+                ws.on_upgrade(move |socket| async move {
+                    super::bridge::relay_ws_to_ws(
+                        socket,
+                        upstream_conn,
+                        active_ws,
+                        route_changed,
+                        shutdown_rx,
+                    )
+                    .await;
+                })
+                .into_response()
+            }
+            super::bridge::PreparedLocalWs::BridgeHttp => {
+                let requested_subprotocols: Vec<String> = parts
+                    .headers
+                    .get_all("sec-websocket-protocol")
+                    .iter()
+                    .filter_map(|v| v.to_str().ok())
+                    .flat_map(|s| s.split(','))
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if !requested_subprotocols.is_empty() {
+                    ws = ws.protocols(requested_subprotocols);
+                }
+
+                let retry_policy = build_retry_policy(&cfg);
+                let transport = state.upstream_transport.clone();
+                let outbound_proxy = cfg.outbound_proxy.clone();
+                let active_requests = state.active_requests.clone();
+                let active_ws = state.active_ws_sessions.clone();
+                let shutdown_rx = state.shutdown_sender.subscribe();
+                ws.on_upgrade(move |socket| async move {
+                    super::bridge::handle_ws_to_http_bridge(
+                        socket,
+                        transport,
+                        target_url,
+                        prepared_vec,
+                        outbound_proxy,
+                        retry_policy,
+                        active_requests,
+                        active_ws,
+                        route_changed,
+                        shutdown_rx,
+                    )
+                    .await;
+                })
+                .into_response()
+            }
+        };
     }
 
     // 5. 读取客户端 Request Body（最大 64MB 用于重试缓冲）
@@ -1797,141 +1882,43 @@ async fn forward_handler_selected(
         .await;
     }
 
-    // llmtrim 运行时只能使用其专属客户端，初始化失败不得回退。
-    let client = match select_upstream_client(&state, false, &cfg.outbound_proxy).await {
-        Ok(client) => client,
-        Err(err) => return (StatusCode::BAD_GATEWAY, err).into_response(),
-    };
+    // 7. 默认直连路由：使用独立的上游并发 H3/H2 传输与协议桥接层
+    let retry_policy = build_retry_policy(&cfg);
+    let prepared_vec: Vec<(HeaderName, HeaderValue)> = fwd_headers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    super::bridge::handle_http_direct(
+        state.upstream_transport.clone(),
+        parts.method,
+        target_url,
+        prepared_vec,
+        body_bytes,
+        cfg.outbound_proxy.clone(),
+        cfg.upstream_websocket_enabled,
+        retry_policy,
+        state.active_requests.clone(),
+        route_changed,
+        state.shutdown_sender.subscribe(),
+    )
+    .await
+}
 
-    // 8. 原子计数与退出守卫
-    state.active_requests.fetch_add(1, Ordering::SeqCst);
-    let _guard = RequestGuard(state.active_requests.clone());
-
-    // 9. 重试策略准备与请求发送
-    let retry_enabled = cfg.retry_enabled;
-    let retry_count: usize = cfg.retry_count.parse().unwrap_or(5);
-    let retry_interval: u64 = cfg.retry_interval_seconds.parse().unwrap_or(1);
-    let retry_status_codes = cfg.retry_status_codes.clone();
-    let (_, parsed_retry_ranges) = crate::common::config::normalize_retry_status_codes(&retry_status_codes);
-
-    let method = parts.method;
-    let mut attempts = 0;
-    let start_time = Instant::now();
-
-    loop {
-        attempts += 1;
-
-        let mut req_builder = client.request(
-            reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
-            &target_url,
-        );
-
-        for (k, v) in fwd_headers.iter() {
-            if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_ref()) {
-                if let Ok(val) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) {
-                    req_builder = req_builder.header(name, val);
-                }
-            }
-        }
-
-        if !body_bytes.is_empty() {
-            req_builder = req_builder.body(body_bytes.clone());
-        }
-
-        match req_builder.send().await {
-            Ok(upstream_resp) => {
-                let status = upstream_resp.status();
-                let status_u16 = status.as_u16();
-
-                // 检查是否需要触发重试
-                if retry_enabled
-                    && attempts <= retry_count
-                    && parsed_retry_ranges.iter().any(|&(s, e)| status_u16 >= s && status_u16 <= e)
-                {
-                    let retry_after_secs = upstream_resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.trim().parse::<u64>().ok())
-                        .map(|s| s.clamp(1, 60));
-
-                    let base_delay = retry_after_secs.unwrap_or_else(|| retry_interval.max(1));
-                    let jitter_ms = (std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.subsec_millis() % 100 + 50)
-                        .unwrap_or(50)) as u64;
-
-                    let total_delay = Duration::from_millis(base_delay * 1000 + jitter_ms);
-                    warn!(
-                        "上游返回状态码 {}，命中重试规则，等待 {:.2}s 后进行第 {} 次重试...",
-                        status_u16,
-                        total_delay.as_secs_f64(),
-                        attempts
-                    );
-                    tokio::time::sleep(total_delay).await;
-                    continue;
-                }
-
-                // 记录完成耗时（对齐 Go requestLogger）
-                info!("{} {} completed in {:?}", method, path, start_time.elapsed());
-
-                // 成功或无需重试，构建响应
-                let mut response_builder = Response::builder().status(status_u16);
-
-                for (k, v) in upstream_resp.headers().iter() {
-                    let name = k.as_str().to_lowercase();
-                    if name == "connection" || name == "transfer-encoding" {
-                        continue;
-                    }
-                    if let Ok(axum_k) = HeaderName::from_bytes(k.as_ref()) {
-                        if let Ok(axum_v) = HeaderValue::from_bytes(v.as_bytes()) {
-                            response_builder = response_builder.header(axum_k, axum_v);
-                        }
-                    }
-                }
-
-                // 流式透传上游响应（完全支持 SSE / 打字机输出）
-                let mut response_route_changed = route_changed;
-                let stream = upstream_resp.bytes_stream().take_until(async move {
-                    let _ = response_route_changed.changed().await;
-                });
-                let body = Body::from_stream(stream);
-                return response_builder.body(body).unwrap_or_else(|_| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "构建响应体失败").into_response()
-                });
-            }
-            Err(err) => {
-                if retry_enabled && attempts <= retry_count {
-                    let base_delay = retry_interval.max(1);
-                    let jitter_ms = (std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.subsec_millis() % 100 + 50)
-                        .unwrap_or(50)) as u64;
-                    let total_delay = Duration::from_millis(base_delay * 1000 + jitter_ms);
-
-                    warn!(
-                        "请求上游发生网络错误: {}，等待 {:.2}s 进行第 {} 次重试...",
-                        err,
-                        total_delay.as_secs_f64(),
-                        attempts
-                    );
-                    tokio::time::sleep(total_delay).await;
-                    continue;
-                }
-
-                error!("{} {} 请求上游最终失败: {} (耗时: {:?})", method, path, err, start_time.elapsed());
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({
-                        "error": {
-                            "message": format!("上游网关连接失败: {}", err),
-                            "type": "bad_gateway"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-        }
+fn build_retry_policy(cfg: &crate::common::AppConfig) -> super::bridge::RetryPolicy {
+    let (_, status_ranges) =
+        crate::common::config::normalize_retry_status_codes(&cfg.retry_status_codes);
+    let interval_secs = cfg
+        .retry_interval_seconds
+        .trim()
+        .parse::<f64>()
+        .unwrap_or(1.0)
+        .max(0.0);
+    super::bridge::RetryPolicy {
+        enabled: cfg.retry_enabled,
+        max_retries: cfg.retry_count.trim().parse::<usize>().unwrap_or(5),
+        interval: Duration::from_secs_f64(interval_secs),
+        status_codes: std::collections::HashSet::new(),
+        status_ranges,
     }
 }
 
@@ -3004,5 +2991,439 @@ mod tests {
             target_http.clone()
         };
         assert_eq!(ws_target_http, "ws://127.0.0.1:8000/v1/models");
+    }
+
+    fn test_h2_tls_acceptor() -> (
+        tokio_rustls::TlsAcceptor,
+        rustls::pki_types::CertificateDer<'static>,
+    ) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_der = cert.cert.der().clone();
+        let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()),
+        );
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let mut srv_cfg = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
+        srv_cfg.alpn_protocols = vec![b"h2".to_vec()];
+        (tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(srv_cfg)), cert_der)
+    }
+
+    async fn spawn_mock_h2_upstream<F, Fut>(
+        enable_connect_protocol: bool,
+        handler: F,
+    ) -> (
+        u16,
+        rustls::pki_types::CertificateDer<'static>,
+        tokio::task::JoinHandle<()>,
+    )
+    where
+        F: Fn(http::Request<h2::RecvStream>, h2::server::SendResponse<Bytes>) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let (acceptor, root_cert) = test_h2_tls_acceptor();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handler = std::sync::Arc::new(handler);
+
+        let join = tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                let handler = std::sync::Arc::clone(&handler);
+                tokio::spawn(async move {
+                    let Ok(tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let mut builder = h2::server::Builder::new();
+                    if enable_connect_protocol {
+                        builder.enable_connect_protocol();
+                    }
+                    let Ok(mut h2_conn) = builder.handshake::<_, Bytes>(tls).await else {
+                        return;
+                    };
+                    while let Some(Ok((req, respond))) = h2_conn.accept().await {
+                        let handler = std::sync::Arc::clone(&handler);
+                        tokio::spawn(async move {
+                            handler(req, respond).await;
+                        });
+                    }
+                });
+            }
+        });
+        (port, root_cert, join)
+    }
+
+    fn test_state_with_transport(
+        upstream: String,
+        root_cert: rustls::pki_types::CertificateDer<'static>,
+        upstream_websocket_enabled: bool,
+    ) -> AppState {
+        let mut config = AppConfig {
+            upstream_base_url: upstream,
+            upstream_api_key: "sk-test-key".to_string(),
+            upstream_websocket_enabled,
+            retry_enabled: false,
+            llmtrim_path: std::env::temp_dir()
+                .join(format!("llmtrim-direct-test-{}", std::process::id()))
+                .join("llmtrim.exe")
+                .to_string_lossy()
+                .to_string(),
+            ..AppConfig::default()
+        };
+        config.retry_status_codes = String::new();
+        let mut state = AppState::new(
+            config,
+            std::env::temp_dir().join("llmtrim-direct-test.yaml"),
+        );
+        state.upstream_transport = std::sync::Arc::new(
+            crate::server::upstream_transport::UpstreamTransport::new(
+                crate::server::upstream_transport::UpstreamTransportConfig {
+                    enable_h3: false,
+                    extra_root_certs: vec![root_cert],
+                    ..Default::default()
+                },
+            ),
+        );
+        state
+    }
+
+    async fn read_h2_body(mut recv: h2::RecvStream) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some(Ok(chunk)) = recv.data().await {
+            let _ = recv.flow_control().release_capacity(chunk.len());
+            out.extend_from_slice(&chunk);
+        }
+        out
+    }
+
+    async fn spawn_local_gateway_server(
+        state: AppState,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route(
+                "/v1/{*path}",
+                axum::routing::any(move |State(st): State<AppState>, req: Request| async move {
+                    let (_, route_changed) = observe_llmtrim_route(&st, || false);
+                    forward_handler_selected(st, req, false, route_changed).await
+                }),
+            )
+            .with_state(state);
+        let join = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (addr, join)
+    }
+
+    #[tokio::test]
+    async fn invalid_websocket_upgrade_returns_400_instead_of_stripping_get() {
+        let state = test_state("http://127.0.0.1:1/v1".into(), String::new());
+        *state.proxy_running.write().await = true;
+        let (_, route_changed) = observe_llmtrim_route(&state, || false);
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/v1/responses")
+            .header(header::CONNECTION, "Upgrade")
+            .header(header::UPGRADE, "websocket")
+            .body(Body::empty())
+            .unwrap();
+        let response = forward_handler_selected(state, request, false, route_changed).await;
+        assert!(response.status().is_client_error());
+    }
+
+    #[tokio::test]
+    async fn default_route_ws_disabled_strips_ws_headers_and_bridges_sse_without_mutating_done() {
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<(
+            http::HeaderMap,
+            Vec<u8>,
+        )>::new()));
+        let captured_srv = std::sync::Arc::clone(&captured);
+
+        let (port, root_cert, h2j) = spawn_mock_h2_upstream(true, move |req, mut respond| {
+            let captured_srv = std::sync::Arc::clone(&captured_srv);
+            async move {
+                let headers = req.headers().clone();
+                let body = read_h2_body(req.into_body()).await;
+                captured_srv.lock().await.push((headers, body));
+
+                let resp = http::Response::builder()
+                    .status(200)
+                    .header("content-type", "text/event-stream; charset=utf-8")
+                    .body(())
+                    .unwrap();
+                let mut send = respond.send_response(resp, false).unwrap();
+                send.send_data(
+                    Bytes::from_static(
+                        b"event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\ndata: [DONE]\n\n",
+                    ),
+                    true,
+                )
+                .unwrap();
+            }
+        })
+        .await;
+
+        let state = test_state_with_transport(
+            format!("https://localhost:{port}/v1"),
+            root_cert,
+            false,
+        );
+        *state.proxy_running.write().await = true;
+        let (addr, srv_join) = spawn_local_gateway_server(state).await;
+
+        let req = format!("ws://{addr}/v1/responses")
+            .into_client_request()
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws.send(TungsteniteMessage::Text(
+            r#"{"model":"gpt-5","input":"hi"}"#.into(),
+        ))
+        .await
+        .unwrap();
+
+        let msg1 = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        let msg2 = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(msg1, r#"{"delta":"hi"}"#);
+        // Must preserve literal [DONE] instead of rewriting to {"choices":[],"done":true}.
+        assert_eq!(msg2, "[DONE]");
+
+        let reqs = captured.lock().await;
+        assert_eq!(reqs.len(), 1);
+        let (up_headers, up_body) = &reqs[0];
+        assert!(up_headers.get("upgrade").is_none());
+        assert!(up_headers.get("sec-websocket-key").is_none());
+        assert!(up_headers.get("sec-websocket-version").is_none());
+        assert_eq!(
+            up_headers.get("accept-encoding").and_then(|v| v.to_str().ok()),
+            Some("identity")
+        );
+        assert_eq!(
+            up_headers.get("authorization").and_then(|v| v.to_str().ok()),
+            Some("Bearer sk-test-key")
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(up_body).unwrap();
+        assert_eq!(parsed.get("stream").and_then(|v| v.as_bool()), Some(true));
+
+        h2j.abort();
+        srv_join.abort();
+    }
+
+    #[tokio::test]
+    async fn default_route_ws_enabled_falls_back_from_h2_extended_connect_rejection_to_sse_bridge()
+    {
+        let (port, root_cert, h2j) = spawn_mock_h2_upstream(true, move |req, mut respond| async move {
+            if req.method() == Method::CONNECT {
+                let resp = http::Response::builder().status(404).body(()).unwrap();
+                let mut send = respond.send_response(resp, false).unwrap();
+                send.send_data(Bytes::from_static(b"ws not supported here"), true)
+                    .unwrap();
+                return;
+            }
+            let _ = read_h2_body(req.into_body()).await;
+            let resp = http::Response::builder()
+                .status(200)
+                .header("content-type", "text/event-stream")
+                .body(())
+                .unwrap();
+            let mut send = respond.send_response(resp, false).unwrap();
+            send.send_data(Bytes::from_static(b"data: {\"ok\":true}\n\n"), true)
+                .unwrap();
+        })
+        .await;
+
+        let state = test_state_with_transport(
+            format!("https://localhost:{port}/v1"),
+            root_cert,
+            true,
+        );
+        *state.proxy_running.write().await = true;
+        let (addr, srv_join) = spawn_local_gateway_server(state).await;
+
+        let req = format!("ws://{addr}/v1/responses")
+            .into_client_request()
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws.send(TungsteniteMessage::Text(
+            r#"{"model":"gpt-5","input":"fallback"}"#.into(),
+        ))
+        .await
+        .unwrap();
+
+        let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(msg, r#"{"ok":true}"#);
+
+        h2j.abort();
+        srv_join.abort();
+    }
+
+    #[tokio::test]
+    async fn default_route_sse_rejection_auto_falls_back_to_non_streaming_https() {
+        let (port, root_cert, h2j) = spawn_mock_h2_upstream(false, move |req, mut respond| async move {
+            let body = read_h2_body(req.into_body()).await;
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            if v.get("stream").and_then(|s| s.as_bool()) == Some(true) {
+                let resp = http::Response::builder()
+                    .status(406)
+                    .header("content-type", "application/json")
+                    .body(())
+                    .unwrap();
+                let mut send = respond.send_response(resp, false).unwrap();
+                send.send_data(Bytes::from_static(b"{\"error\":\"sse not supported\"}"), true)
+                    .unwrap();
+                return;
+            }
+            let resp = http::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(())
+                .unwrap();
+            let mut send = respond.send_response(resp, false).unwrap();
+            send.send_data(
+                Bytes::from_static(b"{\"id\":\"resp_non_sse\",\"output\":\"ok\"}"),
+                true,
+            )
+            .unwrap();
+        })
+        .await;
+
+        let state = test_state_with_transport(
+            format!("https://localhost:{port}/v1"),
+            root_cert,
+            false,
+        );
+        *state.proxy_running.write().await = true;
+
+        // 1. Test Local HTTP POST with stream=true auto-falling back to ordinary non-streaming HTTPS
+        let (_, route_changed) = observe_llmtrim_route(&state, || false);
+        let http_req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"model":"gpt-5","stream":true}"#))
+            .unwrap();
+        let http_resp = forward_handler_selected(state.clone(), http_req, false, route_changed).await;
+        assert_eq!(http_resp.status(), StatusCode::OK);
+        let http_body = axum::body::to_bytes(http_resp.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(
+            http_body.as_ref(),
+            br#"{"id":"resp_non_sse","output":"ok"}"#
+        );
+
+        // 2. Test Local WS bridging automatically falling back from 406 SSE to non-streaming HTTPS
+        let (addr, srv_join) = spawn_local_gateway_server(state).await;
+        let ws_req = format!("ws://{addr}/v1/chat/completions")
+            .into_client_request()
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
+        ws.send(TungsteniteMessage::Text(r#"{"model":"gpt-5"}"#.into()))
+            .await
+            .unwrap();
+        let ws_reply = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(ws_reply, r#"{"id":"resp_non_sse","output":"ok"}"#);
+
+        h2j.abort();
+        srv_join.abort();
+    }
+
+    #[tokio::test]
+    async fn default_route_http_and_sse_bridge_to_upstream_websocket() {
+        let (port, root_cert, h2j) = spawn_mock_h2_upstream(true, move |req, mut respond| async move {
+            assert_eq!(req.method(), Method::CONNECT);
+            let resp = http::Response::builder().status(200).body(()).unwrap();
+            let send = respond.send_response(resp, false).unwrap();
+            let io = crate::server::upstream_transport::H2ConnectIo::new(send, req.into_body());
+            let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                io,
+                tokio_tungstenite::tungstenite::protocol::Role::Server,
+                None,
+            )
+            .await;
+
+            if let Some(Ok(TungsteniteMessage::Text(txt))) = ws.next().await {
+                let parsed: serde_json::Value = serde_json::from_str(&txt).unwrap();
+                assert_eq!(
+                    parsed.get("type").and_then(|v| v.as_str()),
+                    Some("response.create")
+                );
+                ws.send(TungsteniteMessage::Text(
+                    r#"{"type":"response.output_text.delta","delta":"hello"}"#.into(),
+                ))
+                .await
+                .unwrap();
+                ws.send(TungsteniteMessage::Text(
+                    r#"{"type":"response.completed","response":{"id":"resp_ws_1","status":"completed"}}"#
+                        .into(),
+                ))
+                .await
+                .unwrap();
+                let _ = ws.close(None).await;
+                let _ = ws.next().await;
+            }
+        })
+        .await;
+
+        let state = test_state_with_transport(
+            format!("wss://localhost:{port}/v1"),
+            root_cert,
+            true,
+        );
+        *state.proxy_running.write().await = true;
+
+        // 1. Streaming HTTP SSE request -> upstream WebSocket
+        let (_, rc1) = observe_llmtrim_route(&state, || false);
+        let sse_req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"model":"gpt-5","stream":true,"input":"hi"}"#))
+            .unwrap();
+        let sse_resp = forward_handler_selected(state.clone(), sse_req, false, rc1).await;
+        assert_eq!(sse_resp.status(), StatusCode::OK);
+        assert!(sse_resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .contains("text/event-stream"));
+        let sse_body = axum::body::to_bytes(sse_resp.into_body(), 8192)
+            .await
+            .unwrap();
+        let sse_text = String::from_utf8(sse_body.to_vec()).unwrap();
+        assert!(sse_text.contains("event: response.output_text.delta\ndata: "));
+        assert!(sse_text.contains("event: response.completed\ndata: "));
+
+        // 2. Non-streaming HTTP JSON request -> upstream WebSocket
+        let (_, rc2) = observe_llmtrim_route(&state, || false);
+        let json_req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"model":"gpt-5","stream":false,"input":"hi"}"#))
+            .unwrap();
+        let json_resp = forward_handler_selected(state, json_req, false, rc2).await;
+        assert_eq!(json_resp.status(), StatusCode::OK);
+        let json_body = axum::body::to_bytes(json_resp.into_body(), 8192)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&json_body).unwrap();
+        assert_eq!(val.get("id").and_then(|v| v.as_str()), Some("resp_ws_1"));
+        assert_eq!(
+            val.get("status").and_then(|v| v.as_str()),
+            Some("completed")
+        );
+
+        h2j.abort();
     }
 }
