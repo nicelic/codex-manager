@@ -1043,7 +1043,7 @@ projects:
             normalize_gortex_line_endings(&updated),
             normalize_gortex_line_endings(GORTEX_PROMPT_DOC)
         );
-        assert!(updated.contains("v601"));
+        assert!(updated.contains("v703"));
         assert!(updated.contains("unbound_global"));
 
         let _ = std::fs::remove_dir_all(&base);
