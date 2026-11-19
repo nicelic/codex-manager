@@ -222,10 +222,13 @@ sandbox = "elevated"
     fn test_calculate_prompt_slices() {
         use crate::tools::gortex::integrations::calculate_prompt_slices;
 
-        // 显式指定分片大小与默认分片回退（chunk_size == 0 时回退至 200 行）
+        // 显式指定分片大小与默认分片回退（chunk_size == 0 时回退至 270 行）
         assert_eq!(calculate_prompt_slices(0, 200), vec!["L1-1"]);
         assert_eq!(calculate_prompt_slices(200, 200), vec!["L1-200"]);
         assert_eq!(calculate_prompt_slices(300, 200), vec!["L1-200", "L201-300"]);
+        assert_eq!(calculate_prompt_slices(0, 270), vec!["L1-1"]);
+        assert_eq!(calculate_prompt_slices(270, 270), vec!["L1-270"]);
+        assert_eq!(calculate_prompt_slices(300, 270), vec!["L1-270", "L271-300"]);
         assert_eq!(calculate_prompt_slices(256, 256), vec!["L1-256"]);
         assert_eq!(calculate_prompt_slices(356, 256), vec!["L1-256", "L257-356"]);
         assert_eq!(calculate_prompt_slices(500, 400), vec!["L1-400", "L401-500"]);
@@ -247,7 +250,7 @@ sandbox = "elevated"
         );
         assert_eq!(
             calculate_prompt_slices(1000, 0),
-            vec!["L1-200", "L201-400", "L401-600", "L601-800", "L801-1000"]
+            vec!["L1-270", "L271-540", "L541-810", "L811-1000"]
         );
         assert_eq!(calculate_prompt_slices(500, 300), vec!["L1-300", "L301-500"]);
     }
@@ -288,7 +291,8 @@ sandbox = "elevated"
         assert!(prompt.contains("宿主原生只读工具"));
         assert!(prompt.contains("严禁调用 Gortex MCP 读取该文件"));
         assert!(prompt.contains("顺序分片读取与完整性验收"));
-        assert!(prompt.contains("默认按 200 行分片"));
+        assert!(prompt.contains("默认按 270 行分片"));
+        assert!(!prompt.contains("默认按 200 行分片"));
         assert!(!prompt.contains("默认按 256 行分片"));
         assert!(!prompt.contains("默认按 400 行分片"));
         assert!(!prompt.contains("默认按 300 行分片"));
@@ -327,18 +331,18 @@ sandbox = "elevated"
         assert!(small_prompt.contains("核验完整载入后"));
         assert!(small_prompt.len() <= 24 * 1024, "single-slice prompt exceeds 24KB: {} bytes", small_prompt.len());
 
-        // 验证多切片分支按 200 行分片
+        // 验证多切片分支按 270 行分片
         let temp_multi = std::env::temp_dir().join(format!(
             "gortex_multi_prompt_{}.md",
             std::process::id()
         ));
-        let multi_content = (1..=450).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let multi_content = (1..=600).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
         std::fs::write(&temp_multi, multi_content).expect("write temp multi prompt");
         let multi_prompt = gortex_delegated_prompt_body(&temp_multi);
         let _ = std::fs::remove_file(&temp_multi);
 
-        assert!(multi_prompt.contains("共计 450 行"));
-        assert!(multi_prompt.contains("默认按 200 行分片，初始计划为 L1-200、L201-400、L401-450。"));
+        assert!(multi_prompt.contains("共计 600 行"));
+        assert!(multi_prompt.contains("默认按 270 行分片，初始计划为 L1-270、L271-540、L541-600。"));
 
         for generated in [&prompt, &small_prompt] {
             for required in [
@@ -1046,7 +1050,7 @@ projects:
             normalize_gortex_line_endings(&updated),
             normalize_gortex_line_endings(GORTEX_PROMPT_DOC)
         );
-        assert!(updated.contains("v704"));
+        assert!(updated.contains("v707"));
         assert!(updated.contains("unbound_global"));
 
         let _ = std::fs::remove_dir_all(&base);
