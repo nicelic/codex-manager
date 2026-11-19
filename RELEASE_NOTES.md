@@ -1,5 +1,4 @@
 更新说明：
-1. 版本升级至 v1.0.36，同步更新前后端与 vision 配置。
-2. 新增 `upstream_transport` 上游多协议传输引擎，支持 HTTP/3 (QUIC) 与 HTTP/2 竞速、QUIC 保活、断链重试回退及 HTTP/2 Extended CONNECT WebSocket 通道。
-3. 新增 `bridge` 协议桥接模块，实现本地 HTTP / SSE / WebSocket 与上游 WebSocket / SSE / 非流式 HTTPS 的双向桥接及自动降级重试，并在修改上游或代理配置时自动清理复用连接。
-4. 完善代理网关连接状态观测与协议桥接单元测试。
+1. 版本升级至 v1.0.37，同步更新前后端与 vision 配置。
+2. 完善内置 `gortex提示词.md` 规范，补充 Antigravity Lazy MCP 调用外壳、三类容器隔离、`repo`/`project`/`workspace`/`scope` 参数白名单矩阵及 `target` 单属性闭集契约。
+3. 将 Gortex 外挂引导提示词默认分片行数 `DEFAULT_PROMPT_CHUNK_LINES` 调整为 256 行，并同步更新相关单元测试。
