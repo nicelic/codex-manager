@@ -24,7 +24,7 @@ pub const GORTEX_OPENCODE_PLUGIN_ARGV_KEY: &str = "{{GORTEX_HOOK_ARGV}}";
 pub const GORTEX_OPENCODE_PLUGIN_ENFORCE_KEY: &str = "{{GORTEX_ENFORCE}}";
 pub const GORTEX_CURSOR_FRONTMATTER: &str = "---\ndescription: Gortex code intelligence - prefer graph tools over file reads\nalwaysApply: true\n---\n\n";
 /// 默认提示词外挂文档顺序分片行数（确保单片体积远低于宿主单次读取字节上限，并贴合文档自然分段）
-pub const DEFAULT_PROMPT_CHUNK_LINES: usize = 256;
+pub const DEFAULT_PROMPT_CHUNK_LINES: usize = 200;
 
 pub const GORTEX_PROMPT_DOC: &str = include_str!("../../../assets/gortex提示词.md");
 pub const GORTEX_OPENCODE_PLUGIN_DOC: &str = include_str!("../../../assets/gortex-opencode-plugin.js");
