@@ -43,7 +43,7 @@
 ---
 ## 第三部分：19 个本地开发门面命令与逐位置参数拆解（L1 ~ L3 全收录）
 ---
-## 零、 工作区与多项目协同中枢 (`workspace` [9] / `workspace_admin` [14])
+## 零、 工作区与多项目协同中枢 (`workspace` [9] / `workspace_admin`)
 ### 1. `workspace` — 工作区只读与导航（冷门面，共 9 个操作）
 完整基准调用模板：
   查仓库清单：`workspace`（`Arguments={"operation":"repos","arguments":{"format":"json","max_bytes":8400}}`）
@@ -71,60 +71,78 @@
   `"max_tokens"`（整数，可选）：仅 `checkouts` 支持，响应 Token 预算上限。
   严禁传 `repo` / `workspace` / `root` / `cwd`：`workspace` 全量 9 个操作均在工作区级运行（仅 `project` 操作专设 `arguments.project`），严禁乱传 `repo` 等伪选键（`tools_workspace.go:51` 对 `repos`/`info` 传 `repo` 会直接拒绝）。
 ---
-### 2. `workspace_admin` — 工作区治理、索引与富化（冷门面，共 14 个操作）
-完整基准调用模板：
-  普通冷封装型（10 个治理/索引/富化操作）：
-    `workspace_admin`（`Arguments={"operation":"set_active_project","arguments":{"project":"my-app"}}`）
-    `workspace_admin`（`Arguments={"operation":"save_scope","arguments":{"name":"core-svc","repos":"repo-a,repo-b","paths":"src/auth,src/api"}}`）
-    `workspace_admin`（`Arguments={"operation":"reindex","arguments":{"path":"my-app","format":"json"}}`）
-  混合型特例（`blame`/`coverage`/`sql_rebuild`/`temporal_verify` 4 个操作，`output` 放外层顶层）：
-    `workspace_admin`（`Arguments={"operation":"blame","arguments":{"repo":"my-app"},"output":{"format":"json","max_bytes":8400}}`）
-    `workspace_admin`（`Arguments={"operation":"coverage","arguments":{"profile":"coverage.out","repo":"my-app"},"output":{"format":"json","max_bytes":8400}}`）
-`operation` 位置可选参数（全部 14 个）：
-  A. 日常工作区治理（6 个）：
-    `"set_active_project"`：热切换当前会话主工程上下文并持久化，影响后续默认查询作用域。
-    `"track"`：运行时将新仓库或关联 Git worktree 注册纳管进工作区并立即建索引。
-    `"untrack"`：从索引与配置取消跟踪某仓库并清理节点（注意：当操作会删除图谱行时，未传 `confirm: true` 仅作影响预览，不实际移除！）。
-    `"save_scope"`：保存可复用的多仓+仓内子路径组合作用域（供后续 `search`、`analyze` 等通过 `scope` 复用）。
-    `"delete_scope"`：按名称删除已保存的作用域。
-    `"feedback"`：记录（`action:"record"`）或查询（`action:"query"`）上下文召回质量反馈（用于优化 `explore.context` / `explore.prefetch`）。
-  B. 底层索引与 Git 富化写盘（4 个）：
-    `"index"`：全量建索或重建指定绝对路径仓库的图谱（仅在索引损坏、首次手动入库或大面积外部变更未感知时用，严禁日常高频刷）。
-    `"reindex"`：增量重索引（仅重解析变化文件、驱逐已删文件；支持按 `paths` 局部范围重索引，开销远低于 `index`）。
-    `"enrich_churn"`：预计算并写入各文件与符号的 Git 变更热度（`meta.churn`），供 `analyze(kind="churn")` 极速读取。
-    `"enrich_releases"`：预计算并写入发布版本 Tag 时间线（`meta.added_in` 及 `KindRelease` 节点），供 `analyze(kind="releases")` 读取。
-  C. 修改图谱状态的混合型分析（4 个，源码 `facade_registry.go:246-254` 因修改持久化状态而归入本门面）：
-    `"blame"`：结合 Git Blame 富化作者归属分析。
-    `"coverage"`：导入 Go `cover.out` 覆盖率文件并写回图谱节点（内层 `arguments.profile` 必填）。
-    `"sql_rebuild"`：重建 SQL 表与查询调用点关联边。
-    `"temporal_verify"`：时序与历史一致性校验（涉及外部分析与缓存写入）。
-其他参数位置逐项说明：
-  内层 `arguments` 位置（按操作分组）：
-    `set_active_project`：必填 `project`（字符串，工程名如 `"my-app"`，非文件路径）。
-    `track`：必填 `path`（字符串，仓库绝对路径）；可选 `name`（字符串，自定义仓前缀名）、`as_worktree`（布尔，强制作为独立 worktree 纳管为 `<base>@<workspace>`）、`force`（布尔，仅运维/CLI 渠道可用，Agent 会话禁对根目录/家目录强用）。
-    `untrack`：必填 `path`（字符串，路径或仓前缀）；可选 `confirm`（布尔，传 `true` 才真正删除行数据，省略仅预览）。
-    `save_scope`：必填 `name`（作用域名称）+ `repos`（必须是逗号分隔字符串如 `"repoA,repoB"`，严禁传 JSON 数组！）；可选 `paths`（逗号分隔仓内子路径前缀如 `"src/auth,src/api"`）、`description`（描述）。
-    `delete_scope`：必填 `name`（要删除的作用域名称）。
-    `feedback`：必填 `action`（`"record"` 或 `"query"`）。
-      `action:"record"` 可选：`task`（原任务描述）、`useful`（逗号分隔有用符号 ID 串）、`not_needed`（逗号分隔冗余符号 ID 串）、`missing`（逗号分隔遗漏符号 ID 串）、`tool_source`（`"smart_context"` 或 `"prefetch_context"`）。
-      `action:"query"` 可选：`top_n`（整数，每类返回条数，默认 10）、`tool_source`（`"smart_context"` | `"prefetch_context"` | `"all"`）、`format`（固定 `"json"`）、`compact`（禁传 `true`）。
-    `index`：必填 `path`（仓库绝对路径）；无 `format`。
-    `reindex`：可选 `path`（仓库绝对路径或仓前缀，默认主仓）、`paths`（字符串数组 `["dir/a.go"]`，限定局部重扫文件或目录）、`format`（固定 `"json"`）。
-    `enrich_churn` / `enrich_releases`：可选 `branch`（分支/Tag/SHA）、`path`（仓前缀或绝对根路径，空则扫全工作区）、`format`（固定 `"json"`）。
-    `blame` / `coverage` / `sql_rebuild` / `temporal_verify`：
-      `coverage` 必填 `profile`（`cover.out` 路径，绝对或相对仓根）；
-      4 项均支持可选域过滤：`repo`（字符串，仓前缀）、`project`（工程名）、`scope`（Saved-Scope slug）、`workspace`（工作区 slug）；不可把 `format`/`max_bytes` 放进内层 `arguments`。
-  外层顶层 `output` 位置：
-    仅 `blame` / `coverage` / `sql_rebuild` / `temporal_verify` 4 个混合型操作支持：`output: {"format": "json", "max_bytes": 8400}`（禁传 `compact: true`）。
-    其余 10 个操作严禁传顶层 `output`。
-  仓选键禁传边界：除 `blame`/`coverage`/`sql_rebuild`/`temporal_verify` 支持 `{repo, project, scope, workspace}` 外，其余 10 个操作（`set_active_project`/`track`/`untrack`/`save_scope`/`delete_scope`/`feedback`/`index`/`reindex`/`enrich_churn`/`enrich_releases`）严禁传入 `repo`/`root`/`cwd`/`dir` 等伪仓选键（`save_scope` 专用逗号串 `repos`）。
+### 2. `workspace_admin` — 工作区管理兜底（冷门面，日常分析免用）
+> 项目已确保 `track` 就绪时，日常代码分析无需调用本门面（查 Git 历史/归属直接走第 7 条原生 `git` 命令）；仅在以下两类低频场景按需使用，其余操作（`track`/`untrack`/`save_scope`/`blame`/`coverage` 等）须先调 `capabilities(domain="workspace_admin", detail="summary")` 现查 Schema 后再调用（注意仅 `blame`/`coverage`/`sql_rebuild`/`temporal_verify` 需将 `output` 放外层顶层，其余严禁传顶层 `output` 与 `repo`/`root`/`cwd`）。
+  切换当前主工程（`unbound_global` 多仓默认工程不符时）：`workspace_admin`（`Arguments={"operation":"set_active_project","arguments":{"project":"my-app"}}`）
+  增量重索引（外部拉代码/切分支后 `state != "ready"` 或索引滞后时）：`workspace_admin`（`Arguments={"operation":"reindex","arguments":{"path":"my-app","format":"json"}}`）
 ---
-## 一、 检索与探索中枢 (`search` [7] / `explore` [9])
+## 一、 检索与探索中枢 (`explore` [9] / `search` [7])
 > 检索策略门禁：
 > 1. 排查未知逻辑可并发 `search.text`（字面量）+ `search.winnow`（`min_fan_in: 2`），或先 `explore.task`/`explore.context`。
 > 2. `.vue` / `.tsx` / `.svelte` 模板事件与闭包通常不在全局导出符号中，必须首选 `search.text` 定位，禁先用 `symbols` 搜空。
 > 3. 禁止开发任务随手调用 `explore.localize`（会激活终端锁拦截后续调用）；需要持续排查或改代码请用 `explore.task` / `explore.context`。
-### 3. `search` — 精准检索与约束过滤（平铺门面，共 7 个操作）
+### 3. `explore` — 上下文装配与任务探索（平铺门面，共 9 个操作）
+> 1. `options.path` 与顶层 `path` 的真实行为：`normalizeFacadeAliases` 会把所有 `explore` 操作中的 `path`（无论放在顶层还是 `options.path`）一律转换为 `out["repo"] = path` 并删除 `out["path"]`！`capabilities` 中 `options.path` 的子路径描述系遗留且未显式列出 `options.repo`，但运行时 `options.repo` 有效；若要在 `explore.context` 按仓内子目录过滤，必须在 `task` 文本中使用内联 `path:src/foo`（由 `parseFieldQuery` 解析）或用 `save_scope` + `options.scope`！注意 `explore.task` / `explore.localize` 不解析内联 `path:`，仅能按 `options.repo` 限仓。
+> 2. `explore.localize` 双写 `task`：`handleExplore` 强校验顶层 `task` 必填，而部分客户端 Schema 检查 `options.task`——必须调 `localize` 时务必同时传顶层 `task` 与 `options.task`。
+> 3. `options.new_user_task` 硬白名单与锁重置：仅 `explore.task`、`explore.localize`（以及 `read.file`）合法且须为布尔值；传给 `context`/`closure`/`plan`/`prefetch` 等其余操作必报 `invalid_argument` 闪消！若会话曾因 `localize` 进入终态/恢复态，新提问首条 `explore.task` 必须传 `options.new_user_task: true` 才可重置开放；省略 `operation` 默认路由至 `"task"`。
+> 4. 截断触发与官方补全边界（`max_bytes: 8400` 实证）：
+>    ① **两类截断**：`context`/`outline`/`prefetch` 通过 `output.max_bytes: 8400` 限制返回体积（超出由 `respondJSONOrTOON` 裁剪列表并打 `_truncated_by_budget: true` 等标记）；`task`/`localize`/`context(graded)`/`closure` 受 `options.token_budget` 约束（`task`/`localize` 不支持 `output.max_bytes`）。
+>    ② **`8400` 内部截断不可用 `response` 恢复**：`max_bytes` 裁剪发生在 Handler 返回前，之后 `captureResponse` 才捕获进会话缓冲环；因此**被 `max_bytes: 8400` 内部裁掉的尾部，`response` 缓冲环里并不存在，`response.slice`/`grep` 无法提取！**（仅当未传 `max_bytes` 致整段未裁剪结果 `>1024 B` 且 `<=8 MiB` 被宿主 `output.txt` 截断时，`response` 才存有完整原文）。
+>    ③ **官方可用补全手段**：`prefetch` 用 `options.paginate: true` + `cursor`（`next_cursor`）原生翻页取全；`context`/`outline`/`closure` 无 `cursor` 按字节续传工具，被 `8400` 裁剪时改用返回符号 `id`/路径调 `read.source`/`read.symbols`/`read.file` 或 `relations` 精准补读，或在 `context` 用内联 `path:src/sub` 缩域拆分查询 / `output.fields` 精简字段（仅必要时先 `estimate: true` 后临时不设 `max_bytes`）；`task`/`localize` 超 `token_budget` 时仅前 5 个核心目标保留完整源码（单函数不超 `1/6` 预算），其余降级为签名（每项最多 5 个 `callers`/`callees`），但**所有候选 `id` 与文件行号永不裁剪**，直接拿 `id` 调 `read`/`relations`/`trace.call_chain` 补读即可（`localize` 锁态需用带 `new_user_task: true` 的 `explore.task` 解锁；若目标不在 `max_symbols` 硬上限 30 内，改用 `search.text`/`search.files` 补充）。
+> 5. `"max_symbols"` 一般参数使用标准：`context` 为 `5`（省略按图谱自适应，严禁抄用 `16`），`task` / `localize` 为 `16`（允许范围 `1~30`，仅前 5 个保留完整源码体，其余仅输出位置与签名）。
+> 6. `token_budget` 大小限制说明：按 ~4 字节/Token 换算，`max_bytes: 8400` 约容 `2100` Tokens，扣除 JSON 结构开销后，**`explore` 日常统一限制 `token_budget <= 1800`**（`task` 用默认 `1600`，`context` / `closure` / `localize` 建议设 `1800` 以内，避免 `context` 撞上 `8400` 字节硬截断）。
+完整基准调用模板：
+  非终止任务邻域探索（开发排查首选）：`explore`（`Arguments={"operation":"task","task":"定位登录鉴权失败原因","options":{"repo":"my-app","max_symbols":16,"token_budget":1600,"new_user_task":true}}`）
+  终端定位即止（仅只问位置不改码时慎用）：`explore`（`Arguments={"operation":"localize","task":"定位登录鉴权入口所在文件与函数","options":{"repo":"my-app","task":"定位登录鉴权入口所在文件与函数","max_symbols":16,"token_budget":1800,"new_user_task":true}}`）
+  聚焦上下文装配（支持内联 `path:` 过滤子目录）：`explore`（`Arguments={"operation":"context","task":"path:src/auth 定位登录鉴权失败原因","options":{"repo":"my-app","max_symbols":5,"fidelity":"graded","token_budget":1800},"output":{"format":"json","max_bytes":8400}}`）
+  依赖闭包构建：`explore`（`Arguments={"operation":"closure","options":{"files":"my-app/src/a.rs,my-app/src/b.rs","max_depth":6,"token_budget":1800,"repo":"my-app"},"output":{"format":"json"}}`）
+  仓库概览：`explore`（`Arguments={"operation":"outline","options":{},"output":{"format":"json","max_bytes":8400}}`）
+  极简代码库速览（~500 Token）：`explore`（`Arguments={"operation":"wakeup","options":{"max_tokens":500},"output":{"format":"json"}}`）
+  开局调用路径路由推荐：`explore`（`Arguments={"operation":"plan","options":{"task":"排查鉴权失败并修复","max_calls":4}}`）
+  上下文增量预取（支持游标分页）：`explore`（`Arguments={"operation":"prefetch","task":"继续排查鉴权校验分支","options":{"recent_symbols":"my-app/src/auth.rs::verify","include_source":true,"limit":10,"paginate":true},"output":{"format":"json","max_bytes":8400}}`）
+  陌生仓库冷启动问题建议：`explore`（`Arguments={"operation":"suggest","options":{"limit":8},"output":{"format":"json"}}`）
+`operation` 位置可选参数（全部 9 个）：
+  `"task"`：非终止邻域搜集（持续诊断、读多文件或改代码任务首选，不锁定后续工具；省略 `operation` 时默认路由至此）。
+  `"localize"`：定位即止的终端证据提取（会激活 `localization_complete` 会话锁，拦截后续多轮探索，仅一句话定位即止时慎用；服务端固定注入 `localize: true`）。
+  `"context"`：单次组装任务所需的最小聚焦上下文（含符号源码、调用关系、编辑计划，支持 `graded` 分级、Token 预估与增量 Delta）。
+  `"closure"`：从指定种子文件或种子符号出发构建多跳传递依赖闭包上下文包（按图距离或随机游走近度排序）。
+  `"outline"`：单次获取全库叙事级概览（语言分布、社区、热点、高频导入、入口点）。
+  `"wakeup"`：获取 ~500 Token 极精简代码库速览摘要。
+  `"plan"`：开局工具调用路径路由推荐（返回建议调用序列与预填参数）。
+  `"prefetch"`：基于最近关注符号与任务预测下一步需要的上下文。
+  `"suggest"`：针对陌生仓库生成 5~10 条冷启动探索问题建议。
+其他参数位置逐项说明：
+  顶层 `task` 位置：
+    `task`、`context` 必填（`context` 支持内联 `path:src/foo`）；
+    `localize` 顶层 `task` 与 `options.task` 建议同时传；
+    `prefetch` 可选；
+    `plan` 顶层禁写 `task`（必须写在 `options.task`）；
+    `closure`、`outline`、`wakeup`、`suggest` 不传顶层 `task`。
+    `task` 高效撰写细节（`task`/`localize` 解析规则）：用 `""`/`''`/`` `` `` 包裹精确字面量触发源码直搜并保底入窗；写 `file:line` 或 `file:start-end` 自动将最小封闭声明提权至最前；写 `--flag`、全大写环境变量、`k=v` 或 `Dockerfile`/`Makefile`/`workflow`/`config` 等词自动激活语法锚点/构件通道；多行且 `>=300` 字符时 `shapeExploreQuery` 会对首行非空文本加权重复一次并剥离代码块/URL/短行，务必把核心问题放第一行。
+  顶层 `path` 位置：
+    仅作为仓库/工作树文件系统锚点（服务端会将其转为 `repo`）；日常建议统一使用 `options.repo`，避免与仓内子路径混淆。
+  顶层 `view` 位置：
+    全 9 个操作均支持顶层 `view`（切换 `auto`/`base`/`worktree`/`git_ref`/`commit` 视角，按需省略）。
+  `options` 位置：
+    域选择器（按源码 `tools_*.go` 与 `facadeFieldConsumed` 验证）：
+      `"repo"`：`task`、`localize`、`context`、`closure` 允许；`outline`、`wakeup`、`plan`、`prefetch`、`suggest` 严禁传。
+      `"project"` / `"scope"`：仅 `context`、`closure` 允许；其余 7 项 严禁传。
+      `"workspace"` / `"ref"`：仅 `closure` 允许；其余 8 项 严禁传。
+    `new_user_task`（布尔）：仅 `task`、`localize` 合法（且仅在新用户问题触发的首次调用传 `true`，同任务后续调用与重试禁传）；`context`/`closure` 等其余 7 项严禁传！
+    `task` / `localize` 专属：`max_symbols`（使用标准 `16`，允许范围 `1~30`；`capabilities` 旧描述仍写 default 10）、`token_budget`（范围 `1000~24000`；`task` 默认 `1600`、`localize` 源码默认 `12000`，日常统一限制 `<= 1800`；仅保留前 5 个完整源码体且单函数不超 `1/6` 预算，每项最多 5 个 `callers`/`callees`）、`task`（仅 `localize` 补填）。
+    `context` 专属：`entry_point`（起始符号 ID 或文件路径）、`max_symbols`（使用标准 `5`，省略按图谱规模自适应，严禁设 `16`）、`fidelity`（`"flat"` | `"graded"`）、`token_budget`（仅 `graded` 生效，省略按图谱规模自适应，配 `max_bytes: 8400` 时日常限制 `<= 1800`）、`estimate`（布尔，仅估算 Token 成本不返回正文）、`if_none_match`（ETag）、`delta_from`（增量对比 ETag，命中缓存仅返回增量 diff）、`include_call_paths` / `include_flows` / `include_confidence`（布尔）。
+    `closure` 专属：`files`（逗号串，支持 `<repo>/` 相对路径或绝对路径）与 `symbols`（逗号串）至少必填其一、`edge_kinds`（逗号串，默认依赖白名单与基础设施边）、`max_depth`（默认 6）、`max_nodes`（默认 400）、`rank`（`"distance"` | `"proximity"`）、`token_budget`（省略按仓规模自适应，日常建议限制 `<= 1800`）。
+    `wakeup` 专属：`max_tokens`（默认 500，按 4 字节/Token 估算截断）、`top_communities`（4）、`top_entry_points`（5）、`top_hotspots`（5）。
+    `plan` 专属：必填 `task`、可选 `max_calls`（`<=0` 时默认 4）。
+    `prefetch` 专属：`recent_symbols`（逗号分隔符号 ID 串）、`include_source`（看代码必传 `true`，返回前 5 候选源码）、`limit`（默认 10）、`max_tokens`（与 `max_bytes` 取更严者）、`paginate`（布尔，按预算分页并返回 `next_cursor`）、`cursor`（续取下一页）。
+    `suggest` 专属：`limit`（默认 8，上限 20）。
+  `output` 位置：
+    `context`、`outline`、`prefetch`：`{"format":"json","max_bytes":8400}`（统一限制 `8400` 防截断，支持可选 `fields` 精简字段，禁 `compact: true`；超 `8400` 被内部裁剪后不可用 `response` 取回尾部，需用 `read`/`relations`/`cursor` 或 `path:` 缩域补全）；
+    `closure`、`suggest`：`{"format":"json"}`（无 `max_bytes`）；
+    `wakeup`：`{"format":"json"}` 或 `{"format":"markdown"}`（不传时默认 `"markdown"`，传 `"json"` 返回 `{markdown,tokens_est,sections}`，无 `max_bytes`）；
+    `task`、`localize`、`plan`：不传 `output`。
+---
+### 4. `search` — 精准检索与约束过滤（平铺门面，共 7 个操作）
 完整基准调用模板：
   全文/正则检索：`search`（`Arguments={"operation":"text","query":"handle_save_user","options":{"repo":"my-app","path":"frontend/src/views","regexp":false,"limit":50},"output":{"format":"json"}}`）
   约束链检索：`search`（`Arguments={"operation":"winnow","query":"forward_handler","options":{"repo":"my-app","path_prefix":"src/api","min_fan_in":0,"limit":30},"output":{"format":"json","max_bytes":8250}}`）
@@ -162,54 +180,6 @@
     `"max_bytes"`：仅 `symbols`、`ast` 传 `8400`，`winnow` 传 `8250`；`text`、`files`、`artifacts`、`completion` 在 Schema 中未声明 `max_bytes`，严禁传入！
     `"fields"`（仅 `winnow`、`symbols` 支持，逗号分隔保留字段名）。
     `"compact"`：全门面严禁传 `true`。
----
-### 4. `explore` — 上下文装配与任务探索（平铺门面，共 9 个操作）
-> ⚠️ Gortex 源码实证纠偏（必读：`facade_tools.go:484-518, 1580-1586, 2117-2126`）：
-> 1. `options.path` 与顶层 `path` 的真实行为：`normalizeFacadeAliases` 会把所有 `explore` 操作中的 `path`（无论放在顶层还是 `options.path`）一律转换为 `out["repo"] = path` 并删除 `out["path"]`！因此 `options.path` 在 `explore` 中不是仓内子目录过滤，而是仓库锚点；若要在 `explore.context` 按仓内子目录过滤，必须在 `task` 文本中使用内联 `path:src/foo`（由 `parseFieldQuery` 解析）或用 `save_scope` + `options.scope`！
-> 2. `explore.localize` 双写 `task`：`handleExplore` 强校验顶层 `task` 必填，而部分客户端 Schema 检查 `options.task`——必须调 `localize` 时务必同时传顶层 `task` 与 `options.task`。
-> 3. `options.new_user_task` 硬白名单：仅 `explore.task`、`explore.localize`（以及 `read.file`）合法且须为布尔值；传给 `context`/`closure`/`plan`/`prefetch` 等其余操作必报 `invalid_argument` 闪消！
-完整基准调用模板：
-  非终止任务邻域探索（开发排查首选）：`explore`（`Arguments={"operation":"task","task":"定位登录鉴权失败原因","options":{"repo":"my-app","max_symbols":10,"token_budget":1600}}`）
-  聚焦上下文装配（支持内联 `path:` 过滤子目录）：`explore`（`Arguments={"operation":"context","task":"path:src/auth 定位登录鉴权失败原因","options":{"repo":"my-app","fidelity":"graded","token_budget":4000},"output":{"format":"json","max_bytes":8400}}`）
-  依赖闭包构建：`explore`（`Arguments={"operation":"closure","options":{"files":"my-app/src/a.rs,my-app/src/b.rs","max_depth":6,"token_budget":4000,"repo":"my-app"},"output":{"format":"json"}}`）
-  仓库概览：`explore`（`Arguments={"operation":"outline","options":{},"output":{"format":"json","max_bytes":8400}}`）
-`operation` 位置可选参数（全部 9 个）：
-  `"task"`：非终止邻域搜集（持续诊断、读多文件或改代码任务首选，不锁定后续工具）。
-  `"localize"`：定位即止的终端证据提取（会激活 `localization_complete` 会话锁，拦截后续多轮探索，仅一句话定位即止时慎用；服务端固定注入 `localize: true`）。
-  `"context"`：单次组装任务所需的最小聚焦上下文（含符号源码、调用关系、编辑计划，支持 `graded` 分级、Token 预估与增量 Delta）。
-  `"closure"`：从指定种子文件或种子符号出发构建多跳传递依赖闭包上下文包（按图距离或随机游走近度排序）。
-  `"outline"`：单次获取全库叙事级概览（语言分布、社区、热点、高频导入、入口点）。
-  `"wakeup"`：获取 ~500 Token 极精简代码库速览摘要。
-  `"plan"`：开局工具调用路径路由推荐（返回建议调用序列与预填参数）。
-  `"prefetch"`：基于最近关注符号与任务预测下一步需要的上下文。
-  `"suggest"`：针对陌生仓库生成 5~10 条冷启动探索问题建议。
-其他参数位置逐项说明：
-  顶层 `task` 位置：
-    `task`、`context` 必填（`context` 支持内联 `path:src/foo`）；
-    `localize` 顶层 `task` 与 `options.task` 建议同时传；
-    `prefetch` 可选；
-    `plan` 顶层禁写 `task`（必须写在 `options.task`）；
-    `closure`、`outline`、`wakeup`、`suggest` 不传顶层 `task`。
-  顶层 `path` 位置：
-    仅作为仓库/工作树文件系统锚点（服务端会将其转为 `repo`）；日常建议统一使用 `options.repo`，避免与仓内子路径混淆。
-  `options` 位置：
-    域选择器（按源码 `tools_*.go` 与 `facadeFieldConsumed` 验证）：
-      `"repo"`：`task`、`localize`、`context`、`closure` 允许；`outline`、`wakeup`、`plan`、`prefetch`、`suggest` 严禁传。
-      `"project"` / `"scope"`：仅 `context`、`closure` 允许；其余 7 项 严禁传。
-      `"workspace"` / `"ref"`：仅 `closure` 允许；其余 8 项 严禁传。
-    `new_user_task`（布尔）：仅 `task`、`localize` 合法（且仅在新用户问题触发的首次调用传 `true`，同任务后续调用与重试禁传）；`context`/`closure` 等其余 7 项严禁传！
-    `task` / `localize` 专属：`max_symbols`（默认 10）、`token_budget`（推荐 1600）、`task`（仅 `localize` 补填）。
-    `context` 专属：`entry_point`（起始符号 ID 或文件路径）、`max_symbols`（默认 5）、`fidelity`（`"flat"` | `"graded"`）、`token_budget`（默认 8000，仅 `graded` 生效，推荐 `1600~4000`）、`estimate`（布尔，仅估算 Token 成本不返回正文）、`if_none_match`（ETag）、`delta_from`（增量对比 ETag）、`include_call_paths` / `include_flows` / `include_confidence`（布尔）。
-    `closure` 专属：`files` 与 `symbols` 至少必填其一（均用逗号分隔字符串，带 `<repo>/` 前缀）、`edge_kinds`（逗号串）、`max_depth`（默认 6）、`max_nodes`（默认 400）、`rank`（`"distance"` | `"proximity"`）、`token_budget`（推荐 4000）。
-    `wakeup` 专属：`max_tokens`（默认 500）、`top_communities`（4）、`top_entry_points`（5）、`top_hotspots`（5）。
-    `plan` 专属：必填 `task`、可选 `max_calls`（默认 4）。
-    `prefetch` 专属：`recent_symbols`（逗号分隔符号 ID 串）、`include_source`（看代码必传 `true`）、`limit`（默认 10）、`max_tokens`、`paginate`（布尔）、`cursor`。
-    `suggest` 专属：`limit`（默认 8，上限 20）。
-  `output` 位置：
-    `context`、`outline`、`prefetch`：`{"format":"json","max_bytes":8400}`（禁 `compact: true`）；
-    `closure`、`suggest`：`{"format":"json"}`（无 `max_bytes`）；
-    `wakeup`：`{"format":"json"}` 或 `{"format":"markdown"}`（无 `max_bytes`）；
-    `task`、`localize`、`plan`：不传 `output`。
 ---
 ## 二、 源码精读中枢 (`read` [7])
 ### 5. `read` — 源码与文件精读（平铺门面，共 7 个操作）
@@ -741,3 +711,5 @@
 6.【强制 JSON、无折叠与禁止压缩】：查询/分析类 `format` 接口是否一律传 `"format": "json"`，且 `read.file` 未硬塞 `format`？是否已全库禁用 `compress_bodies: true`（显式传 `false`）、`compact: true`、`summary_only: true` 与待改源码省略过滤？`read.file` 是否按 `limit: 50~80` 分段读取原文？
 7.【未读禁盲改、已读不重读、稳态路由与快速熔断】：编辑前上下文是否已有未折叠原文（已读未变则直接改、绝不重复重读）？单点或跨不同文件互独立修改是否优先走 `edit.file(match/replacement)`？走 `edit.batch` 时是否仅用于原子/同文件多处叠加，且控量 `2~6` 项（硬上限 `8` 项/`<4 KB`）、绝不含 `changes:[null]`/`"output":null`、绝不混用 `match` 与 `old_`？`edit.batch` 是否严格执行 2 错降批（或直切 `match`）、3 错硬切 `match`？
 8.【核验闭环、防溢出与 `capabilities` 首错停猜】：源码改后是否完成 `change.detect` → `change.diagnostics`（无 LSP 时原生构建兜底）→ `change.tests` 并跑原生测试？若出现 `output.txt` 是否只用 `response` 提炼？一旦发生任何参数错误是否立即停猜并查一次 `capabilities(domain, operation, detail:"schema")`？
+---
+> 总结（通用分析主链路）：`workspace` 定仓认前缀 → `explore`（`task`/`context`）快速收敛邻域与候选 → `search`（`text`/`symbols`/`winnow`）精确补充定位 → `read`（`source`/`symbols`/`file`）精读未折叠原文；其余关系、链路、分析与改码核验工具（`relations`/`trace`/`analyze`/`edit`/`refactor`/`change` 等）按任务实际需要自主选用，并严格遵守各门面参数与截断契约。
