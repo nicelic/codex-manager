@@ -387,8 +387,12 @@ pub struct ConnectionStatus {
     pub upstream_h2_ws: usize,
     pub upstream_h3: usize,
     pub upstream_h3_ws: usize,
+    pub upstream_h2_sse: usize,
+    pub upstream_h3_sse: usize,
     pub upstream_ws: usize,
     pub upstream_streams: usize,
+    pub upstream_transport_state: String,
+    pub upstream_transport_error: Option<String>,
     pub upstream_stream_limit: usize,
     pub upstream_sessions: Vec<super::upstream_transport::UpstreamSessionSnapshot>,
 }
@@ -402,8 +406,12 @@ impl Default for ConnectionStatus {
             upstream_h2_ws: 0,
             upstream_h3: 0,
             upstream_h3_ws: 0,
+            upstream_h2_sse: 0,
+            upstream_h3_sse: 0,
             upstream_ws: 0,
             upstream_streams: 0,
+            upstream_transport_state: "idle".to_string(),
+            upstream_transport_error: None,
             upstream_stream_limit: 0,
             upstream_sessions: Vec::new(),
         }
@@ -431,8 +439,16 @@ pub fn get_proxy_status_data(state: &AppState, running: bool, listen_address: &s
     let upstream_ws = legacy_ws + if running { tsnap.upstream_ws } else { 0 };
     let upstream_h2_ws = if running { tsnap.upstream_h2_ws + usize::from(legacy_ws > 0) } else { 0 };
     let upstream_h3_ws = if running { tsnap.upstream_h3_ws } else { 0 };
+    let upstream_h2_sse = if running { tsnap.upstream_h2_sse } else { 0 };
+    let upstream_h3_sse = if running { tsnap.upstream_h3_sse } else { 0 };
     // Report active upstream streams only; local request counts are a different layer.
     let upstream_streams = if running { tsnap.upstream_streams + legacy_ws } else { 0 };
+    let upstream_transport_state = if running {
+        tsnap.transport_state.clone()
+    } else {
+        "stopped".to_string()
+    };
+    let upstream_transport_error = if running { tsnap.transport_error.clone() } else { None };
 
     let proxy_state = if let Ok(s) = state.proxy_state.try_read() {
         s.clone()
@@ -463,8 +479,12 @@ pub fn get_proxy_status_data(state: &AppState, running: bool, listen_address: &s
             upstream_h2_ws,
             upstream_h3,
             upstream_h3_ws,
+            upstream_h2_sse,
+            upstream_h3_sse,
             upstream_ws,
             upstream_streams,
+            upstream_transport_state,
+            upstream_transport_error,
             upstream_stream_limit: tsnap.upstream_stream_limit,
             upstream_sessions: if running { tsnap.upstream_sessions } else { Vec::new() },
         },
@@ -1569,6 +1589,13 @@ async fn forward_handler_selected(
                 })
                 .into_response()
             }
+            super::bridge::PreparedLocalWs::BridgeHttp if cfg.upstream_websocket_enabled => {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "upstream WebSocket is forced but Extended CONNECT was unavailable".to_string(),
+                )
+                    .into_response()
+            }
             super::bridge::PreparedLocalWs::BridgeHttp => {
                 let requested_subprotocols: Vec<String> = parts
                     .headers
@@ -1721,6 +1748,7 @@ mod tests {
         let config = AppConfig {
             upstream_base_url: upstream,
             outbound_proxy,
+            upstream_websocket_enabled: false,
             llmtrim_path: std::env::temp_dir().join(format!("llmtrim-route-test-{}", std::process::id()))
                 .join("llmtrim.exe").to_string_lossy().to_string(),
             ..AppConfig::default()
@@ -2906,7 +2934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_route_ws_enabled_falls_back_from_h2_extended_connect_rejection_to_sse_bridge()
+    async fn default_route_ws_enabled_returns_upstream_extended_connect_rejection()
     {
         let (port, root_cert, h2j) = spawn_mock_h2_upstream(true, move |req, mut respond| async move {
             if req.method() == Method::CONNECT {
@@ -2939,15 +2967,8 @@ mod tests {
         let req = format!("ws://{addr}/v1/responses")
             .into_client_request()
             .unwrap();
-        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
-        ws.send(TungsteniteMessage::Text(
-            r#"{"model":"gpt-5","input":"fallback"}"#.into(),
-        ))
-        .await
-        .unwrap();
-
-        let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
-        assert_eq!(msg, r#"{"ok":true}"#);
+        let result = tokio_tungstenite::connect_async(req).await;
+        assert!(result.is_err(), "forced WS rejection must fail the local handshake");
 
         h2j.abort();
         srv_join.abort();

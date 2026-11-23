@@ -105,8 +105,12 @@ pub struct UpstreamTransportSnapshot {
     pub upstream_h2_ws: usize,
     pub upstream_h3: usize,
     pub upstream_h3_ws: usize,
+    pub upstream_h2_sse: usize,
+    pub upstream_h3_sse: usize,
     pub upstream_ws: usize,
     pub upstream_streams: usize,
+    pub transport_state: String,
+    pub transport_error: Option<String>,
     pub upstream_stream_limit: usize,
     pub upstream_sessions: Vec<UpstreamSessionSnapshot>,
 }
@@ -145,6 +149,13 @@ impl std::fmt::Display for UpstreamTransportError {
 }
 
 impl std::error::Error for UpstreamTransportError {}
+
+fn upstream_request_is_sse(req: &UpstreamHttpRequest) -> bool {
+    req.headers.iter().any(|(name, value)| {
+        name.as_str().eq_ignore_ascii_case("accept")
+            && value.to_str().map(|v| v.contains("text/event-stream")).unwrap_or(false)
+    }) || String::from_utf8_lossy(&req.body).contains("\\\"stream\\\":true")
+}
 
 pub struct SessionStreamGuard {
     active_streams: Arc<AtomicUsize>,
@@ -636,7 +647,6 @@ struct H2SessionEntry {
     ping_pong: Arc<Mutex<Option<h2::PingPong>>>,
     mark: Arc<LiveSessionMark>,
     stream_slots: Arc<Semaphore>,
-    ws_enabled: bool,
 }
 
 impl H2SessionEntry {
@@ -666,10 +676,19 @@ struct TransportInner {
     active_streams: Arc<AtomicUsize>,
     h2_ws_active: Arc<AtomicUsize>,
     h3_ws_active: Arc<AtomicUsize>,
+    h2_sse_active: Arc<AtomicUsize>,
+    h3_sse_active: Arc<AtomicUsize>,
     dial_locks: Mutex<HashMap<SessionKey, Arc<Mutex<()>>>>,
     quic_endpoints: Mutex<Option<QuicEndpoints>>,
     shutdown_notify: Notify,
     stopped: AtomicBool,
+    runtime_status: PoolLock<UpstreamRuntimeStatus>,
+}
+
+#[derive(Debug, Clone)]
+struct UpstreamRuntimeStatus {
+    state: String,
+    error: Option<String>,
 }
 
 pub struct UpstreamTransport {
@@ -703,10 +722,16 @@ impl UpstreamTransport {
             active_streams: Arc::new(AtomicUsize::new(0)),
             h2_ws_active: Arc::new(AtomicUsize::new(0)),
             h3_ws_active: Arc::new(AtomicUsize::new(0)),
+            h2_sse_active: Arc::new(AtomicUsize::new(0)),
+            h3_sse_active: Arc::new(AtomicUsize::new(0)),
             dial_locks: Mutex::new(HashMap::new()),
             quic_endpoints: Mutex::new(None),
             shutdown_notify: Notify::new(),
             stopped: AtomicBool::new(false),
+            runtime_status: PoolLock::new(UpstreamRuntimeStatus {
+                state: "idle".to_owned(),
+                error: None,
+            }),
         });
 
         let weak = Arc::downgrade(&inner);
@@ -744,8 +769,16 @@ impl UpstreamTransport {
     pub fn snapshot(&self) -> UpstreamTransportSnapshot {
         let h2_ws = self.inner.h2_ws_active.load(Ordering::Relaxed);
         let h3_ws = self.inner.h3_ws_active.load(Ordering::Relaxed);
+        let h2_sse = self.inner.h2_sse_active.load(Ordering::Relaxed);
+        let h3_sse = self.inner.h3_sse_active.load(Ordering::Relaxed);
 
         let stream_limit = self.inner.config.session_stream_limit;
+        let (transport_state, transport_error) = self
+            .inner
+            .runtime_status
+            .read()
+            .map(|status| (status.state.clone(), status.error.clone()))
+            .unwrap_or_else(|_| ("failed".to_owned(), Some("transport status lock poisoned".to_owned())));
         let mut upstream_sessions = Vec::new();
         {
             let pool = self.inner.h2_sessions.read().unwrap();
@@ -774,8 +807,12 @@ impl UpstreamTransport {
             upstream_h2_ws: h2_ws,
             upstream_h3: self.inner.h3_sessions_active.load(Ordering::Relaxed),
             upstream_h3_ws: h3_ws,
+            upstream_h2_sse: h2_sse,
+            upstream_h3_sse: h3_sse,
             upstream_ws: h2_ws + h3_ws,
             upstream_streams: self.inner.active_streams.load(Ordering::Relaxed),
+            transport_state,
+            transport_error,
             upstream_stream_limit: stream_limit,
             upstream_sessions,
         }
@@ -869,37 +906,60 @@ impl UpstreamTransport {
         &self,
         req: UpstreamHttpRequest,
     ) -> Result<UpstreamHttpResponse, UpstreamTransportError> {
-        if req.url.scheme() == "http" {
-            return self.send_plain_http(req).await;
-        }
-        if req.url.scheme() != "https" {
-            return Err(UpstreamTransportError::InvalidRequest(format!(
-                "expected https/http url, got {}",
-                req.url.scheme()
-            )));
-        }
+        self.inner.set_runtime_status("connecting", None);
+        let is_sse = upstream_request_is_sse(&req);
 
-        let host = req
-            .url
-            .host_str()
-            .ok_or_else(|| UpstreamTransportError::InvalidRequest("missing host".into()))?;
-        let port = req.url.port_or_known_default().unwrap_or(443);
-        let key = SessionKey::new(host, port, &req.outbound_proxy);
+        let result = async {
+            if req.url.scheme() == "http" {
+                return self.send_plain_http(req).await;
+            }
+            if req.url.scheme() != "https" {
+                return Err(UpstreamTransportError::InvalidRequest(format!(
+                    "expected https/http url, got {}",
+                    req.url.scheme()
+                )));
+            }
 
-        let selected = self.inner.acquire_or_race(&key).await?;
-        match selected {
-            SelectedSession::H3(initial_h3, permit) => {
-                match self
-                    .inner
-                    .send_h3_with_retry_then_h2(&key, initial_h3, permit, &req)
-                    .await
-                {
-                    Ok(resp) => Ok(resp),
-                    Err(e) => Err(e),
+            let host = req
+                .url
+                .host_str()
+                .ok_or_else(|| UpstreamTransportError::InvalidRequest("missing host".into()))?;
+            let port = req.url.port_or_known_default().unwrap_or(443);
+            let key = SessionKey::new(host, port, &req.outbound_proxy);
+
+            let selected = self.inner.acquire_or_race(&key).await?;
+            match selected {
+                SelectedSession::H3(initial_h3, permit) => {
+                    self.inner
+                        .send_h3_with_retry_then_h2(&key, initial_h3, permit, &req)
+                        .await
+                }
+                SelectedSession::H2(initial_h2, permit) => {
+                    self.inner.send_h2_with_reconnect(&key, initial_h2, permit, &req).await
                 }
             }
-            SelectedSession::H2(initial_h2, permit) => self.inner.send_h2_with_reconnect(&key, initial_h2, permit, &req).await,
         }
+        .await;
+
+        match &result {
+            Ok(response) => {
+                let transport = match response.protocol {
+                    UpstreamProtocol::Http3 => "h3",
+                    UpstreamProtocol::Http2 => "h2",
+                    UpstreamProtocol::Http1 => "h1",
+                };
+                self.inner.set_runtime_status(
+                    format!("{}+{}", transport, if is_sse { "sse" } else { "http" }),
+                    None,
+                );
+            }
+            Err(error) => {
+                self.inner
+                    .set_runtime_status("failed", Some(error.to_string()));
+            }
+        }
+
+        result
     }
 
     async fn send_plain_http(
@@ -954,61 +1014,94 @@ impl UpstreamTransport {
         extra_headers: &[(HeaderName, HeaderValue)],
         outbound_proxy: &str,
     ) -> UpstreamWsOutcome {
-        if target_url.scheme() != "https" {
-            return UpstreamWsOutcome::Unavailable(
-                "upstream WebSocket requires an HTTPS URL and H2/H3 Extended CONNECT".into(),
-            );
-        }
-        let Some(host) = target_url.host_str() else {
-            return UpstreamWsOutcome::Unavailable("missing target host".into());
-        };
-        let port = target_url.port_or_known_default().unwrap_or(443);
-        let key = SessionKey::new(host, port, outbound_proxy);
-        let selected = match self.inner.acquire_or_race(&key).await {
-            Ok(session) => session,
-            Err(error) => return UpstreamWsOutcome::Unavailable(error.to_string()),
-        };
+        self.inner.set_runtime_status("connecting", None);
 
-        match selected {
-            SelectedSession::H2(session, permit) => {
-                self.inner
-                    .connect_h2_extended_connect(&key, &session, permit, target_url, extra_headers)
-                    .await
+        let result = async {
+            if target_url.scheme() != "https" {
+                return UpstreamWsOutcome::Unavailable(
+                    "upstream WebSocket requires an HTTPS URL and H2/H3 Extended CONNECT".into(),
+                );
             }
-            SelectedSession::H3(session, permit) => {
-                match self.inner.connect_h3_extended_connect(&key, &session, permit, target_url, extra_headers).await {
-                    connected @ UpstreamWsOutcome::Connected(_) => connected,
-                    h3_outcome => {
-                        let (h2, h2_permit) = match self.inner.acquire_h2_session(&key).await {
-                            Ok(session) => session,
-                            Err(error) => {
-                                return match h3_outcome {
-                                    UpstreamWsOutcome::Rejected { status, headers, body }
-                                        if !matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::UPGRADE_REQUIRED | reqwest::StatusCode::NOT_IMPLEMENTED | reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED) => {
-                                            UpstreamWsOutcome::Rejected { status, headers, body }
-                                        }
-                                    _ => UpstreamWsOutcome::Unavailable(format!(
-                                        "H3 WebSocket failed; H2 fallback failed: {error}"
-                                    )),
-                                };
+            let Some(host) = target_url.host_str() else {
+                return UpstreamWsOutcome::Unavailable("missing target host".into());
+            };
+            let port = target_url.port_or_known_default().unwrap_or(443);
+            let key = SessionKey::new(host, port, outbound_proxy);
+            let selected = match self.inner.acquire_or_race(&key).await {
+                Ok(session) => session,
+                Err(error) => return UpstreamWsOutcome::Unavailable(error.to_string()),
+            };
+
+            match selected {
+                SelectedSession::H2(session, permit) => {
+                    self.inner
+                        .connect_h2_extended_connect(&key, &session, permit, target_url, extra_headers)
+                        .await
+                }
+                SelectedSession::H3(session, permit) => {
+                    match self.inner.connect_h3_extended_connect(&key, &session, permit, target_url, extra_headers).await {
+                        connected @ UpstreamWsOutcome::Connected(_) => connected,
+                        h3_outcome => {
+                            let (h2, h2_permit) = match self.inner.acquire_h2_session(&key).await {
+                                Ok(session) => session,
+                                Err(error) => {
+                                    return match h3_outcome {
+                                        UpstreamWsOutcome::Rejected { status, headers, body }
+                                            if !matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::UPGRADE_REQUIRED | reqwest::StatusCode::NOT_IMPLEMENTED | reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED) => {
+                                                UpstreamWsOutcome::Rejected { status, headers, body }
+                                            }
+                                        _ => UpstreamWsOutcome::Unavailable(format!(
+                                            "H3 WebSocket failed; H2 fallback failed: {error}"
+                                        )),
+                                    };
+                                }
+                            };
+                            match self.inner.connect_h2_extended_connect(&key, &h2, h2_permit, target_url, extra_headers).await {
+                                connected @ UpstreamWsOutcome::Connected(_) => connected,
+                                h2_outcome => match h3_outcome {
+                                    rejected @ UpstreamWsOutcome::Rejected { status, .. }
+                                        if !matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::UPGRADE_REQUIRED | reqwest::StatusCode::NOT_IMPLEMENTED | reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED) => rejected,
+                                    _ => h2_outcome,
+                                },
                             }
-                        };
-                        match self.inner.connect_h2_extended_connect(&key, &h2, h2_permit, target_url, extra_headers).await {
-                            connected @ UpstreamWsOutcome::Connected(_) => connected,
-                            h2_outcome => match h3_outcome {
-                                rejected @ UpstreamWsOutcome::Rejected { status, .. }
-                                    if !matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::UPGRADE_REQUIRED | reqwest::StatusCode::NOT_IMPLEMENTED | reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED) => rejected,
-                                _ => h2_outcome,
-                            },
                         }
                     }
                 }
             }
         }
+        .await;
+
+        match &result {
+            UpstreamWsOutcome::Connected(connection) => {
+                let state = match connection.kind {
+                    UpstreamWsKind::H2ExtendedConnect => "h2+ws",
+                    UpstreamWsKind::H3ExtendedConnect => "h3+ws",
+                };
+                self.inner.set_runtime_status(state, None);
+            }
+            UpstreamWsOutcome::Rejected { status, .. } => {
+                self.inner.set_runtime_status(
+                    "failed",
+                    Some(format!("upstream WebSocket rejected with HTTP {}", status)),
+                );
+            }
+            UpstreamWsOutcome::Unavailable(error) => {
+                self.inner.set_runtime_status("failed", Some(error.clone()));
+            }
+        }
+
+        result
     }
 }
 
 impl TransportInner {
+    fn set_runtime_status(&self, state: impl Into<String>, error: Option<String>) {
+        if let Ok(mut status) = self.runtime_status.write() {
+            status.state = state.into();
+            status.error = error;
+        }
+    }
+
     async fn run_maintenance(&self) {
         let lifetime = self.config.session_lifetime;
         let stream_limit = self.config.session_stream_limit;
@@ -1318,7 +1411,7 @@ impl TransportInner {
 
         let guard = SessionStreamGuard::new(
             Arc::clone(&self.active_streams),
-            None,
+            upstream_request_is_sse(req).then(|| Arc::clone(&self.h3_sse_active)),
             Some(permit),
         );
 
@@ -1424,7 +1517,7 @@ impl TransportInner {
 
         let guard = SessionStreamGuard::new(
             Arc::clone(&self.active_streams),
-            None,
+            upstream_request_is_sse(req).then(|| Arc::clone(&self.h2_sse_active)),
             Some(permit),
         );
 
@@ -1479,11 +1572,8 @@ impl TransportInner {
         target_url: &reqwest::Url,
         extra_headers: &[(HeaderName, HeaderValue)],
     ) -> UpstreamWsOutcome {
-        if !session.ws_enabled {
-            return UpstreamWsOutcome::Unavailable(
-                "upstream H2 did not advertise SETTINGS_ENABLE_CONNECT_PROTOCOL".into(),
-            );
-        }
+        // Force the first request on the TLS-backed H2 session to be Extended CONNECT.
+        // The upstream decides whether to accept or reject the request.
         let Ok(uri) = build_ws_extended_connect_uri(target_url, &key.authority()) else {
             return UpstreamWsOutcome::Unavailable("invalid H2 extended connect URI".into());
         };
@@ -1867,7 +1957,7 @@ impl TransportInner {
         .map_err(|_| UpstreamTransportError::DialFailed("H2 handshake timed out".into()))?
         .map_err(|e| UpstreamTransportError::DialFailed(e.to_string()))?;
 
-        let mut ping_pong = conn.ping_pong();
+        let ping_pong = conn.ping_pong();
         let mark = LiveSessionMark::new(Arc::clone(&self.h2_sessions_active));
         let mark_driver = Arc::clone(&mark);
         tokio::spawn(async move {
@@ -1875,17 +1965,8 @@ impl TransportInner {
             mark_driver.deactivate();
         });
 
-        // Exchange an initial PING so the server's initial SETTINGS frame (including
-        // SETTINGS_ENABLE_CONNECT_PROTOCOL for RFC 8441) is guaranteed processed.
-        if let Some(pp) = ping_pong.as_mut() {
-            let _ = tokio::time::timeout(
-                self.config.h2_extended_connect_ping_timeout,
-                pp.ping(h2::Ping::opaque()),
-            )
-            .await;
-        }
-        let ws_enabled = send_req.is_extended_connect_protocol_enabled();
-
+        // Do not wait for a capability probe. WS mode sends Extended CONNECT
+        // immediately after the TLS-backed H2 session is established.
         Ok(H2SessionEntry {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
             created_at: Instant::now(),
@@ -1893,7 +1974,6 @@ impl TransportInner {
             ping_pong: Arc::new(Mutex::new(ping_pong)),
             mark,
             stream_slots: Arc::new(Semaphore::new(self.config.session_stream_limit)),
-            ws_enabled,
         })
     }
 }

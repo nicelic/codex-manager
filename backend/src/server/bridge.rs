@@ -260,18 +260,16 @@ pub async fn prepare_local_ws_session(
             status,
             headers,
             body,
-        } => {
-            if is_ws_capability_rejection(status) {
-                PreparedLocalWs::BridgeHttp
-            } else {
-                PreparedLocalWs::HttpError {
-                    status,
-                    headers,
-                    body,
-                }
-            }
-        }
-        UpstreamWsOutcome::Unavailable(_) => PreparedLocalWs::BridgeHttp,
+        } => PreparedLocalWs::HttpError {
+            status,
+            headers,
+            body,
+        },
+        UpstreamWsOutcome::Unavailable(error) => PreparedLocalWs::HttpError {
+            status: StatusCode::BAD_GATEWAY,
+            headers: HeaderMap::new(),
+            body: Bytes::from(format!("upstream WebSocket CONNECT failed: {error}")),
+        },
     }
 }
 
@@ -676,8 +674,8 @@ where
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_http_to_upstream_ws(
     transport: Arc<UpstreamTransport>,
-    method: Method,
-    retry_policy: RetryPolicy,
+    _method: Method,
+    _retry_policy: RetryPolicy,
     upstream_url: String,
     prepared_headers: Vec<(HeaderName, HeaderValue)>,
     body_bytes: Bytes,
@@ -699,24 +697,14 @@ pub async fn handle_http_to_upstream_ws(
         .await
     {
         UpstreamWsOutcome::Connected(c) => c,
-        UpstreamWsOutcome::Rejected {
-            status,
-            headers,
-            body,
-        } => {
-            if matches!(status.as_u16(), 400 | 404 | 405 | 426 | 501 | 505) {
-                return Box::pin(handle_http_direct(
-                    transport, method, parsed_url.to_string(), prepared_headers, body_bytes,
-                    outbound_proxy, false, retry_policy, active_requests, route_changed, shutdown_rx,
-                )).await;
-            }
+        UpstreamWsOutcome::Rejected { status, headers, body } => {
             return build_axum_response(status, &headers, Body::from(body));
         }
-        UpstreamWsOutcome::Unavailable(_) => {
-            return Box::pin(handle_http_direct(
-                transport, method, parsed_url.to_string(), prepared_headers, body_bytes,
-                outbound_proxy, false, retry_policy, active_requests, route_changed, shutdown_rx,
-            )).await;
+        UpstreamWsOutcome::Unavailable(error) => {
+            return json_error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("upstream WebSocket CONNECT failed: {error}"),
+            );
         }
     };
 
@@ -867,8 +855,8 @@ pub async fn handle_http_to_upstream_ws(
     }
 }
 
-/// Forward local HTTP/SSE over the default concurrent H3/H2 upstream transport with
-/// configured retries, SSE-to-HTTPS automatic fallback, and 426 WS fallback.
+/// Forward local HTTP/SSE over the default concurrent H3/H2 upstream transport.
+/// When upstream WebSocket mode is enabled, the route is WS-only and never falls back.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_http_direct(
     transport: Arc<UpstreamTransport>,
@@ -894,14 +882,16 @@ pub async fn handle_http_direct(
     }
 
     if upstream_websocket_enabled {
-        if let Ok(url) = reqwest::Url::parse(&upstream_url) {
-            if url.scheme() == "https" {
-                return handle_http_to_upstream_ws(
-                    transport, method, retry_policy, upstream_url, prepared_headers, body_bytes,
-                    outbound_proxy, active_requests, route_changed, shutdown_rx,
-                ).await;
-            }
+        let Ok(url) = reqwest::Url::parse(&upstream_url) else {
+            return json_error_response(StatusCode::BAD_GATEWAY, "invalid HTTPS upstream URL for forced WebSocket mode");
+        };
+        if url.scheme() != "https" {
+            return json_error_response(StatusCode::BAD_GATEWAY, "forced WebSocket mode requires an HTTPS upstream URL");
         }
+        return handle_http_to_upstream_ws(
+            transport, method, retry_policy, upstream_url, prepared_headers, body_bytes,
+            outbound_proxy, active_requests, route_changed, shutdown_rx,
+        ).await;
     }
 
     let req_guard = ActiveRequestGuard::new(Arc::clone(&active_requests));
@@ -930,24 +920,6 @@ pub async fn handle_http_direct(
         Ok(r) => r,
         Err(msg) => return json_error_response(StatusCode::BAD_GATEWAY, &msg),
     };
-
-    if upstream_resp.status == reqwest::StatusCode::UPGRADE_REQUIRED && upstream_websocket_enabled {
-        drop(upstream_resp);
-        drop(req_guard);
-        return handle_http_to_upstream_ws(
-            transport,
-            method,
-            retry_policy,
-            upstream_url,
-            prepared_headers,
-            body_bytes,
-            outbound_proxy,
-            active_requests,
-            route_changed,
-            shutdown_rx,
-        )
-        .await;
-    }
 
     let status = StatusCode::from_u16(upstream_resp.status.as_u16())
         .unwrap_or(StatusCode::BAD_GATEWAY);

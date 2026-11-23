@@ -7,6 +7,7 @@ echo ==================================================
 echo.
 
 cd /d "%~dp0"
+set "RELEASE_EXE=%~dp0releases\code-Manager-rust.exe"
 
 echo [1/3] Building frontend assets (Vite)...
 cd frontend
@@ -63,13 +64,13 @@ if not exist "releases" (
 )
 
 rem Terminate running instances to release file lock
-taskkill /F /IM code-Manager-rust.exe >nul 2>&1
+call :stop_local_release_process
 ping -n 2 127.0.0.1 >nul
 
 copy /y "backend\target\release\code-Manager-rust.exe" "releases\code-Manager-rust.exe" > nul
 if errorlevel 1 (
     rem Retry once more if locked
-    taskkill /F /IM code-Manager-rust.exe >nul 2>&1
+    call :stop_local_release_process
     ping -n 2 127.0.0.1 >nul
     copy /y "backend\target\release\code-Manager-rust.exe" "releases\code-Manager-rust.exe" > nul
 )
@@ -89,3 +90,11 @@ echo Frontend is fully embedded into the standalone executable.
 echo ==================================================
 echo.
 pause
+goto :build_success_end
+
+:stop_local_release_process
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$target = [System.IO.Path]::GetFullPath($env:RELEASE_EXE); Get-Process -Name code-Manager-rust -ErrorAction SilentlyContinue | Where-Object Path -eq $target | Stop-Process -Force"
+exit /b 0
+
+:build_success_end
+exit /b 0

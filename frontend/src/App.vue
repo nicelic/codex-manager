@@ -70,12 +70,16 @@ const proxy = reactive({
     localHTTP1: 0,
     localWebSocket: 0,
     upstreamH2: 0,
-    upstreamH2WebSocket: false,
+    upstreamH2WebSocket: 0,
     upstreamH3: 0,
-    upstreamH3WebSocket: false,
+    upstreamH3WebSocket: 0,
+    upstreamH2SSE: 0,
+    upstreamH3SSE: 0,
     upstreamWebSocket: 0,
     upstreamStreams: 0,
     upstreamStreamLimit: 500,
+    upstreamTransportState: 'idle',
+    upstreamTransportError: '',
     upstreamSessions: [],
   },
 })
@@ -203,6 +207,18 @@ const gortexVersionActionBlocked = computed(() => gortexBusy.value || gortex.run
 const gortexUninstallBlocked = computed(() => gortex.loading || !gortex.statusKnown || gortexBusy.value || gortex.running)
 const upstreamH2Label = computed(() => `h2${proxy.connections.upstreamH2WebSocket ? '(ws)' : ''}_${proxy.connections.upstreamH2}`)
 const upstreamH3Label = computed(() => `h3${proxy.connections.upstreamH3WebSocket ? '(ws)' : ''}_${proxy.connections.upstreamH3}`)
+const upstreamTransportLabels = computed(() => {
+  const labels = []
+  if (proxy.connections.upstreamH3SSE > 0) labels.push(`h3+sse_${proxy.connections.upstreamH3SSE}`)
+  if (proxy.connections.upstreamH3WebSocket > 0) labels.push(`h3+ws_${proxy.connections.upstreamH3WebSocket}`)
+  if (proxy.connections.upstreamH2SSE > 0) labels.push(`h2+sse_${proxy.connections.upstreamH2SSE}`)
+  if (proxy.connections.upstreamH2WebSocket > 0) labels.push(`h2+ws_${proxy.connections.upstreamH2WebSocket}`)
+  return labels.length ? labels.join('  ') : '暂无上游活动流'
+})
+const upstreamTransportStatus = computed(() => {
+  const state = String(proxy.connections.upstreamTransportState || '').trim()
+  return state && state !== 'idle' ? state : upstreamTransportLabels.value
+})
 const rtkBlocked = computed(() => !rtk.running && (snip.running || snip.desiredRunning || rtk.blockedBy === 'snip'))
 const snipBlocked = computed(() => !snip.running && (rtk.running || rtk.desiredRunning || snip.blockedBy === 'rtk'))
 const llmtrimCanControl = computed(() => llmtrim.running || llmtrim.trayRunning || llmtrim.installed)
@@ -629,12 +645,16 @@ function applyProxyStatus(data, { silent = false } = {}) {
 	proxy.connections.localHTTP1 = Math.max(0, Number(connections.local_http1) || 0)
 	proxy.connections.localWebSocket = Math.max(0, Number(connections.local_ws) || 0)
 	proxy.connections.upstreamH2 = Math.max(0, Number(connections.upstream_h2) || 0)
-	proxy.connections.upstreamH2WebSocket = Boolean(connections.upstream_h2_ws)
+	proxy.connections.upstreamH2WebSocket = Math.max(0, Number(connections.upstream_h2_ws) || 0)
 	proxy.connections.upstreamH3 = Math.max(0, Number(connections.upstream_h3) || 0)
-	proxy.connections.upstreamH3WebSocket = Boolean(connections.upstream_h3_ws)
+	proxy.connections.upstreamH3WebSocket = Math.max(0, Number(connections.upstream_h3_ws) || 0)
+	proxy.connections.upstreamH2SSE = Math.max(0, Number(connections.upstream_h2_sse) || 0)
+	proxy.connections.upstreamH3SSE = Math.max(0, Number(connections.upstream_h3_sse) || 0)
 	proxy.connections.upstreamWebSocket = Math.max(0, Number(connections.upstream_ws) || 0)
 	proxy.connections.upstreamStreams = Math.max(0, Number(connections.upstream_streams) || 0)
 	proxy.connections.upstreamStreamLimit = Number(connections.upstream_stream_limit) || 500
+	proxy.connections.upstreamTransportState = String(connections.upstream_transport_state || (proxy.running ? 'idle' : 'stopped'))
+	proxy.connections.upstreamTransportError = String(connections.upstream_transport_error || '')
 	proxy.connections.upstreamSessions = Array.isArray(connections.upstream_sessions) ? connections.upstream_sessions : []
 	proxy.loading = false
 	if (!silent && data.message) proxyNotice.value = data.message
@@ -2394,7 +2414,7 @@ onBeforeUnmount(() => {
         <div>
           <strong>{{ proxy.loading ? '正在读取代理状态' : (proxy.state === 'connecting' ? '正在连接上游' : (proxy.state === 'unavailable' ? '上游不可用' : (proxy.running ? '代理运行中' : '代理已停止'))) }}</strong>
           <span>http://{{ proxy.listenAddress || activeAddress }}</span>
-          <span>已完成 H2/H3 预热，扩展 CONNECT 由上游 SETTINGS 与握手结果决定</span>
+          <span>H2/H3 并发连接；WS 开启后强制 Extended CONNECT，失败不回退</span>
           <span v-if="proxy.processId">进程 PID {{ proxy.processId }}</span>
         </div>
       </div>
@@ -2492,7 +2512,7 @@ onBeforeUnmount(() => {
         </div>
         <p v-if="applicationUpdateNotice" class="notice application-update-notice">{{ applicationUpdateNotice }}</p>
         <div><span>基线连接</span><code>H2/H3 多流 · 每连接最多 {{ proxy.connections.upstreamStreamLimit }} 个活动流</code></div>
-        <div class="connection-status"><span>连接状态</span><code><span title="当前管理页面与后端的实时状态通道">网页管理：{{ managementProtocol }}</span><span title="本地正在处理的 HTTP 请求数与本地 WebSocket 会话数">本地监听：http1.1_{{ proxy.connections.localHTTP1 }}&nbsp;&nbsp;ws_{{ proxy.connections.localWebSocket }}</span><span title="h2/h3 数值为当前上游物理会话数；(ws)表示该协议上当前存在 WebSocket 流；最后一项为上游活动流数">上游：{{ upstreamH2Label }}&nbsp;&nbsp;{{ upstreamH3Label }}&nbsp;&nbsp;ws_{{ proxy.connections.upstreamWebSocket }}&nbsp;&nbsp;上游活动流_{{ proxy.connections.upstreamStreams }}</span></code></div>
+        <div class="connection-status"><span>连接状态</span><code><span title="当前管理页面与后端的实时状态通道">网页管理：{{ managementProtocol }}</span><span title="本地正在处理的 HTTP 请求数与本地 WebSocket 会话数">本地监听：http1.1_{{ proxy.connections.localHTTP1 }}&nbsp;&nbsp;ws_{{ proxy.connections.localWebSocket }}</span><span title="持续显示当前上游协议和承载类型">上游：{{ upstreamTransportStatus }}&nbsp;&nbsp;ws_{{ proxy.connections.upstreamWebSocket }}&nbsp;&nbsp;上游活动流_{{ proxy.connections.upstreamStreams }}</span><span v-if="proxy.connections.upstreamTransportError" class="connection-error">失败：{{ proxy.connections.upstreamTransportError }}</span></code></div>
         <div v-if="proxy.connections.upstreamSessions.length" class="connection-status">
           <span>上游各连接</span>
           <code>
@@ -2900,7 +2920,7 @@ onBeforeUnmount(() => {
 
         <div class="setting-card">
           <label class="switch-control upstream-websocket-toggle" :class="{ disabled: proxyActive || connectionSettingRestartWorking || saving.upstreamWebSocketEnabled || loadingSettings }">
-            <span><strong>上游 WS 承载</strong><small>只控制直连上游是否发起 WS 协商；本地 HTTP/WS 监听与 llmtrim 链路始终保持支持。</small></span>
+            <span><strong>上游 WS 强制模式</strong><small>开启后只使用 H2/H3 Extended CONNECT，握手失败直接返回错误，不回退到 HTTPS/SSE。</small></span>
             <input type="checkbox" :checked="settings.upstreamWebSocketEnabled" :disabled="proxyActive || connectionSettingRestartWorking || saving.upstreamWebSocketEnabled || loadingSettings" @change="updateUpstreamWebSocketEnabled($event.target.checked)" />
             <i aria-hidden="true"></i>
           </label>

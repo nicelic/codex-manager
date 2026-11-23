@@ -3,11 +3,11 @@ name: "Release Build and Publish"
 on:
   push:
     tags:
-      - 'v*'
+      - '*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name (e.g. v1.0.33)'
+        description: 'Tag name (e.g. 1.0.44 or v1.0.44)'
         required: false
         default: ''
 
@@ -33,12 +33,13 @@ jobs:
           if (-not $tag) {
             $tag = "${{ github.ref_name }}"
           }
-          if ($tag -notmatch '^v\d+\.\d+\.\d+') {
-            Write-Error "Invalid tag format: '$tag'. Expected format: 'vX.Y.Z'"
+          $tag = $tag.Trim()
+          $rawVersion = $tag -replace '^[vV]', ''
+          if ($rawVersion -notmatch '^\d+\.\d+\.\d+$') {
+            Write-Error "Invalid tag format: '$tag'. Expected format: 'X.Y.Z' or 'vX.Y.Z'"
             exit 1
           }
-
-          $rawVersion = $tag -replace '^v', ''
+          $tag = "v$rawVersion"
           Write-Host "Target Tag    : $tag"
           Write-Host "Raw Version   : $rawVersion"
 
