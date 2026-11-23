@@ -4,7 +4,7 @@ use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock as PoolLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -17,16 +17,14 @@ use rustls::pki_types::{CertificateDer, ServerName};
 use rustls_platform_verifier::BuilderVerifierExt;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, Notify, RwLock};
-use tokio_rustls::client::TlsStream;
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_rustls::TlsConnector;
 use tokio_socks::tcp::Socks5Stream;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::Error as WsError;
-use tokio_tungstenite::{client_async_with_config, WebSocketStream};
+use tokio_tungstenite::WebSocketStream;
 
 const MAX_RESPONSE_ERROR_BODY: usize = 64 * 1024;
+const MAX_SESSION_STREAMS: usize = 500;
 
 #[derive(Debug, Clone)]
 pub struct UpstreamTransportConfig {
@@ -43,7 +41,7 @@ pub struct UpstreamTransportConfig {
     pub session_lifetime: Duration,
     pub maintenance_interval: Duration,
     pub prewarm_timeout: Duration,
-    pub h1_ws_handshake_timeout: Duration,
+    pub h2_extended_connect_handshake_timeout: Duration,
     pub enable_h3: bool,
     pub extra_root_certs: Vec<CertificateDer<'static>>,
 }
@@ -60,11 +58,11 @@ impl Default for UpstreamTransportConfig {
             h2_handshake_timeout: Duration::from_secs(8),
             h2_ping_interval: Duration::from_secs(20),
             h2_extended_connect_ping_timeout: Duration::from_secs(2),
-            session_stream_limit: 500,
+            session_stream_limit: MAX_SESSION_STREAMS,
             session_lifetime: Duration::from_secs(600),
             maintenance_interval: Duration::from_secs(20),
             prewarm_timeout: Duration::from_secs(5),
-            h1_ws_handshake_timeout: Duration::from_secs(10),
+            h2_extended_connect_handshake_timeout: Duration::from_secs(10),
             enable_h3: true,
             extra_root_certs: Vec::new(),
         }
@@ -91,17 +89,26 @@ impl UpstreamProtocol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamWsKind {
     H2ExtendedConnect,
-    Http1,
+    H3ExtendedConnect,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpstreamSessionSnapshot {
+    pub id: u64,
+    pub protocol: String,
+    pub occupied_stream_slots: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct UpstreamTransportSnapshot {
     pub upstream_h2: usize,
-    pub upstream_h2_ws: bool,
+    pub upstream_h2_ws: usize,
     pub upstream_h3: usize,
-    pub upstream_h3_ws: bool,
-    pub upstream_ws: bool,
+    pub upstream_h3_ws: usize,
+    pub upstream_ws: usize,
     pub upstream_streams: usize,
+    pub upstream_stream_limit: usize,
+    pub upstream_sessions: Vec<UpstreamSessionSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,27 +149,20 @@ impl std::error::Error for UpstreamTransportError {}
 pub struct SessionStreamGuard {
     active_streams: Arc<AtomicUsize>,
     extra_counter: Option<Arc<AtomicUsize>>,
-    session_streams: Option<Arc<AtomicUsize>>,
+    _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl SessionStreamGuard {
     fn new(
         active_streams: Arc<AtomicUsize>,
         extra_counter: Option<Arc<AtomicUsize>>,
-        session_streams: Option<Arc<AtomicUsize>>,
+        permit: Option<OwnedSemaphorePermit>,
     ) -> Self {
         active_streams.fetch_add(1, Ordering::Relaxed);
         if let Some(ref c) = extra_counter {
             c.fetch_add(1, Ordering::Relaxed);
         }
-        if let Some(ref s) = session_streams {
-            s.fetch_add(1, Ordering::Relaxed);
-        }
-        Self {
-            active_streams,
-            extra_counter,
-            session_streams,
-        }
+        Self { active_streams, extra_counter, _permit: permit }
     }
 }
 
@@ -171,9 +171,6 @@ impl Drop for SessionStreamGuard {
         self.active_streams.fetch_sub(1, Ordering::Relaxed);
         if let Some(ref c) = self.extra_counter {
             c.fetch_sub(1, Ordering::Relaxed);
-        }
-        if let Some(ref s) = self.session_streams {
-            s.fetch_sub(1, Ordering::Relaxed);
         }
     }
 }
@@ -218,7 +215,7 @@ impl UpstreamHttpResponse {
     }
 
     pub async fn next_chunk(&mut self) -> Result<Option<Bytes>, UpstreamTransportError> {
-        match &mut self.body {
+        let result = match &mut self.body {
             UpstreamHttpBody::H3 { stream, .. } => match stream.recv_data().await {
                 Ok(Some(mut buf)) => {
                     let bytes = buf.copy_to_bytes(buf.remaining());
@@ -240,7 +237,11 @@ impl UpstreamHttpResponse {
                 Err(e) => Err(UpstreamTransportError::StreamFailure(e.to_string())),
             },
             UpstreamHttpBody::Buffered(opt) => Ok(opt.take()),
+        };
+        if !matches!(result, Ok(Some(_))) {
+            self.body = UpstreamHttpBody::Buffered(None);
         }
+        result
     }
 
     pub async fn collect_body(
@@ -321,6 +322,7 @@ pub struct H2ConnectIo {
     recv: h2::RecvStream,
     read_pending: Bytes,
     shutdown_sent: bool,
+    _guard: Option<SessionStreamGuard>,
 }
 
 impl H2ConnectIo {
@@ -330,6 +332,7 @@ impl H2ConnectIo {
             recv,
             read_pending: Bytes::new(),
             shutdown_sent: false,
+            _guard: None,
         }
     }
 }
@@ -438,8 +441,7 @@ impl AsyncWrite for H2ConnectIo {
 
 pub enum UpstreamWsIo {
     H2(H2ConnectIo),
-    Tls(Box<TlsStream<ProxyStream>>),
-    Plain(ProxyStream),
+    H3(tokio::io::DuplexStream),
 }
 
 impl AsyncRead for UpstreamWsIo {
@@ -450,8 +452,7 @@ impl AsyncRead for UpstreamWsIo {
     ) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::H2(io) => Pin::new(io).poll_read(cx, buf),
-            Self::Tls(io) => Pin::new(&mut **io).poll_read(cx, buf),
-            Self::Plain(io) => Pin::new(io).poll_read(cx, buf),
+            Self::H3(io) => Pin::new(io).poll_read(cx, buf),
         }
     }
 }
@@ -464,33 +465,76 @@ impl AsyncWrite for UpstreamWsIo {
     ) -> Poll<io::Result<usize>> {
         match &mut *self {
             Self::H2(io) => Pin::new(io).poll_write(cx, data),
-            Self::Tls(io) => Pin::new(&mut **io).poll_write(cx, data),
-            Self::Plain(io) => Pin::new(io).poll_write(cx, data),
+            Self::H3(io) => Pin::new(io).poll_write(cx, data),
         }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::H2(io) => Pin::new(io).poll_flush(cx),
-            Self::Tls(io) => Pin::new(&mut **io).poll_flush(cx),
-            Self::Plain(io) => Pin::new(io).poll_flush(cx),
+            Self::H3(io) => Pin::new(io).poll_flush(cx),
         }
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::H2(io) => Pin::new(io).poll_shutdown(cx),
-            Self::Tls(io) => Pin::new(&mut **io).poll_shutdown(cx),
-            Self::Plain(io) => Pin::new(io).poll_shutdown(cx),
+            Self::H3(io) => Pin::new(io).poll_shutdown(cx),
         }
     }
+}
+
+fn bridge_h3_websocket_stream(
+    stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    guard: SessionStreamGuard,
+) -> tokio::io::DuplexStream {
+    let (ws_io, bridge_io) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(async move {
+        // Keep the slot until the task drops both halves of the actual QUIC stream.
+        let _guard = guard;
+        let (mut send, mut recv) = stream.split();
+        let (mut bridge_read, mut bridge_write) = tokio::io::split(bridge_io);
+        let receive = async {
+            loop {
+                match recv.recv_data().await {
+                    Ok(Some(mut chunk)) => {
+                        let size = chunk.remaining();
+                        bridge_write
+                            .write_all(&chunk.copy_to_bytes(size))
+                            .await?;
+                    }
+                    Ok(None) => break,
+                    Err(error) => return Err(io::Error::other(error)),
+                }
+            }
+            bridge_write.shutdown().await
+        };
+        let transmit = async {
+            let mut buffer = vec![0; 16 * 1024];
+            loop {
+                let size = bridge_read.read(&mut buffer).await?;
+                if size == 0 {
+                    send.finish().await.map_err(io::Error::other)?;
+                    break;
+                }
+                send.send_data(Bytes::copy_from_slice(&buffer[..size]))
+                    .await
+                    .map_err(io::Error::other)?;
+            }
+            Ok::<(), io::Error>(())
+        };
+        tokio::select! {
+            _ = receive => {}
+            _ = transmit => {}
+        }
+    });
+    ws_io
 }
 
 pub struct UpstreamWsConnection {
     pub kind: UpstreamWsKind,
     pub negotiated_protocol: Option<String>,
     pub ws: WebSocketStream<UpstreamWsIo>,
-    pub _guard: SessionStreamGuard,
 }
 
 pub enum UpstreamWsOutcome {
@@ -575,16 +619,12 @@ struct H3SessionEntry {
     conn: quinn::Connection,
     send_req: H3SendRequest<h3_quinn::OpenStreams, Bytes>,
     mark: Arc<LiveSessionMark>,
-    in_flight: Arc<AtomicUsize>,
-    total_streams: Arc<AtomicUsize>,
+    stream_slots: Arc<Semaphore>,
 }
 
 impl H3SessionEntry {
-    fn is_usable(&self, lifetime: Duration, stream_limit: usize) -> bool {
-        self.mark.is_active()
-            && self.conn.close_reason().is_none()
-            && self.created_at.elapsed() < lifetime
-            && self.total_streams.load(Ordering::Relaxed) < stream_limit
+    fn is_usable(&self, lifetime: Duration) -> bool {
+        self.mark.is_active() && self.conn.close_reason().is_none() && self.created_at.elapsed() < lifetime
     }
 }
 
@@ -595,22 +635,19 @@ struct H2SessionEntry {
     send_req: h2::client::SendRequest<Bytes>,
     ping_pong: Arc<Mutex<Option<h2::PingPong>>>,
     mark: Arc<LiveSessionMark>,
-    in_flight: Arc<AtomicUsize>,
-    total_streams: Arc<AtomicUsize>,
+    stream_slots: Arc<Semaphore>,
     ws_enabled: bool,
 }
 
 impl H2SessionEntry {
-    fn is_usable(&self, lifetime: Duration, stream_limit: usize) -> bool {
-        self.mark.is_active()
-            && self.created_at.elapsed() < lifetime
-            && self.total_streams.load(Ordering::Relaxed) < stream_limit
+    fn is_usable(&self, lifetime: Duration) -> bool {
+        self.mark.is_active() && self.created_at.elapsed() < lifetime
     }
 }
 
 enum SelectedSession {
-    H3(H3SessionEntry),
-    H2(H2SessionEntry),
+    H3(H3SessionEntry, OwnedSemaphorePermit),
+    H2(H2SessionEntry, OwnedSemaphorePermit),
 }
 
 struct QuicEndpoints {
@@ -621,14 +658,14 @@ struct QuicEndpoints {
 struct TransportInner {
     config: UpstreamTransportConfig,
     next_id: AtomicU64,
-    h3_sessions: RwLock<HashMap<SessionKey, H3SessionEntry>>,
-    h2_sessions: RwLock<HashMap<SessionKey, H2SessionEntry>>,
+    h3_sessions: PoolLock<HashMap<SessionKey, Vec<H3SessionEntry>>>,
+    h2_sessions: PoolLock<HashMap<SessionKey, Vec<H2SessionEntry>>>,
     h3_sessions_active: Arc<AtomicUsize>,
     h2_sessions_active: Arc<AtomicUsize>,
     h3_cooldowns: RwLock<HashMap<String, Instant>>,
     active_streams: Arc<AtomicUsize>,
     h2_ws_active: Arc<AtomicUsize>,
-    h1_ws_active: Arc<AtomicUsize>,
+    h3_ws_active: Arc<AtomicUsize>,
     dial_locks: Mutex<HashMap<SessionKey, Arc<Mutex<()>>>>,
     quic_endpoints: Mutex<Option<QuicEndpoints>>,
     shutdown_notify: Notify,
@@ -653,18 +690,19 @@ impl Drop for UpstreamTransport {
 }
 
 impl UpstreamTransport {
-    pub fn new(config: UpstreamTransportConfig) -> Self {
+    pub fn new(mut config: UpstreamTransportConfig) -> Self {
+        config.session_stream_limit = config.session_stream_limit.clamp(1, MAX_SESSION_STREAMS);
         let inner = Arc::new(TransportInner {
             config,
             next_id: AtomicU64::new(1),
-            h3_sessions: RwLock::new(HashMap::new()),
-            h2_sessions: RwLock::new(HashMap::new()),
+            h3_sessions: PoolLock::new(HashMap::new()),
+            h2_sessions: PoolLock::new(HashMap::new()),
             h3_sessions_active: Arc::new(AtomicUsize::new(0)),
             h2_sessions_active: Arc::new(AtomicUsize::new(0)),
             h3_cooldowns: RwLock::new(HashMap::new()),
             active_streams: Arc::new(AtomicUsize::new(0)),
             h2_ws_active: Arc::new(AtomicUsize::new(0)),
-            h1_ws_active: Arc::new(AtomicUsize::new(0)),
+            h3_ws_active: Arc::new(AtomicUsize::new(0)),
             dial_locks: Mutex::new(HashMap::new()),
             quic_endpoints: Mutex::new(None),
             shutdown_notify: Notify::new(),
@@ -704,34 +742,63 @@ impl UpstreamTransport {
     }
 
     pub fn snapshot(&self) -> UpstreamTransportSnapshot {
-        let h2_ws = self.inner.h2_ws_active.load(Ordering::Relaxed) > 0;
-        let h1_ws = self.inner.h1_ws_active.load(Ordering::Relaxed) > 0;
+        let h2_ws = self.inner.h2_ws_active.load(Ordering::Relaxed);
+        let h3_ws = self.inner.h3_ws_active.load(Ordering::Relaxed);
+
+        let stream_limit = self.inner.config.session_stream_limit;
+        let mut upstream_sessions = Vec::new();
+        {
+            let pool = self.inner.h2_sessions.read().unwrap();
+            upstream_sessions.extend(pool.values().flatten().filter(|s| s.mark.is_active()).map(|s| {
+                UpstreamSessionSnapshot {
+                    id: s.id,
+                    protocol: UpstreamProtocol::Http2.as_str().to_owned(),
+                    occupied_stream_slots: stream_limit - s.stream_slots.available_permits(),
+                }
+            }));
+        }
+        {
+            let pool = self.inner.h3_sessions.read().unwrap();
+            upstream_sessions.extend(pool.values().flatten().filter(|s| s.mark.is_active()).map(|s| {
+                UpstreamSessionSnapshot {
+                    id: s.id,
+                    protocol: UpstreamProtocol::Http3.as_str().to_owned(),
+                    occupied_stream_slots: stream_limit - s.stream_slots.available_permits(),
+                }
+            }));
+        }
+        upstream_sessions.sort_unstable_by_key(|s| s.id);
 
         UpstreamTransportSnapshot {
             upstream_h2: self.inner.h2_sessions_active.load(Ordering::Relaxed),
             upstream_h2_ws: h2_ws,
             upstream_h3: self.inner.h3_sessions_active.load(Ordering::Relaxed),
-            // Official h3 0.0.8 exposes WebTransport and CONNECT-UDP but not RFC 9220 WebSocket.
-            upstream_h3_ws: false,
-            upstream_ws: h2_ws || h1_ws,
+            upstream_h3_ws: h3_ws,
+            upstream_ws: h2_ws + h3_ws,
             upstream_streams: self.inner.active_streams.load(Ordering::Relaxed),
+            upstream_stream_limit: stream_limit,
+            upstream_sessions,
         }
     }
 
     pub async fn close_all(&self) {
-        let mut h3_map = self.inner.h3_sessions.write().await;
-        for (_, session) in h3_map.drain() {
-            session.mark.deactivate();
-            session.conn.close(0u32.into(), b"transport closed");
+        {
+            let mut h3_map = self.inner.h3_sessions.write().unwrap();
+            for (_, sessions) in h3_map.drain() {
+                for session in sessions {
+                    session.mark.deactivate();
+                    session.conn.close(0u32.into(), b"transport closed");
+                }
+            }
         }
-        drop(h3_map);
-
-        let mut h2_map = self.inner.h2_sessions.write().await;
-        for (_, session) in h2_map.drain() {
-            session.mark.deactivate();
+        {
+            let mut h2_map = self.inner.h2_sessions.write().unwrap();
+            for (_, sessions) in h2_map.drain() {
+                for session in sessions {
+                    session.mark.deactivate();
+                }
+            }
         }
-        drop(h2_map);
-
         self.inner.h3_cooldowns.write().await.clear();
     }
 
@@ -761,8 +828,8 @@ impl UpstreamTransport {
                 )
                 .await
                 {
-                    Ok(Ok(SelectedSession::H3(_))) => Ok(UpstreamProtocol::Http3),
-                    Ok(Ok(SelectedSession::H2(_))) => Ok(UpstreamProtocol::Http2),
+                    Ok(Ok(SelectedSession::H3(_, _))) => Ok(UpstreamProtocol::Http3),
+                    Ok(Ok(SelectedSession::H2(_, _))) => Ok(UpstreamProtocol::Http2),
                     Ok(Err(e)) => Err(e),
                     Err(_) => Err(UpstreamTransportError::DialFailed(format!(
                         "prewarm timed out after {:?}",
@@ -821,17 +888,17 @@ impl UpstreamTransport {
 
         let selected = self.inner.acquire_or_race(&key).await?;
         match selected {
-            SelectedSession::H3(initial_h3) => {
+            SelectedSession::H3(initial_h3, permit) => {
                 match self
                     .inner
-                    .send_h3_with_retry_then_h2(&key, initial_h3, &req)
+                    .send_h3_with_retry_then_h2(&key, initial_h3, permit, &req)
                     .await
                 {
                     Ok(resp) => Ok(resp),
                     Err(e) => Err(e),
                 }
             }
-            SelectedSession::H2(initial_h2) => self.inner.send_h2_with_reconnect(&key, initial_h2, &req).await,
+            SelectedSession::H2(initial_h2, permit) => self.inner.send_h2_with_reconnect(&key, initial_h2, permit, &req).await,
         }
     }
 
@@ -878,130 +945,124 @@ impl UpstreamTransport {
         })
     }
 
-    /// Connect an upstream WebSocket using standard H2 RFC 8441 Extended CONNECT
-    /// (preferred for `https://` when peer supports `SETTINGS_ENABLE_CONNECT_PROTOCOL`)
-    /// or standard HTTP/1.1 Upgrade fallback (`tokio-tungstenite`).
+    /// Connect using RFC 8441 (H2) or RFC 9220 (H3) Extended CONNECT over TLS.
+    /// The normal H3/H2 race selects the transport; if H3 cannot establish WS,
+    /// retry the Extended CONNECT on H2 before reporting it unavailable.
     pub async fn connect_websocket(
         &self,
         target_url: &reqwest::Url,
         extra_headers: &[(HeaderName, HeaderValue)],
         outbound_proxy: &str,
     ) -> UpstreamWsOutcome {
-        let scheme = target_url.scheme();
-        if !matches!(scheme, "http" | "https" | "ws" | "wss") {
-            return UpstreamWsOutcome::Unavailable(format!("unsupported ws target scheme: {scheme}"));
+        if target_url.scheme() != "https" {
+            return UpstreamWsOutcome::Unavailable(
+                "upstream WebSocket requires an HTTPS URL and H2/H3 Extended CONNECT".into(),
+            );
         }
         let Some(host) = target_url.host_str() else {
             return UpstreamWsOutcome::Unavailable("missing target host".into());
         };
-        let default_port = if matches!(scheme, "https" | "wss") {
-            443
-        } else {
-            80
+        let port = target_url.port_or_known_default().unwrap_or(443);
+        let key = SessionKey::new(host, port, outbound_proxy);
+        let selected = match self.inner.acquire_or_race(&key).await {
+            Ok(session) => session,
+            Err(error) => return UpstreamWsOutcome::Unavailable(error.to_string()),
         };
-        let port = target_url.port_or_known_default().unwrap_or(default_port);
 
-        // For HTTPS/WSS targets, attempt standard H2 RFC 8441 Extended CONNECT first.
-        if matches!(scheme, "https" | "wss") {
-            let key = SessionKey::new(host, port, outbound_proxy);
-            if let Ok(h2_session) = self.inner.acquire_h2_session(&key).await {
-                if h2_session.ws_enabled {
-                    match self
-                        .inner
-                        .connect_h2_extended_connect(&key, &h2_session, target_url, extra_headers)
-                        .await
-                    {
-                        UpstreamWsOutcome::Connected(conn) => return UpstreamWsOutcome::Connected(conn),
-                        UpstreamWsOutcome::Rejected {
-                            status,
-                            headers,
-                            body,
-                        } => {
-                            // If endpoint specifically lacks Extended CONNECT support on H2
-                            // or demands HTTP/1.1 upgrade, fall back cleanly to HTTP/1.1 Upgrade.
-                            if !matches!(
-                                status,
-                                reqwest::StatusCode::BAD_REQUEST
-                                    | reqwest::StatusCode::NOT_FOUND
-                                    | reqwest::StatusCode::METHOD_NOT_ALLOWED
-                                    | reqwest::StatusCode::UPGRADE_REQUIRED
-                                    | reqwest::StatusCode::NOT_IMPLEMENTED
-                                    | reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED
-                            ) {
-                                return UpstreamWsOutcome::Rejected {
-                                    status,
-                                    headers,
-                                    body,
+        match selected {
+            SelectedSession::H2(session, permit) => {
+                self.inner
+                    .connect_h2_extended_connect(&key, &session, permit, target_url, extra_headers)
+                    .await
+            }
+            SelectedSession::H3(session, permit) => {
+                match self.inner.connect_h3_extended_connect(&key, &session, permit, target_url, extra_headers).await {
+                    connected @ UpstreamWsOutcome::Connected(_) => connected,
+                    h3_outcome => {
+                        let (h2, h2_permit) = match self.inner.acquire_h2_session(&key).await {
+                            Ok(session) => session,
+                            Err(error) => {
+                                return match h3_outcome {
+                                    UpstreamWsOutcome::Rejected { status, headers, body }
+                                        if !matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::UPGRADE_REQUIRED | reqwest::StatusCode::NOT_IMPLEMENTED | reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED) => {
+                                            UpstreamWsOutcome::Rejected { status, headers, body }
+                                        }
+                                    _ => UpstreamWsOutcome::Unavailable(format!(
+                                        "H3 WebSocket failed; H2 fallback failed: {error}"
+                                    )),
                                 };
                             }
+                        };
+                        match self.inner.connect_h2_extended_connect(&key, &h2, h2_permit, target_url, extra_headers).await {
+                            connected @ UpstreamWsOutcome::Connected(_) => connected,
+                            h2_outcome => match h3_outcome {
+                                rejected @ UpstreamWsOutcome::Rejected { status, .. }
+                                    if !matches!(status, reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::UPGRADE_REQUIRED | reqwest::StatusCode::NOT_IMPLEMENTED | reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED) => rejected,
+                                _ => h2_outcome,
+                            },
                         }
-                        UpstreamWsOutcome::Unavailable(_) => {}
                     }
                 }
             }
         }
-
-        // Standard HTTP/1.1 TLS/Plain WebSocket Upgrade fallback.
-        self.inner
-            .connect_h1_websocket(target_url, host, port, extra_headers, outbound_proxy)
-            .await
     }
 }
 
 impl TransportInner {
     async fn run_maintenance(&self) {
         let lifetime = self.config.session_lifetime;
-        let limit = self.config.session_stream_limit;
+        let stream_limit = self.config.session_stream_limit;
+        let now = Instant::now();
+        let h3_cooldowns = self.h3_cooldowns.read().await;
+        let mut preferred_h3 = HashSet::new();
 
-        // Clean stale H3 sessions cleanly.
         {
-            let mut h3_map = self.h3_sessions.write().await;
-            let keys: Vec<SessionKey> = h3_map.keys().cloned().collect();
-            for key in keys {
-                let remove = match h3_map.get(&key) {
-                    Some(s) => {
-                        !s.mark.is_active()
-                            || s.conn.close_reason().is_some()
-                            || (s.created_at.elapsed() >= lifetime
-                                && s.in_flight.load(Ordering::Relaxed) == 0)
-                            || (s.total_streams.load(Ordering::Relaxed) >= limit
-                                && s.in_flight.load(Ordering::Relaxed) == 0)
-                    }
-                    None => false,
-                };
-                if remove {
-                    if let Some(s) = h3_map.remove(&key) {
-                        s.mark.deactivate();
-                        s.conn.close(0u32.into(), b"session expired");
-                    }
-                }
-            }
-        }
+            let mut h3_map = self.h3_sessions.write().unwrap();
+            for (key, sessions) in h3_map.iter_mut() {
+                let mut kept_primary = false;
+                sessions.retain(|session| {
+                    let idle = session.stream_slots.available_permits() == stream_limit;
+                    let remove = !session.mark.is_active()
+                        || session.conn.close_reason().is_some()
+                        || (idle && (kept_primary || session.created_at.elapsed() >= lifetime));
+                    kept_primary |= !remove;
 
-        // Clean stale H2 sessions and ping idle ones.
-        let idle_pings: Vec<(SessionKey, H2SessionEntry)> = {
-            let mut h2_map = self.h2_sessions.write().await;
-            let mut to_ping = Vec::new();
-            let keys: Vec<SessionKey> = h2_map.keys().cloned().collect();
-            for key in keys {
-                let remove = match h2_map.get(&key) {
-                    Some(s) => {
-                        !s.mark.is_active()
-                            || (s.created_at.elapsed() >= lifetime
-                                && s.in_flight.load(Ordering::Relaxed) == 0)
-                            || (s.total_streams.load(Ordering::Relaxed) >= limit
-                                && s.in_flight.load(Ordering::Relaxed) == 0)
+                    if remove {
+                        session.mark.deactivate();
+                        session.conn.close(0u32.into(), b"session expired");
                     }
-                    None => false,
-                };
-                if remove {
-                    if let Some(s) = h2_map.remove(&key) {
-                        s.mark.deactivate();
-                    }
-                } else if let Some(s) = h2_map.get(&key) {
-                    to_ping.push((key, s.clone()));
+                    !remove
+                });
+                if !h3_cooldowns.get(&key.h3_key()).is_some_and(|until| *until > now)
+                    && sessions.iter().any(|session| session.is_usable(lifetime))
+                {
+                    preferred_h3.insert(key.clone());
                 }
             }
+            h3_map.retain(|_, sessions| !sessions.is_empty());
+        }
+        drop(h3_cooldowns);
+
+        let idle_pings: Vec<(SessionKey, H2SessionEntry)> = {
+            let mut h2_map = self.h2_sessions.write().unwrap();
+            let mut to_ping = Vec::new();
+            for (key, sessions) in h2_map.iter_mut() {
+                let mut kept_primary = preferred_h3.contains(key);
+                sessions.retain(|session| {
+                    let idle = session.stream_slots.available_permits() == stream_limit;
+                    let remove = !session.mark.is_active()
+                        || (idle && (kept_primary || session.created_at.elapsed() >= lifetime));
+                    kept_primary |= !remove;
+
+                    if remove {
+                        session.mark.deactivate();
+                    } else {
+                        to_ping.push((key.clone(), session.clone()));
+                    }
+                    !remove
+                });
+            }
+            h2_map.retain(|_, sessions| !sessions.is_empty());
             to_ping
         };
 
@@ -1018,7 +1079,6 @@ impl TransportInner {
             }
         }
 
-        // Purge expired H3 cooldown entries.
         let now = Instant::now();
         self.h3_cooldowns.write().await.retain(|_, until| *until > now);
     }
@@ -1044,40 +1104,55 @@ impl TransportInner {
     }
 
     async fn store_h3_session(&self, key: SessionKey, entry: H3SessionEntry) {
-        let mut guard = self.h3_sessions.write().await;
-        if let Some(prev) = guard.insert(key, entry) {
-            prev.mark.deactivate();
-        }
+        self.h3_sessions.write().unwrap().entry(key).or_default().push(entry);
     }
 
     async fn store_h2_session(&self, key: SessionKey, entry: H2SessionEntry) {
-        let mut guard = self.h2_sessions.write().await;
-        if let Some(prev) = guard.insert(key, entry) {
-            prev.mark.deactivate();
-        }
+        self.h2_sessions.write().unwrap().entry(key).or_default().push(entry);
     }
 
     async fn remove_h3_session(&self, key: &SessionKey, expected_id: u64) {
-        let mut guard = self.h3_sessions.write().await;
-        if let Some(cur) = guard.get(key) {
-            if cur.id == expected_id {
-                if let Some(s) = guard.remove(key) {
-                    s.mark.deactivate();
-                    s.conn.close(0u32.into(), b"reset");
-                }
+        let mut guard = self.h3_sessions.write().unwrap();
+        if let Some(sessions) = guard.get_mut(key) {
+            if let Some(index) = sessions.iter().position(|session| session.id == expected_id) {
+                let session = sessions.remove(index);
+                session.mark.deactivate();
+                session.conn.close(0u32.into(), b"reset");
             }
+            if sessions.is_empty() { guard.remove(key); }
         }
     }
 
     async fn remove_h2_session(&self, key: &SessionKey, expected_id: u64) {
-        let mut guard = self.h2_sessions.write().await;
-        if let Some(cur) = guard.get(key) {
-            if cur.id == expected_id {
-                if let Some(s) = guard.remove(key) {
-                    s.mark.deactivate();
-                }
+        let mut guard = self.h2_sessions.write().unwrap();
+        if let Some(sessions) = guard.get_mut(key) {
+            if let Some(index) = sessions.iter().position(|session| session.id == expected_id) {
+                sessions.remove(index).mark.deactivate();
             }
+            if sessions.is_empty() { guard.remove(key); }
         }
+    }
+
+    async fn reserve_h3_session(&self, key: &SessionKey) -> Option<(H3SessionEntry, OwnedSemaphorePermit)> {
+        let pool = self.h3_sessions.read().unwrap();
+        pool.get(key)?.iter().find_map(|session| {
+            if !session.is_usable(self.config.session_lifetime) {
+                return None;
+            }
+            let permit = Arc::clone(&session.stream_slots).try_acquire_owned().ok()?;
+            Some((session.clone(), permit))
+        })
+    }
+
+    async fn reserve_h2_session(&self, key: &SessionKey) -> Option<(H2SessionEntry, OwnedSemaphorePermit)> {
+        let pool = self.h2_sessions.read().unwrap();
+        pool.get(key)?.iter().find_map(|session| {
+            if !session.is_usable(self.config.session_lifetime) {
+                return None;
+            }
+            let permit = Arc::clone(&session.stream_slots).try_acquire_owned().ok()?;
+            Some((session.clone(), permit))
+        })
     }
 
     async fn acquire_dial_lock(&self, key: &SessionKey) -> Arc<Mutex<()>> {
@@ -1094,178 +1169,134 @@ impl TransportInner {
     }
 
     async fn acquire_or_race(&self, key: &SessionKey) -> Result<SelectedSession, UpstreamTransportError> {
-        let lifetime = self.config.session_lifetime;
-        let limit = self.config.session_stream_limit;
         let h3_allowed = self.h3_allowed(key) && !self.is_h3_cooled_down(&key.h3_key()).await;
-
         if h3_allowed {
-            if let Some(h3) = self.h3_sessions.read().await.get(key).cloned() {
-                if h3.is_usable(lifetime, limit) {
-                    return Ok(SelectedSession::H3(h3));
-                }
-            }
+            if let Some((session, permit)) = self.reserve_h3_session(key).await { return Ok(SelectedSession::H3(session, permit)); }
         }
-        if let Some(h2) = self.h2_sessions.read().await.get(key).cloned() {
-            if h2.is_usable(lifetime, limit) && !h3_allowed {
-                return Ok(SelectedSession::H2(h2));
-            }
+        if let Some((session, permit)) = self.reserve_h2_session(key).await {
+            return Ok(SelectedSession::H2(session, permit));
         }
 
         let lock = self.acquire_dial_lock(key).await;
         let _guard = lock.lock().await;
-
         let h3_allowed = self.h3_allowed(key) && !self.is_h3_cooled_down(&key.h3_key()).await;
         if h3_allowed {
-            if let Some(h3) = self.h3_sessions.read().await.get(key).cloned() {
-                if h3.is_usable(lifetime, limit) {
-                    return Ok(SelectedSession::H3(h3));
-                }
-            }
+            if let Some((session, permit)) = self.reserve_h3_session(key).await { return Ok(SelectedSession::H3(session, permit)); }
         }
-        if let Some(h2) = self.h2_sessions.read().await.get(key).cloned() {
-            if h2.is_usable(lifetime, limit) && !h3_allowed {
-                return Ok(SelectedSession::H2(h2));
-            }
+        if let Some((session, permit)) = self.reserve_h2_session(key).await {
+            return Ok(SelectedSession::H2(session, permit));
         }
 
         if !h3_allowed {
             let h2 = self.dial_h2(key).await?;
-            self.store_h2_session(key.clone(), h2.clone()).await;
-            return Ok(SelectedSession::H2(h2));
+            return Ok(self.select_new_h2(key, h2).await);
         }
 
-        // Concurrent H3/H2 racing with configured grace period favoring H3.
-        let mut h3_fut = Box::pin(self.dial_h3(key));
-        let mut h2_fut = Box::pin(self.dial_h2(key));
+        // Give H3 a head start. If it is still dialing when the window expires,
+        // H2 starts while H3 continues. An early H3 failure starts H2 immediately.
+        let mut h3_dial = Box::pin(self.dial_h3(key));
+        let h3_result = match tokio::time::timeout(self.config.h3_grace_period, &mut h3_dial).await {
+            Ok(Ok(h3)) => return Ok(self.select_new_h3(key, h3).await),
+            Ok(Err(error)) => Some(error),
+            Err(_) => None,
+        };
+
+        let mut h2_dial = Box::pin(self.dial_h2(key));
+        let dial_error = |h3, h2| {
+            UpstreamTransportError::DialFailed(format!("H3 failed ({h3}); H2 failed ({h2})"))
+        };
+        if let Some(h3_error) = h3_result {
+            return match h2_dial.await {
+                Ok(h2) => Ok(self.select_new_h2(key, h2).await),
+                Err(h2_error) => Err(dial_error(h3_error, h2_error)),
+            };
+        }
 
         tokio::select! {
-            h3_res = &mut h3_fut => {
-                match h3_res {
-                    Ok(h3) => {
-                        self.store_h3_session(key.clone(), h3.clone()).await;
-                        Ok(SelectedSession::H3(h3))
-                    }
-                    Err(h3_err) => {
-                        match h2_fut.await {
-                            Ok(h2) => {
-                                self.store_h2_session(key.clone(), h2.clone()).await;
-                                Ok(SelectedSession::H2(h2))
-                            }
-                            Err(h2_err) => Err(UpstreamTransportError::DialFailed(format!(
-                                "H3 failed ({h3_err}); H2 failed ({h2_err})"
-                            ))),
-                        }
-                    }
-                }
-            }
-            h2_res = &mut h2_fut => {
-                match h2_res {
-                    Ok(h2) => {
-                        self.store_h2_session(key.clone(), h2.clone()).await;
-                        // H2 finished first; grant H3 the configured grace period to overtake.
-                        let grace = tokio::time::sleep(self.config.h3_grace_period);
-                        tokio::pin!(grace);
-                        tokio::select! {
-                            h3_res = &mut h3_fut => {
-                                match h3_res {
-                                    Ok(h3) => {
-                                        self.store_h3_session(key.clone(), h3.clone()).await;
-                                        Ok(SelectedSession::H3(h3))
-                                    }
-                                    Err(_) => Ok(SelectedSession::H2(h2)),
-                                }
-                            }
-                            _ = &mut grace => {
-                                Ok(SelectedSession::H2(h2))
-                            }
-                        }
-                    }
-                    Err(h2_err) => {
-                        match h3_fut.await {
-                            Ok(h3) => {
-                                self.store_h3_session(key.clone(), h3.clone()).await;
-                                Ok(SelectedSession::H3(h3))
-                            }
-                            Err(h3_err) => Err(UpstreamTransportError::DialFailed(format!(
-                                "H2 failed ({h2_err}); H3 failed ({h3_err})"
-                            ))),
-                        }
-                    }
-                }
-            }
+            biased;
+            result = &mut h3_dial => match result {
+                Ok(h3) => Ok(self.select_new_h3(key, h3).await),
+                Err(h3_error) => match h2_dial.await {
+                    Ok(h2) => Ok(self.select_new_h2(key, h2).await),
+                    Err(h2_error) => Err(dial_error(h3_error, h2_error)),
+                },
+            },
+            result = &mut h2_dial => match result {
+                Ok(h2) => Ok(self.select_new_h2(key, h2).await),
+                Err(h2_error) => match h3_dial.await {
+                    Ok(h3) => Ok(self.select_new_h3(key, h3).await),
+                    Err(h3_error) => Err(dial_error(h3_error, h2_error)),
+                },
+            },
         }
     }
 
-    async fn acquire_h2_session(&self, key: &SessionKey) -> Result<H2SessionEntry, UpstreamTransportError> {
-        let lifetime = self.config.session_lifetime;
-        let limit = self.config.session_stream_limit;
-        if let Some(h2) = self.h2_sessions.read().await.get(key).cloned() {
-            if h2.is_usable(lifetime, limit) {
-                return Ok(h2);
-            }
-        }
+    async fn select_new_h3(&self, key: &SessionKey, session: H3SessionEntry) -> SelectedSession {
+        let permit = Arc::clone(&session.stream_slots)
+            .try_acquire_owned()
+            .expect("new H3 session has capacity");
+        self.store_h3_session(key.clone(), session.clone()).await;
+        SelectedSession::H3(session, permit)
+    }
 
+    async fn select_new_h2(&self, key: &SessionKey, session: H2SessionEntry) -> SelectedSession {
+        let permit = Arc::clone(&session.stream_slots)
+            .try_acquire_owned()
+            .expect("new H2 session has capacity");
+        self.store_h2_session(key.clone(), session.clone()).await;
+        SelectedSession::H2(session, permit)
+    }
+
+    async fn acquire_h2_session(&self, key: &SessionKey) -> Result<(H2SessionEntry, OwnedSemaphorePermit), UpstreamTransportError> {
+        if let Some(reserved) = self.reserve_h2_session(key).await { return Ok(reserved); }
         let lock = self.acquire_dial_lock(key).await;
         let _guard = lock.lock().await;
-
-        if let Some(h2) = self.h2_sessions.read().await.get(key).cloned() {
-            if h2.is_usable(lifetime, limit) {
-                return Ok(h2);
-            }
-        }
-
+        if let Some(reserved) = self.reserve_h2_session(key).await { return Ok(reserved); }
         let h2 = self.dial_h2(key).await?;
+        let permit = Arc::clone(&h2.stream_slots).try_acquire_owned().expect("new H2 session has capacity");
         self.store_h2_session(key.clone(), h2.clone()).await;
-        Ok(h2)
+        Ok((h2, permit))
     }
 
     async fn send_h3_with_retry_then_h2(
-        &self,
-        key: &SessionKey,
-        initial_h3: H3SessionEntry,
+        &self, key: &SessionKey, initial_h3: H3SessionEntry, initial_permit: OwnedSemaphorePermit,
         req: &UpstreamHttpRequest,
     ) -> Result<UpstreamHttpResponse, UpstreamTransportError> {
-        let mut current = Some(initial_h3);
-        let mut last_err: Option<UpstreamTransportError> = None;
-        let total_attempts = 1 + self.config.h3_max_retries;
-
-        for attempt in 0..total_attempts {
-            let session = match current.take() {
-                Some(s) => s,
+        let mut current = Some((initial_h3, initial_permit));
+        let mut last_err = None;
+        for attempt in 0..=self.config.h3_max_retries {
+            let (session, permit) = match current.take() {
+                Some(pair) => pair,
                 None => {
-                    let dial_lock = self.acquire_dial_lock(key).await;
-                    let _guard = dial_lock.lock().await;
-                    match self.dial_h3(key).await {
-                        Ok(s) => {
-                            self.store_h3_session(key.clone(), s.clone()).await;
-                            s
-                        }
-                        Err(e) => {
-                            last_err = Some(e);
-                            continue;
+                    if let Some(pair) = self.reserve_h3_session(key).await { pair } else {
+                        let lock = self.acquire_dial_lock(key).await;
+                        let _guard = lock.lock().await;
+                        if let Some(pair) = self.reserve_h3_session(key).await { pair } else {
+                            match self.dial_h3(key).await {
+                                Ok(s) => {
+                                    let permit = Arc::clone(&s.stream_slots).try_acquire_owned().expect("new H3 session has capacity");
+                                    self.store_h3_session(key.clone(), s.clone()).await;
+                                    (s, permit)
+                                }
+                                Err(error) => { last_err = Some(error); continue; }
+                            }
                         }
                     }
                 }
             };
-
-            match self.send_on_h3_session(key, &session, req).await {
-                Ok(resp) => return Ok(resp),
-                Err(err) => {
+            match self.send_on_h3_session(key, &session, permit, req).await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
                     self.remove_h3_session(key, session.id).await;
-                    last_err = Some(err);
-                    if attempt + 1 >= total_attempts {
-                        break;
-                    }
+                    last_err = Some(error);
+                    if attempt == self.config.h3_max_retries { break; }
                 }
             }
         }
-
-        // All H3 attempts failed pre-response: mark host H3 cooldown and fall back to H2 while
-        // the caller/local connection stays suspended.
         self.set_h3_cooldown(&key.h3_key()).await;
         match self.acquire_h2_session(key).await {
-            Ok(h2) => self.send_h2_with_reconnect(key, h2, req).await,
-            Err(h2_err) => Err(last_err.unwrap_or(h2_err)),
+            Ok((h2, permit)) => self.send_h2_with_reconnect(key, h2, permit, req).await,
+            Err(error) => Err(last_err.unwrap_or(error)),
         }
     }
 
@@ -1273,6 +1304,7 @@ impl TransportInner {
         &self,
         key: &SessionKey,
         session: &H3SessionEntry,
+        permit: OwnedSemaphorePermit,
         req: &UpstreamHttpRequest,
     ) -> Result<UpstreamHttpResponse, UpstreamTransportError> {
         let uri = build_target_uri(&req.url, &key.authority())?;
@@ -1287,9 +1319,8 @@ impl TransportInner {
         let guard = SessionStreamGuard::new(
             Arc::clone(&self.active_streams),
             None,
-            Some(Arc::clone(&session.total_streams)),
+            Some(permit),
         );
-        let in_flight_guard = InFlightCounter::new(Arc::clone(&session.in_flight));
 
         let mut send_req = session.send_req.clone();
         // Bound opening & sending headers/body; do NOT apply a short HTTP response timeout
@@ -1338,7 +1369,6 @@ impl TransportInner {
             }
         })?;
 
-        drop(in_flight_guard);
         let status = reqwest::StatusCode::from_u16(resp.status().as_u16())
             .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
         let headers = resp.headers().clone();
@@ -1356,25 +1386,18 @@ impl TransportInner {
     }
 
     async fn send_h2_with_reconnect(
-        &self,
-        key: &SessionKey,
-        initial_h2: H2SessionEntry,
+        &self, key: &SessionKey, initial_h2: H2SessionEntry, initial_permit: OwnedSemaphorePermit,
         req: &UpstreamHttpRequest,
     ) -> Result<UpstreamHttpResponse, UpstreamTransportError> {
-        match self.send_on_h2_session(key, &initial_h2, req).await {
+        match self.send_on_h2_session(key, &initial_h2, initial_permit, req).await {
             Ok(resp) => Ok(resp),
             Err(first_err) => {
                 self.remove_h2_session(key, initial_h2.id).await;
-                if matches!(first_err, UpstreamTransportError::InvalidRequest(_)) {
-                    return Err(first_err);
-                }
-                let fresh = self.acquire_h2_session(key).await?;
-                match self.send_on_h2_session(key, &fresh, req).await {
+                if matches!(first_err, UpstreamTransportError::InvalidRequest(_)) { return Err(first_err); }
+                let (fresh, permit) = self.acquire_h2_session(key).await?;
+                match self.send_on_h2_session(key, &fresh, permit, req).await {
                     Ok(resp) => Ok(resp),
-                    Err(err) => {
-                        self.remove_h2_session(key, fresh.id).await;
-                        Err(err)
-                    }
+                    Err(err) => { self.remove_h2_session(key, fresh.id).await; Err(err) }
                 }
             }
         }
@@ -1384,6 +1407,7 @@ impl TransportInner {
         &self,
         key: &SessionKey,
         session: &H2SessionEntry,
+        permit: OwnedSemaphorePermit,
         req: &UpstreamHttpRequest,
     ) -> Result<UpstreamHttpResponse, UpstreamTransportError> {
         let uri = build_target_uri(&req.url, &key.authority())?;
@@ -1401,9 +1425,8 @@ impl TransportInner {
         let guard = SessionStreamGuard::new(
             Arc::clone(&self.active_streams),
             None,
-            Some(Arc::clone(&session.total_streams)),
+            Some(permit),
         );
-        let _in_flight = InFlightCounter::new(Arc::clone(&session.in_flight));
 
         let send_req = session.send_req.clone();
         let mut ready = send_req.ready().await.map_err(|e| {
@@ -1452,9 +1475,15 @@ impl TransportInner {
         &self,
         key: &SessionKey,
         session: &H2SessionEntry,
+        permit: OwnedSemaphorePermit,
         target_url: &reqwest::Url,
         extra_headers: &[(HeaderName, HeaderValue)],
     ) -> UpstreamWsOutcome {
+        if !session.ws_enabled {
+            return UpstreamWsOutcome::Unavailable(
+                "upstream H2 did not advertise SETTINGS_ENABLE_CONNECT_PROTOCOL".into(),
+            );
+        }
         let Ok(uri) = build_ws_extended_connect_uri(target_url, &key.authority()) else {
             return UpstreamWsOutcome::Unavailable("invalid H2 extended connect URI".into());
         };
@@ -1501,7 +1530,7 @@ impl TransportInner {
             }
         };
 
-        let resp = match tokio::time::timeout(self.config.h1_ws_handshake_timeout, resp_fut).await
+        let resp = match tokio::time::timeout(self.config.h2_extended_connect_handshake_timeout, resp_fut).await
         {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => return UpstreamWsOutcome::Unavailable(e.to_string()),
@@ -1544,139 +1573,123 @@ impl TransportInner {
             .map(str::to_string);
 
         let recv = resp.into_body();
-        let io = UpstreamWsIo::H2(H2ConnectIo::new(send_stream, recv));
-        let ws = WebSocketStream::from_raw_socket(io, Role::Client, None).await;
-        let guard = SessionStreamGuard::new(
+        let mut io = H2ConnectIo::new(send_stream, recv);
+        io._guard = Some(SessionStreamGuard::new(
             Arc::clone(&self.active_streams),
             Some(Arc::clone(&self.h2_ws_active)),
-            Some(Arc::clone(&session.total_streams)),
-        );
+            Some(permit),
+        ));
 
         UpstreamWsOutcome::Connected(UpstreamWsConnection {
             kind: UpstreamWsKind::H2ExtendedConnect,
             negotiated_protocol,
-            ws,
-            _guard: guard,
+            ws: WebSocketStream::from_raw_socket(UpstreamWsIo::H2(io), Role::Client, None).await,
         })
     }
 
-    async fn connect_h1_websocket(
+    async fn connect_h3_extended_connect(
         &self,
+        key: &SessionKey,
+        session: &H3SessionEntry,
+        permit: OwnedSemaphorePermit,
         target_url: &reqwest::Url,
-        host: &str,
-        port: u16,
         extra_headers: &[(HeaderName, HeaderValue)],
-        outbound_proxy: &str,
     ) -> UpstreamWsOutcome {
-        let mut ws_url = target_url.clone();
-        let use_tls = matches!(target_url.scheme(), "https" | "wss");
-        let _ = ws_url.set_scheme(if use_tls { "wss" } else { "ws" });
-
-        let mut request = match ws_url.as_str().into_client_request() {
-            Ok(r) => r,
-            Err(e) => return UpstreamWsOutcome::Unavailable(e.to_string()),
+        let Ok(uri) = build_ws_extended_connect_uri(target_url, &key.authority()) else {
+            return UpstreamWsOutcome::Unavailable("invalid H3 extended CONNECT URI".into());
         };
 
-        for (name, val) in extra_headers {
+        let mut builder = Request::builder()
+            .method(Method::CONNECT)
+            .uri(uri)
+            .version(http::Version::HTTP_3);
+        let mut has_ws_version = false;
+        for (name, value) in extra_headers {
             let lower = name.as_str();
-            if matches!(
-                lower,
-                "connection"
-                    | "upgrade"
-                    | "sec-websocket-key"
-                    | "sec-websocket-version"
-                    | "host"
-                    | "content-length"
-            ) {
+            if is_ws_h1_hop_header(lower) || is_hop_by_hop_header(lower) || lower == "host" {
                 continue;
             }
-            if let (Ok(hn), Ok(hv)) = (
-                http::HeaderName::from_bytes(name.as_str().as_bytes()),
-                http::HeaderValue::from_bytes(val.as_bytes()),
-            ) {
-                request.headers_mut().append(hn, hv);
+            if lower == "sec-websocket-version" {
+                has_ws_version = true;
             }
+            builder = builder.header(name.clone(), value.clone());
+        }
+        if !has_ws_version {
+            builder = builder.header("sec-websocket-version", "13");
         }
 
-        let stream = match tokio::time::timeout(
-            self.config.h1_ws_handshake_timeout,
-            connect_tcp_maybe_proxy(host, port, outbound_proxy),
+        let Ok(mut request) = builder.body(()) else {
+            return UpstreamWsOutcome::Unavailable("failed to build H3 CONNECT request".into());
+        };
+        request.extensions_mut().insert(h3::ext::Protocol::WEBSOCKET);
+
+        let mut send_req = session.send_req.clone();
+        let mut stream = match tokio::time::timeout(
+            self.config.h3_handshake_timeout,
+            send_req.send_request(request),
         )
         .await
         {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return UpstreamWsOutcome::Unavailable(e),
-            Err(_) => return UpstreamWsOutcome::Unavailable("TCP connect timed out".into()),
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => return UpstreamWsOutcome::Unavailable(error.to_string()),
+            Err(_) => return UpstreamWsOutcome::Unavailable("H3 CONNECT timed out".into()),
         };
-
-        let io = if use_tls {
-            let tls_cfg = match build_rustls_client_config(
-                vec![b"http/1.1".to_vec()],
-                &self.config.extra_root_certs,
-            ) {
-                Ok(c) => c,
-                Err(e) => return UpstreamWsOutcome::Unavailable(e),
-            };
-            let server_name = match ServerName::try_from(host.to_string()) {
-                Ok(s) => s,
-                Err(e) => return UpstreamWsOutcome::Unavailable(e.to_string()),
-            };
-            let connector = TlsConnector::from(Arc::new(tls_cfg));
-            let tls_stream = match tokio::time::timeout(
-                self.config.h1_ws_handshake_timeout,
-                connector.connect(server_name, stream),
-            )
-            .await
-            {
-                Ok(Ok(s)) => s,
-                Ok(Err(e)) => return UpstreamWsOutcome::Unavailable(e.to_string()),
-                Err(_) => return UpstreamWsOutcome::Unavailable("TLS handshake timed out".into()),
-            };
-            UpstreamWsIo::Tls(Box::new(tls_stream))
-        } else {
-            UpstreamWsIo::Plain(stream)
-        };
-
-        match tokio::time::timeout(
-            self.config.h1_ws_handshake_timeout,
-            client_async_with_config(request, io, None),
+        let response = match tokio::time::timeout(
+            self.config.h3_handshake_timeout,
+            stream.recv_response(),
         )
         .await
         {
-            Ok(Ok((ws, resp))) => {
-                let negotiated_protocol = resp
-                    .headers()
-                    .get("sec-websocket-protocol")
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                let guard = SessionStreamGuard::new(
-                    Arc::clone(&self.active_streams),
-                    Some(Arc::clone(&self.h1_ws_active)),
-                    None,
-                );
-                UpstreamWsOutcome::Connected(UpstreamWsConnection {
-                    kind: UpstreamWsKind::Http1,
-                    negotiated_protocol,
-                    ws,
-                    _guard: guard,
-                })
-            }
-            Ok(Err(WsError::Http(resp))) => {
-                let status = reqwest::StatusCode::from_u16(resp.status().as_u16())
-                    .unwrap_or(reqwest::StatusCode::BAD_GATEWAY);
-                let headers = resp.headers().clone();
-                let body = Bytes::from(resp.into_body().unwrap_or_default());
-                UpstreamWsOutcome::Rejected {
-                    status,
-                    headers,
-                    body,
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => return UpstreamWsOutcome::Unavailable(error.to_string()),
+            Err(_) => return UpstreamWsOutcome::Unavailable("H3 WS response timed out".into()),
+        };
+
+        let status = reqwest::StatusCode::from_u16(response.status().as_u16())
+            .unwrap_or(reqwest::StatusCode::BAD_GATEWAY);
+        let headers = response.headers().clone();
+        if status != reqwest::StatusCode::OK {
+            let mut body = Vec::new();
+            loop {
+                match stream.recv_data().await {
+                    Ok(Some(mut chunk)) => {
+                        let remaining = MAX_RESPONSE_ERROR_BODY.saturating_sub(body.len());
+                        if remaining == 0 {
+                            break;
+                        }
+                        let take = chunk.remaining().min(remaining);
+                        body.extend_from_slice(&chunk.copy_to_bytes(take));
+                        if body.len() >= MAX_RESPONSE_ERROR_BODY {
+                            break;
+                        }
+                    }
+                    _ => break,
                 }
             }
-            Ok(Err(e)) => UpstreamWsOutcome::Unavailable(e.to_string()),
-            Err(_) => UpstreamWsOutcome::Unavailable("WS handshake timed out".into()),
+            return UpstreamWsOutcome::Rejected {
+                status,
+                headers,
+                body: Bytes::from(body),
+            };
         }
+
+        let negotiated_protocol = headers
+            .get("sec-websocket-protocol")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let guard = SessionStreamGuard::new(
+            Arc::clone(&self.active_streams),
+            Some(Arc::clone(&self.h3_ws_active)),
+            Some(permit),
+        );
+        let io = bridge_h3_websocket_stream(stream, guard);
+        UpstreamWsOutcome::Connected(UpstreamWsConnection {
+            kind: UpstreamWsKind::H3ExtendedConnect,
+            negotiated_protocol,
+            ws: WebSocketStream::from_raw_socket(UpstreamWsIo::H3(io), Role::Client, None).await,
+        })
     }
 
     async fn get_quic_endpoint_for(
@@ -1796,8 +1809,7 @@ impl TransportInner {
             conn,
             send_req,
             mark,
-            in_flight: Arc::new(AtomicUsize::new(0)),
-            total_streams: Arc::new(AtomicUsize::new(0)),
+            stream_slots: Arc::new(Semaphore::new(self.config.session_stream_limit)),
         }
     }
 
@@ -1880,25 +1892,9 @@ impl TransportInner {
             send_req,
             ping_pong: Arc::new(Mutex::new(ping_pong)),
             mark,
-            in_flight: Arc::new(AtomicUsize::new(0)),
-            total_streams: Arc::new(AtomicUsize::new(0)),
+            stream_slots: Arc::new(Semaphore::new(self.config.session_stream_limit)),
             ws_enabled,
         })
-    }
-}
-
-struct InFlightCounter(Arc<AtomicUsize>);
-
-impl InFlightCounter {
-    fn new(counter: Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, Ordering::Relaxed);
-        Self(counter)
-    }
-}
-
-impl Drop for InFlightCounter {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -2032,7 +2028,7 @@ async fn dial_h3_single(
     match tokio::time::timeout(
         handshake_timeout,
         h3::client::builder()
-            .enable_extended_connect(false)
+            .enable_extended_connect(true)
             .build::<_, _, Bytes>(h3_conn),
     )
     .await
@@ -2386,7 +2382,10 @@ mod tests {
     {
         let tls_cfg = test_server_rustls(vec![b"h3".to_vec()], certs, key);
         let quic_srv = quinn::crypto::rustls::QuicServerConfig::try_from(tls_cfg).unwrap();
-        let srv_cfg = quinn::ServerConfig::with_crypto(Arc::new(quic_srv));
+        let mut srv_cfg = quinn::ServerConfig::with_crypto(Arc::new(quic_srv));
+        let mut quic_transport = quinn::TransportConfig::default();
+        quic_transport.max_concurrent_bidi_streams((MAX_SESSION_STREAMS as u32 + 1).into());
+        srv_cfg.transport_config(Arc::new(quic_transport));
         let endpoint =
             quinn::Endpoint::server(srv_cfg, SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
         let port = endpoint.local_addr().unwrap().port();
@@ -2399,8 +2398,10 @@ mod tests {
                     let Ok(conn) = incoming.await else {
                         return;
                     };
-                    let Ok(mut h3_conn) =
-                        h3::server::Connection::new(h3_quinn::Connection::new(conn)).await
+                    let Ok(mut h3_conn) = h3::server::builder()
+                        .enable_extended_connect(true)
+                        .build(h3_quinn::Connection::new(conn))
+                        .await
                     else {
                         return;
                     };
@@ -2470,8 +2471,185 @@ mod tests {
         (actual_port, join)
     }
 
+    fn capacity_test_request(port: u16) -> UpstreamHttpRequest {
+        UpstreamHttpRequest {
+            method: Method::GET,
+            url: format!("https://localhost:{port}/events").parse().unwrap(),
+            headers: vec![],
+            body: Bytes::new(),
+            outbound_proxy: String::new(),
+        }
+    }
+
+    async fn check_stream_pool_capacity(
+        transport: &UpstreamTransport,
+        port: u16,
+        protocol: UpstreamProtocol,
+        finish_first: &Notify,
+    ) {
+        let request = capacity_test_request(port);
+        let mut first_request = request.clone();
+        first_request.url.set_path("/first");
+        let (first, remaining) = tokio::join!(
+            transport.send_http(first_request),
+            futures_util::future::try_join_all(
+                (1..MAX_SESSION_STREAMS).map(|_| transport.send_http(request.clone())),
+            ),
+        );
+        let mut first = first.unwrap();
+        let remaining = remaining.unwrap();
+        assert_eq!(first.protocol, protocol);
+        assert!(remaining.iter().all(|response| response.protocol == protocol));
+
+        let full = transport.snapshot().upstream_sessions;
+        assert_eq!(full.len(), 1);
+        let primary = full[0].id;
+        assert_eq!(full[0].occupied_stream_slots, 500);
+
+        let overflow = transport.send_http(request.clone()).await.unwrap();
+        assert_eq!(overflow.protocol, protocol);
+        let full = transport.snapshot().upstream_sessions;
+        assert_eq!(full.len(), 2);
+        assert!(full.iter().all(|s| s.protocol == protocol.as_str()));
+        assert_eq!(full[0].occupied_stream_slots, 500);
+        assert_eq!(full[1].occupied_stream_slots, 1);
+
+        finish_first.notify_one();
+        while let Some(chunk) = first.next_chunk().await.unwrap() {
+            // H2 can deliver an empty DATA frame carrying END_STREAM.
+            assert!(chunk.is_empty());
+        }
+        let replacement = transport.send_http(request).await.unwrap();
+        assert_eq!(replacement.protocol, protocol);
+        let reused = transport.snapshot().upstream_sessions;
+        assert_eq!(reused.len(), 2);
+        assert_eq!(reused[0].id, primary);
+        assert_eq!(reused[0].occupied_stream_slots, 500);
+        assert_eq!(reused[1].occupied_stream_slots, 1);
+
+        drop((remaining, overflow, replacement));
+        transport.inner.run_maintenance().await;
+        let compacted = transport.snapshot().upstream_sessions;
+        assert_eq!(compacted.len(), 1);
+        assert_eq!(compacted[0].id, primary);
+        assert_eq!(compacted[0].occupied_stream_slots, 0);
+    }
+
     #[tokio::test]
-    async fn race_prefers_h3_within_grace_period_even_when_h2_finishes_first() {
+    async fn h2_pool_enforces_concurrent_capacity_and_reuses_released_streams() {
+        let (certs, key, root) = generate_localhost_cert();
+        let finish_first = Arc::new(Notify::new());
+        let finish_others = Arc::new(Notify::new());
+        let finish = Arc::clone(&finish_first);
+        let others = Arc::clone(&finish_others);
+        let (port, server) = spawn_h2_server(
+            0, certs, key, Duration::ZERO, false,
+            move |request, mut respond| {
+                let finish = Arc::clone(if request.uri().path() == "/first" { &finish } else { &others });
+                async move {
+                    let mut send = respond.send_response(Response::new(()), false).unwrap();
+                    finish.notified().await;
+                    let _ = send.send_data(Bytes::new(), true);
+                }
+            },
+        ).await;
+        let transport = UpstreamTransport::new(UpstreamTransportConfig {
+            enable_h3: false,
+            extra_root_certs: vec![root],
+            ..Default::default()
+        });
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            check_stream_pool_capacity(&transport, port, UpstreamProtocol::Http2, &finish_first),
+        ).await.unwrap();
+        finish_others.notify_waiters();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn h3_pool_enforces_concurrent_capacity_and_reuses_released_streams() {
+        let (certs, key, root) = generate_localhost_cert();
+        let finish_first = Arc::new(Notify::new());
+        let finish_others = Arc::new(Notify::new());
+        let finish = Arc::clone(&finish_first);
+        let others = Arc::clone(&finish_others);
+        let (port, server) = spawn_h3_server(certs, key, move |request, mut stream| {
+            let finish = Arc::clone(if request.uri().path() == "/first" { &finish } else { &others });
+            async move {
+                stream.send_response(Response::new(())).await.unwrap();
+                finish.notified().await;
+                let _ = stream.finish().await;
+            }
+        }).await;
+        let transport = UpstreamTransport::new(UpstreamTransportConfig {
+            extra_root_certs: vec![root],
+            ..Default::default()
+        });
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            check_stream_pool_capacity(&transport, port, UpstreamProtocol::Http3, &finish_first),
+        ).await.unwrap();
+        finish_others.notify_waiters();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn h3_websocket_shares_http_capacity_and_releases_it_on_drop() {
+        let (certs, key, root) = generate_localhost_cert();
+        let (port, server) = spawn_h3_server(certs, key, |request, mut stream| async move {
+            let response = Response::new(());
+            if request.method() == Method::CONNECT {
+                assert_eq!(
+                    request.extensions().get::<h3::ext::Protocol>(),
+                    Some(&h3::ext::Protocol::WEBSOCKET)
+                );
+                stream.send_response(response).await.unwrap();
+                // Leave the tunnel open until the client tears it down.
+                while let Ok(Some(_)) = stream.recv_data().await {}
+            } else {
+                stream.send_response(response).await.unwrap();
+            }
+            let _ = stream.finish().await;
+        }).await;
+        let transport = UpstreamTransport::new(UpstreamTransportConfig {
+            session_stream_limit: 1,
+            extra_root_certs: vec![root],
+            ..Default::default()
+        });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let request = capacity_test_request(port);
+            let ws = match transport.connect_websocket(&request.url, &[], "").await {
+                UpstreamWsOutcome::Connected(ws) => ws,
+                UpstreamWsOutcome::Rejected { status, .. } => panic!("H3 WS rejected: {status}"),
+                UpstreamWsOutcome::Unavailable(error) => panic!("H3 WS failed: {error}"),
+            };
+            assert_eq!(ws.kind, UpstreamWsKind::H3ExtendedConnect);
+            let before = transport.snapshot();
+            assert_eq!(before.upstream_h3_ws, 1);
+            let primary = before.upstream_sessions[0].id;
+            assert_eq!(before.upstream_sessions[0].occupied_stream_slots, 1);
+
+            let http = transport.send_http(request.clone()).await.unwrap();
+            let full = transport.snapshot().upstream_sessions;
+            assert_eq!(full.len(), 2);
+            assert!(full.iter().all(|s| s.occupied_stream_slots == 1));
+
+            drop(ws);
+            while transport.snapshot().upstream_sessions[0].occupied_stream_slots != 0 {
+                tokio::task::yield_now().await;
+            }
+            let reused = transport.send_http(request).await.unwrap();
+            let full_again = transport.snapshot().upstream_sessions;
+            assert_eq!(full_again.len(), 2);
+            assert_eq!(full_again[0].id, primary);
+            assert!(full_again.iter().all(|s| s.occupied_stream_slots == 1));
+            drop((http, reused));
+        }).await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn race_prefers_h3_during_its_head_start() {
         let (certs, key, root_cert) = generate_localhost_cert();
 
         // Bind a UDP socket temporarily to obtain a free UDP port, Wait: QUIC and TCP ports are
@@ -2536,6 +2714,17 @@ mod tests {
         assert_eq!(resp.protocol, UpstreamProtocol::Http3);
         let body = resp.collect_body(1024).await.unwrap();
         assert_eq!(body.as_ref(), b"from-h3");
+
+        let key = SessionKey::new("localhost", shared_port, "");
+        let (_overflow, permit) = transport.inner.acquire_h2_session(&key).await.unwrap();
+        transport.inner.run_maintenance().await;
+        assert_eq!(transport.snapshot().upstream_sessions.len(), 2);
+        drop(permit);
+        drop(_overflow);
+        transport.inner.run_maintenance().await;
+        let compacted = transport.snapshot().upstream_sessions;
+        assert_eq!(compacted.len(), 1);
+        assert_eq!(compacted[0].protocol, "http/3");
 
         if let Some(j) = h3_handle {
             j.abort();
@@ -2707,6 +2896,10 @@ mod tests {
             Duration::ZERO,
             true,
             |req, mut respond| async move {
+                if req.method() == Method::GET {
+                    respond.send_response(Response::new(()), true).unwrap();
+                    return;
+                }
                 assert_eq!(req.method(), Method::CONNECT);
                 let proto = req.extensions().get::<H2Protocol>().map(|p| p.as_str());
                 assert_eq!(proto, Some("websocket"));
@@ -2749,6 +2942,7 @@ mod tests {
 
         let transport = UpstreamTransport::new(UpstreamTransportConfig {
             enable_h3: false,
+            session_stream_limit: 1,
             extra_root_certs: vec![root_cert],
             ..Default::default()
         });
@@ -2775,9 +2969,9 @@ mod tests {
 
         let snap = transport.snapshot();
         assert_eq!(snap.upstream_h2, 1);
-        assert!(snap.upstream_h2_ws);
-        assert!(!snap.upstream_h3_ws);
-        assert!(snap.upstream_ws);
+        assert_eq!(snap.upstream_h2_ws, 1);
+        assert_eq!(snap.upstream_h3_ws, 0);
+        assert_eq!(snap.upstream_ws, 1);
         assert!(snap.upstream_streams >= 1);
 
         conn.ws.send(WsMessage::Text("hello".into())).await.unwrap();
@@ -2794,9 +2988,25 @@ mod tests {
             WsMessage::Binary(Bytes::from_static(&[1, 2, 3, 4]))
         );
 
+        let ws_session = snap.upstream_sessions[0].id;
+        assert_eq!(snap.upstream_sessions[0].occupied_stream_slots, 1);
+
+        let request = capacity_test_request(port);
+        let http = transport.send_http(request.clone()).await.unwrap();
+        let saturated = transport.snapshot().upstream_sessions;
+        assert_eq!(saturated.len(), 2);
+        assert!(saturated.iter().all(|s| s.occupied_stream_slots == 1));
+
         drop(conn);
+        let reused = transport.send_http(request).await.unwrap();
+        let both = transport.snapshot().upstream_sessions;
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].id, ws_session);
+        assert!(both.iter().all(|s| s.occupied_stream_slots == 1));
+        drop((http, reused));
         let snap_after = transport.snapshot();
-        assert!(!snap_after.upstream_h2_ws);
+        assert_eq!(snap_after.upstream_h2_ws, 0);
+        assert_eq!(snap_after.upstream_ws, 0);
         assert_eq!(snap_after.upstream_streams, 0);
 
         h2j.abort();

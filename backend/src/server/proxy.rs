@@ -384,11 +384,13 @@ pub struct ConnectionStatus {
     pub local_http1: i64,
     pub local_ws: usize,
     pub upstream_h2: usize,
-    pub upstream_h2_ws: bool,
+    pub upstream_h2_ws: usize,
     pub upstream_h3: usize,
-    pub upstream_h3_ws: bool,
+    pub upstream_h3_ws: usize,
     pub upstream_ws: usize,
     pub upstream_streams: usize,
+    pub upstream_stream_limit: usize,
+    pub upstream_sessions: Vec<super::upstream_transport::UpstreamSessionSnapshot>,
 }
 
 impl Default for ConnectionStatus {
@@ -397,11 +399,13 @@ impl Default for ConnectionStatus {
             local_http1: 0,
             local_ws: 0,
             upstream_h2: 0,
-            upstream_h2_ws: false,
+            upstream_h2_ws: 0,
             upstream_h3: 0,
-            upstream_h3_ws: false,
+            upstream_h3_ws: 0,
             upstream_ws: 0,
             upstream_streams: 0,
+            upstream_stream_limit: 0,
+            upstream_sessions: Vec::new(),
         }
     }
 }
@@ -417,19 +421,18 @@ pub struct ProxyStatusResponse {
 }
 
 pub fn get_proxy_status_data(state: &AppState, running: bool, listen_address: &str) -> ProxyStatusResponse {
-    let local_http1 = state.active_requests.load(Ordering::Relaxed);
+    let local_http1 = state.active_requests.load(Ordering::Relaxed).max(0);
     let local_ws = state.active_ws_sessions.load(Ordering::Relaxed);
     let tsnap = state.upstream_transport.snapshot();
     let legacy_h2 = if running { state.upstream_h2_active.load(Ordering::Relaxed) } else { 0 };
     let upstream_h2 = if running { tsnap.upstream_h2.max(legacy_h2) } else { 0 };
     let upstream_h3 = if running { tsnap.upstream_h3 } else { 0 };
-    let legacy_ws = state.upstream_ws_carriers.load(Ordering::Relaxed);
-    let upstream_ws = legacy_ws + usize::from(running && tsnap.upstream_ws);
-    let upstream_h2_ws = running && (tsnap.upstream_h2_ws || legacy_ws > 0);
-    let upstream_h3_ws = running && tsnap.upstream_h3_ws;
-    let upstream_streams =
-        (if local_http1 > 0 { local_http1 as usize } else { 0 }).max(if running { tsnap.upstream_streams } else { 0 })
-            + legacy_ws;
+    let legacy_ws = if running { state.upstream_ws_carriers.load(Ordering::Relaxed) } else { 0 };
+    let upstream_ws = legacy_ws + if running { tsnap.upstream_ws } else { 0 };
+    let upstream_h2_ws = if running { tsnap.upstream_h2_ws + usize::from(legacy_ws > 0) } else { 0 };
+    let upstream_h3_ws = if running { tsnap.upstream_h3_ws } else { 0 };
+    // Report active upstream streams only; local request counts are a different layer.
+    let upstream_streams = if running { tsnap.upstream_streams + legacy_ws } else { 0 };
 
     let proxy_state = if let Ok(s) = state.proxy_state.try_read() {
         s.clone()
@@ -462,6 +465,8 @@ pub fn get_proxy_status_data(state: &AppState, running: bool, listen_address: &s
             upstream_h3_ws,
             upstream_ws,
             upstream_streams,
+            upstream_stream_limit: tsnap.upstream_stream_limit,
+            upstream_sessions: if running { tsnap.upstream_sessions } else { Vec::new() },
         },
     }
 }
@@ -736,10 +741,7 @@ impl Drop for SessionGuard {
 #[cfg(test)]
 const LLMTRIM_PROXY_URL: &str = "http://127.0.0.1:43117";
 
-#[cfg(test)]
-fn llmtrim_ca_path() -> std::path::PathBuf {
-    LlmtrimService::get_runtime_state_dir().join("ca.pem")
-}
+
 
 #[cfg(test)]
 fn read_llmtrim_ca(path: &std::path::Path) -> Result<Vec<u8>, String> {
@@ -924,230 +926,8 @@ fn start_llmtrim_route_monitor(state: &AppState) {
     });
 }
 
-#[cfg(test)]
-fn build_llmtrim_ws_connector(path: &std::path::Path) -> Result<tokio_tungstenite::Connector, String> {
-    let pem = read_llmtrim_ca(path)?;
-    let cert = native_tls::Certificate::from_pem(&pem)
-        .map_err(|e| format!("解析 llmtrim CA 证书 {} 失败: {}", path.display(), e))?;
-    let connector = native_tls::TlsConnector::builder()
-        .add_root_certificate(cert)
-        .build()
-        .map_err(|e| format!("创建 llmtrim WebSocket TLS 客户端失败: {}", e))?;
-    Ok(tokio_tungstenite::Connector::NativeTls(connector))
-}
 
-/// 处理 WebSocket 双向原始帧代理（支持直连及 HTTP CONNECT 代理隧道）
-#[cfg(test)]
-async fn handle_v1_websocket_tunnel(
-    mut client_ws: AxumWebSocket,
-    state: AppState,
-    target_url: String,
-    upstream_api_key: String,
-    outbound_proxy: Option<String>,
-    llmtrim_running: bool,
-    client_headers: HeaderMap,
-) {
-    let mut ws_target = if target_url.starts_with("https://") {
-        target_url.replacen("https://", "wss://", 1)
-    } else if target_url.starts_with("http://") {
-        target_url.replacen("http://", "ws://", 1)
-    } else {
-        target_url
-    };
 
-    let mut upstream_headers = HeaderMap::new();
-    for (k, v) in client_headers.iter() {
-        let name = k.as_str().to_lowercase();
-        if name == "host"
-            || name == "connection"
-            || name == "upgrade"
-            || name == "sec-websocket-key"
-            || name == "sec-websocket-version"
-            || name == "sec-websocket-extensions"
-            || name == "sec-websocket-protocol"
-        {
-            continue;
-        }
-        if let Ok(hname) = reqwest::header::HeaderName::from_bytes(k.as_ref()) {
-            if let Ok(hval) = reqwest::header::HeaderValue::from_bytes(v.as_bytes()) {
-                upstream_headers.insert(hname, hval);
-            }
-        }
-    }
-    replace_upstream_auth(&mut upstream_headers, &mut ws_target, &upstream_api_key);
-
-    let mut req = match ws_target.clone().into_client_request() {
-        Ok(r) => r,
-        Err(e) => {
-            error!("构造上游 WebSocket 请求失败: {}", e);
-            let _ = client_ws.send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
-                code: 1011,
-                reason: format!("构造上游 WebSocket 请求失败: {}", e).into(),
-            }))).await;
-            return;
-        }
-    };
-    for (name, value) in upstream_headers.iter() {
-        req.headers_mut().insert(name.clone(), value.clone());
-    }
-
-    info!("正在与上游建立 WebSocket 隧道: {} (出站代理: {:?})", ws_target, outbound_proxy);
-
-    let parsed_target = match Url::parse(&ws_target) {
-        Ok(u) => u,
-        Err(e) => {
-            error!("解析 WebSocket 目标 URL 失败: {}", e);
-            let _ = client_ws.send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
-                code: 1011,
-                reason: format!("解析 WebSocket 目标 URL 失败: {}", e).into(),
-            }))).await;
-            return;
-        }
-    };
-
-    let is_secure = parsed_target.scheme() == "wss";
-    let target_host = parsed_target.host_str().unwrap_or("localhost").to_string();
-    let target_port = parsed_target.port_or_known_default().unwrap_or(if is_secure { 443 } else { 80 });
-
-    let upstream_conn_res = if let Some(proxy) = outbound_proxy.filter(|p| !p.trim().is_empty()) {
-        match Url::parse(&proxy) {
-            Ok(proxy_parsed) => {
-                let proxy_host = proxy_parsed.host_str().unwrap_or("127.0.0.1").to_string();
-                let proxy_port = proxy_parsed.port_or_known_default().unwrap_or(8080);
-                let proxy_addr = format!("{}:{}", proxy_host, proxy_port);
-
-                async move {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut tcp = tokio::net::TcpStream::connect(&proxy_addr)
-                        .await
-                        .map_err(|e| format!("连接出站代理 {} 失败: {}", proxy_addr, e))?;
-
-                    let connect_req = format!(
-                        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\nProxy-Connection: Keep-Alive\r\n\r\n",
-                        target_host, target_port, target_host, target_port
-                    );
-                    tcp.write_all(connect_req.as_bytes())
-                        .await
-                        .map_err(|e| format!("向出站代理发送 CONNECT 指令失败: {}", e))?;
-
-                    let mut resp_buf = Vec::new();
-                    let mut temp_buf = [0u8; 1024];
-                    let mut connect_ok = false;
-                    while resp_buf.len() < 8192 {
-                        let n = tcp.read(&mut temp_buf).await
-                            .map_err(|e| format!("读取出站代理 CONNECT 响应失败: {}", e))?;
-                        if n == 0 { break; }
-                        resp_buf.extend_from_slice(&temp_buf[..n]);
-                        if let Some(pos) = resp_buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                            let header_str = String::from_utf8_lossy(&resp_buf[..pos]);
-                            if header_str.starts_with("HTTP/1.1 200") || header_str.starts_with("HTTP/1.0 200") {
-                                connect_ok = true;
-                            }
-                            break;
-                        }
-                    }
-
-                    if !connect_ok {
-                        let resp_str = String::from_utf8_lossy(&resp_buf);
-                        return Err(format!("出站代理 CONNECT 握手被拒绝: {}", resp_str.lines().next().unwrap_or("")));
-                    }
-
-                    if is_secure {
-                        let connector = if llmtrim_running {
-                            Some(build_llmtrim_ws_connector(&llmtrim_ca_path())?)
-                        } else {
-                            None
-                        };
-                        tokio_tungstenite::client_async_tls_with_config(req, tcp, None, connector)
-                            .await
-                            .map_err(|e| format!("经代理 TLS WebSocket 握手失败: {}", e))
-                    } else {
-                        tokio_tungstenite::client_async(req, tokio_tungstenite::MaybeTlsStream::Plain(tcp))
-                            .await
-                            .map_err(|e| format!("经代理 WebSocket 握手失败: {}", e))
-                    }
-                }
-                .await
-            }
-            Err(e) => Err(format!("解析出站代理 URL ({}) 失败: {}", proxy, e)),
-        }
-    } else {
-        tokio_tungstenite::connect_async(req)
-            .await
-            .map_err(|e| format!("直连上游 WebSocket 失败: {}", e))
-    };
-
-    let (upstream_ws, _) = match upstream_conn_res {
-        Ok(res) => res,
-        Err(err_msg) => {
-            error!("{}", err_msg);
-            let _ = client_ws.send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
-                code: 1011,
-                reason: format!("连接上游失败: {}", err_msg).into(),
-            }))).await;
-            return;
-        }
-    };
-
-    let _session_guard = SessionGuard::new(&state.active_ws_sessions);
-    let _carrier_guard = SessionGuard::new(&state.upstream_ws_carriers);
-
-    let (mut client_sink, mut client_stream) = client_ws.split();
-    let (mut upstream_sink, mut upstream_stream) = upstream_ws.split();
-
-    // 双向全双工数据泵送
-    let client_to_upstream = async {
-        while let Some(Ok(msg)) = client_stream.next().await {
-            let tung_msg = match msg {
-                AxumWsMessage::Text(t) => TungsteniteMessage::Text(t.as_str().into()),
-                AxumWsMessage::Binary(b) => TungsteniteMessage::Binary(b.into()),
-                AxumWsMessage::Ping(p) => TungsteniteMessage::Ping(p.into()),
-                AxumWsMessage::Pong(p) => TungsteniteMessage::Pong(p.into()),
-                AxumWsMessage::Close(c) => {
-                    let frame = c.map(|f| tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                        code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(f.code),
-                        reason: f.reason.as_str().into(),
-                    });
-                    let _ = upstream_sink.send(TungsteniteMessage::Close(frame)).await;
-                    break;
-                }
-            };
-            if upstream_sink.send(tung_msg).await.is_err() {
-                break;
-            }
-        }
-    };
-
-    let upstream_to_client = async {
-        while let Some(Ok(msg)) = upstream_stream.next().await {
-            let axum_msg = match msg {
-                TungsteniteMessage::Text(t) => AxumWsMessage::Text(t.as_str().into()),
-                TungsteniteMessage::Binary(b) => AxumWsMessage::Binary(b.into()),
-                TungsteniteMessage::Ping(p) => AxumWsMessage::Ping(p.into()),
-                TungsteniteMessage::Pong(p) => AxumWsMessage::Pong(p.into()),
-                TungsteniteMessage::Close(c) => {
-                    let frame = c.map(|f| axum::extract::ws::CloseFrame {
-                        code: f.code.into(),
-                        reason: f.reason.as_str().into(),
-                    });
-                    let _ = client_sink.send(AxumWsMessage::Close(frame)).await;
-                    break;
-                }
-                TungsteniteMessage::Frame(_) => continue,
-            };
-            if client_sink.send(axum_msg).await.is_err() {
-                break;
-            }
-        }
-    };
-
-    tokio::select! {
-        _ = client_to_upstream => {},
-        _ = upstream_to_client => {},
-    }
-
-    info!("WebSocket 代理隧道已断开");
-}
 
 const MAX_BRIDGE_BUFFER: usize = 8 * 1024 * 1024;
 
@@ -2403,17 +2183,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_or_invalid_llmtrim_ca_never_uses_the_normal_client() {
+    async fn missing_or_invalid_llmtrim_ca_rejects_the_upstream_client() {
         let state = test_state("http://unreachable.invalid/v1".into(), String::new());
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!("llmtrim-route-ca-{}-{}.pem", std::process::id(), nonce));
         let error = select_upstream_client_with_ca(&state, true, "", &path).await.unwrap_err();
         assert!(error.contains("读取 llmtrim CA"));
-        assert!(build_llmtrim_ws_connector(&path).is_err());
         std::fs::write(&path, b"invalid certificate").unwrap();
         let error = select_upstream_client_with_ca(&state, true, "", &path).await.unwrap_err();
         assert!(error.contains("解析 llmtrim CA"));
-        assert!(build_llmtrim_ws_connector(&path).is_err());
         assert!(state.llmtrim_client.read().await.is_none());
         std::fs::remove_file(path).unwrap();
     }
@@ -2484,53 +2262,6 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
     }
 
-    #[tokio::test]
-    async fn websocket_tunnel_uses_the_selected_proxy() {
-        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let proxy_address = proxy_listener.local_addr().unwrap();
-        let proxy_task = tokio::spawn(async move {
-            let (mut socket, _) = proxy_listener.accept().await.unwrap();
-            let mut connect_request = Vec::new();
-            let mut byte = [0; 1];
-            while !connect_request.ends_with(b"\r\n\r\n") {
-                socket.read_exact(&mut byte).await.unwrap();
-                connect_request.push(byte[0]);
-            }
-            socket.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await.unwrap();
-            let mut upstream = tokio_tungstenite::accept_async(socket).await.unwrap();
-            let message = upstream.next().await.unwrap().unwrap();
-            upstream.send(message).await.unwrap();
-            String::from_utf8(connect_request).unwrap()
-        });
-        let state = test_state("http://unused.invalid/v1".into(), String::new());
-        let app = Router::new().route("/ws", get({
-            let state = state.clone();
-            move |ws: WebSocketUpgrade| {
-                let state = state.clone();
-                async move {
-                    ws.on_upgrade(move |socket| handle_v1_websocket_tunnel(
-                        socket,
-                        state,
-                        "http://example.invalid:9000/v1".into(),
-                        String::new(),
-                        Some(format!("http://{}", proxy_address)),
-                        true,
-                        HeaderMap::new(),
-                    ))
-                }
-            }
-        }));
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let gateway = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{}/ws", address)).await.unwrap();
-        client.send(TungsteniteMessage::Text("hello".into())).await.unwrap();
-        assert_eq!(client.next().await.unwrap().unwrap().into_text().unwrap(), "hello");
-        let request = tokio::time::timeout(Duration::from_secs(2), proxy_task).await.unwrap().unwrap();
-        assert!(request.starts_with("CONNECT example.invalid:9000 HTTP/1.1\r\n"));
-        drop(client);
-        gateway.abort();
-    }
 
     #[tokio::test]
     async fn websocket_sse_bridge_uses_llmtrim_and_closes_when_route_changes() {
@@ -2709,53 +2440,6 @@ mod tests {
         assert!(normalize_ws_bridge_request(r#"{"type":"response.steer"}"#, true).is_err());
     }
 
-    #[tokio::test]
-    async fn llmtrim_websocket_bridge_uses_http1_for_both_ws_settings() {
-        for websocket_enabled in [true, false] {
-            let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let proxy_address = proxy_listener.local_addr().unwrap();
-            let proxy_task = tokio::spawn(async move {
-                serve_mock_http_proxy(
-                    proxy_listener, 1, "text/event-stream",
-                    "event: response.completed\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n",
-                ).await
-            });
-            let state = test_state("http://unreachable.invalid/v1".into(), "http://127.0.0.1:1".into());
-            state.config.write().await.upstream_websocket_enabled = websocket_enabled;
-            *state.proxy_running.write().await = true;
-            observe_llmtrim_route(&state, || true);
-            set_mock_llmtrim_client(&state, proxy_address).await;
-            let app = Router::new()
-                .route("/v1/{*path}", axum::routing::any(|State(state): State<AppState>, req: Request| async move {
-                    let (_, route_changed) = observe_llmtrim_route(&state, || true);
-                    forward_handler_selected(state, req, true, route_changed).await
-                }))
-                .with_state(state);
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let gateway = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{}/v1/responses", address)).await.unwrap();
-            client.send(TungsteniteMessage::Text(r#"{"type":"response.create","model":"example","input":"hi"}"#.into())).await.unwrap();
-            let message = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
-            let event: serde_json::Value = serde_json::from_str(message.into_text().unwrap().as_str()).unwrap();
-            assert_eq!(event["type"], "response.completed");
-
-            let requests = tokio::time::timeout(Duration::from_secs(2), proxy_task).await.unwrap().unwrap();
-            assert!(requests[0].starts_with("POST http://unreachable.invalid/v1/responses HTTP/1.1\r\n"));
-            assert!(!requests[0].to_ascii_lowercase().contains("\r\nupgrade:"));
-            let body = requests[0].split_once("\r\n\r\n").unwrap().1;
-            let payload: serde_json::Value = serde_json::from_str(body).unwrap();
-            assert_eq!(payload["stream"], true);
-            assert!(payload.get("type").is_none());
-
-            client.send(TungsteniteMessage::Binary(vec![1, 2, 3].into())).await.unwrap();
-            let message = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
-            let error: serde_json::Value = serde_json::from_str(message.into_text().unwrap().as_str()).unwrap();
-            assert_eq!(error["error"]["type"], "unsupported_message");
-            drop(client);
-            gateway.abort();
-        }
-    }
 
     #[tokio::test]
     async fn websocket_bridge_forwards_a_non_streaming_http_response() {
@@ -2943,13 +2627,16 @@ mod tests {
         let config = AppConfig::default();
         let state = AppState::new(config, std::path::PathBuf::from("config.json"));
 
-        // 初始停止状态
+        // Stopped proxies must never expose stale carrier counters.
+        state.upstream_ws_carriers.store(1, Ordering::SeqCst);
         let status = get_proxy_status_data(&state, false, "127.0.0.1:7788");
         assert!(!status.running);
+        assert_eq!(status.connections.upstream_ws, 0);
+        assert_eq!(status.connections.upstream_streams, 0);
         assert_eq!(status.connections.local_http1, 0);
         assert_eq!(status.connections.local_ws, 0);
         assert_eq!(status.connections.upstream_h2, 0);
-        assert!(!status.connections.upstream_h2_ws);
+        assert_eq!(status.connections.upstream_h2_ws, 0);
         assert_eq!(status.connections.upstream_streams, 0);
 
         // 模拟运行及活动连接计数
@@ -2963,9 +2650,9 @@ mod tests {
         assert_eq!(running_status.connections.local_http1, 4);
         assert_eq!(running_status.connections.local_ws, 2);
         assert_eq!(running_status.connections.upstream_h2, 1);
-        assert!(running_status.connections.upstream_h2_ws);
+        assert_eq!(running_status.connections.upstream_h2_ws, 1);
         assert_eq!(running_status.connections.upstream_ws, 1);
-        assert_eq!(running_status.connections.upstream_streams, 5);
+        assert_eq!(running_status.connections.upstream_streams, 1);
     }
 
     #[test]

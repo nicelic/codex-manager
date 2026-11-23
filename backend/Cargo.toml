@@ -1,6 +1,6 @@
 [package]
 name = "edit-rust"
-version = "1.0.42"
+version = "1.0.43"
 edition = "2021"
 
 [[bin]]
@@ -29,8 +29,8 @@ hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 tower-service = "0.3"
 url = "2.5"
 quinn = { version = "0.11", default-features = false, features = ["log", "platform-verifier", "runtime-tokio", "rustls-ring"] }
-h3 = { version = "0.0.8", features = ["tracing"] }
-h3-quinn = { version = "0.0.10", features = ["tracing"] }
+h3 = { package = "hpx-h3", version = "=2.5.15", features = ["tracing", "quinn"] }
+h3-quinn = { package = "hpx-h3-quinn", version = "=2.5.7", features = ["tracing"] }
 h2 = "0.4"
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12", "ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }

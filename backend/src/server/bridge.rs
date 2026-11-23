@@ -676,6 +676,8 @@ where
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_http_to_upstream_ws(
     transport: Arc<UpstreamTransport>,
+    method: Method,
+    retry_policy: RetryPolicy,
     upstream_url: String,
     prepared_headers: Vec<(HeaderName, HeaderValue)>,
     body_bytes: Bytes,
@@ -684,7 +686,7 @@ pub async fn handle_http_to_upstream_ws(
     mut route_changed: watch::Receiver<u64>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Response<Body> {
-    let req_guard = ActiveRequestGuard::new(active_requests);
+    let req_guard = ActiveRequestGuard::new(Arc::clone(&active_requests));
     let Ok(parsed_url) = reqwest::Url::parse(&upstream_url) else {
         return json_error_response(StatusCode::BAD_GATEWAY, "invalid upstream ws url");
     };
@@ -702,13 +704,19 @@ pub async fn handle_http_to_upstream_ws(
             headers,
             body,
         } => {
+            if matches!(status.as_u16(), 400 | 404 | 405 | 426 | 501 | 505) {
+                return Box::pin(handle_http_direct(
+                    transport, method, parsed_url.to_string(), prepared_headers, body_bytes,
+                    outbound_proxy, false, retry_policy, active_requests, route_changed, shutdown_rx,
+                )).await;
+            }
             return build_axum_response(status, &headers, Body::from(body));
         }
-        UpstreamWsOutcome::Unavailable(e) => {
-            return json_error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("upstream websocket unavailable: {e}"),
-            );
+        UpstreamWsOutcome::Unavailable(_) => {
+            return Box::pin(handle_http_direct(
+                transport, method, parsed_url.to_string(), prepared_headers, body_bytes,
+                outbound_proxy, false, retry_policy, active_requests, route_changed, shutdown_rx,
+            )).await;
         }
     };
 
@@ -727,7 +735,6 @@ pub async fn handle_http_to_upstream_ws(
         let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(32);
         tokio::spawn(async move {
             let _req_guard = req_guard;
-            let _ws_guard = upstream_conn._guard;
             let mut saw_done = false;
             loop {
                 tokio::select! {
@@ -866,7 +873,7 @@ pub async fn handle_http_to_upstream_ws(
 pub async fn handle_http_direct(
     transport: Arc<UpstreamTransport>,
     method: Method,
-    upstream_url: String,
+    mut upstream_url: String,
     prepared_headers: Vec<(HeaderName, HeaderValue)>,
     body_bytes: Bytes,
     outbound_proxy: String,
@@ -876,18 +883,25 @@ pub async fn handle_http_direct(
     mut route_changed: watch::Receiver<u64>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) -> Response<Body> {
-    if upstream_url.starts_with("ws://") || upstream_url.starts_with("wss://") {
-        return handle_http_to_upstream_ws(
-            transport,
-            upstream_url,
-            prepared_headers,
-            body_bytes,
-            outbound_proxy,
-            active_requests,
-            route_changed,
-            shutdown_rx,
-        )
-        .await;
+    if upstream_url.starts_with("ws://") {
+        return json_error_response(
+            StatusCode::BAD_GATEWAY,
+            "unencrypted upstream WebSocket is disabled",
+        );
+    }
+    if upstream_url.starts_with("wss://") {
+        upstream_url = upstream_url.replacen("wss://", "https://", 1);
+    }
+
+    if upstream_websocket_enabled {
+        if let Ok(url) = reqwest::Url::parse(&upstream_url) {
+            if url.scheme() == "https" {
+                return handle_http_to_upstream_ws(
+                    transport, method, retry_policy, upstream_url, prepared_headers, body_bytes,
+                    outbound_proxy, active_requests, route_changed, shutdown_rx,
+                ).await;
+            }
+        }
     }
 
     let req_guard = ActiveRequestGuard::new(Arc::clone(&active_requests));
@@ -901,7 +915,7 @@ pub async fn handle_http_direct(
 
     let result = send_http_with_retry_and_sse_fallback(
         &transport,
-        method,
+        method.clone(),
         parsed_url,
         &mut clean_headers,
         body_bytes.clone(),
@@ -922,6 +936,8 @@ pub async fn handle_http_direct(
         drop(req_guard);
         return handle_http_to_upstream_ws(
             transport,
+            method,
+            retry_policy,
             upstream_url,
             prepared_headers,
             body_bytes,

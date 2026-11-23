@@ -75,6 +75,8 @@ const proxy = reactive({
     upstreamH3WebSocket: false,
     upstreamWebSocket: 0,
     upstreamStreams: 0,
+    upstreamStreamLimit: 500,
+    upstreamSessions: [],
   },
 })
 const proxyNotice = ref('')
@@ -632,6 +634,8 @@ function applyProxyStatus(data, { silent = false } = {}) {
 	proxy.connections.upstreamH3WebSocket = Boolean(connections.upstream_h3_ws)
 	proxy.connections.upstreamWebSocket = Math.max(0, Number(connections.upstream_ws) || 0)
 	proxy.connections.upstreamStreams = Math.max(0, Number(connections.upstream_streams) || 0)
+	proxy.connections.upstreamStreamLimit = Number(connections.upstream_stream_limit) || 500
+	proxy.connections.upstreamSessions = Array.isArray(connections.upstream_sessions) ? connections.upstream_sessions : []
 	proxy.loading = false
 	if (!silent && data.message) proxyNotice.value = data.message
 }
@@ -2487,8 +2491,17 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <p v-if="applicationUpdateNotice" class="notice application-update-notice">{{ applicationUpdateNotice }}</p>
-        <div><span>基线连接</span><code>H2/H3 多流 · 每连接最多 500 个活动流</code></div>
-        <div class="connection-status"><span>连接状态</span><code><span>网页管理：{{ managementProtocol }}</span><span>本地监听：http1.1_{{ proxy.connections.localHTTP1 }}&nbsp;&nbsp;ws_{{ proxy.connections.localWebSocket }}</span><span>上游：{{ upstreamH2Label }}&nbsp;&nbsp;{{ upstreamH3Label }}&nbsp;&nbsp;ws_{{ proxy.connections.upstreamWebSocket }}&nbsp;&nbsp;流_{{ proxy.connections.upstreamStreams }}</span></code></div>
+        <div><span>基线连接</span><code>H2/H3 多流 · 每连接最多 {{ proxy.connections.upstreamStreamLimit }} 个活动流</code></div>
+        <div class="connection-status"><span>连接状态</span><code><span title="当前管理页面与后端的实时状态通道">网页管理：{{ managementProtocol }}</span><span title="本地正在处理的 HTTP 请求数与本地 WebSocket 会话数">本地监听：http1.1_{{ proxy.connections.localHTTP1 }}&nbsp;&nbsp;ws_{{ proxy.connections.localWebSocket }}</span><span title="h2/h3 数值为当前上游物理会话数；(ws)表示该协议上当前存在 WebSocket 流；最后一项为上游活动流数">上游：{{ upstreamH2Label }}&nbsp;&nbsp;{{ upstreamH3Label }}&nbsp;&nbsp;ws_{{ proxy.connections.upstreamWebSocket }}&nbsp;&nbsp;上游活动流_{{ proxy.connections.upstreamStreams }}</span></code></div>
+        <div v-if="proxy.connections.upstreamSessions.length" class="connection-status">
+          <span>上游各连接</span>
+          <code>
+            <span v-for="session in proxy.connections.upstreamSessions" :key="session.id"
+                  title="已占用流名额，包括正在建立的流">
+              {{ session.protocol }} #{{ session.id }} · {{ session.occupied_stream_slots }}/{{ proxy.connections.upstreamStreamLimit }}
+            </span>
+          </code>
+        </div>
         <div><span>健康检查</span><code>/healthz</code></div>
         <div><span>最近检查</span><code>{{ checkedAt }}</code></div>
       </div>
